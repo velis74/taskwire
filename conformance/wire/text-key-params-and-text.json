@@ -1,0 +1,10 @@
+{
+  "kind": "text",
+  "document": {
+    "key": "acme.importer.rows",
+    "params": {
+      "rows": 1200
+    },
+    "text": "Importing 1200 rows"
+  }
+}

@@ -62,7 +62,12 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "Q", "B", "UP", "N", "PT", "S", "C4", "ARG"]
-ignore = ["E731", "E722", "C408"]
+# S105/S106/S107 flag string literals assigned to a parameter named `token`, on the assumption that
+# a token is a credential. In taskwire it is the opposite: a token is an operation's *address* and
+# explicitly "never an authorization grant" (specification §1, TW-SEC-003). The namespace is the
+# only authorization scope, and the library handles no passwords, keys or credentials of any kind,
+# so every hit of these three rules is a false positive on a core domain word.
+ignore = ["E731", "E722", "C408", "S105", "S106", "S107"]
 fixable = ["ALL"]
 unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"

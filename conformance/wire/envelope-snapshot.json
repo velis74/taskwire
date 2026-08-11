@@ -1,0 +1,43 @@
+{
+  "kind": "envelope",
+  "document": {
+    "v": 1,
+    "token": "6b1f1c9e-0f2a-4a7d-9c2e-5f5b6a7c8d90",
+    "rev": 1786439700123,
+    "kind": "snapshot",
+    "body": {
+      "v": 1,
+      "token": "6b1f1c9e-0f2a-4a7d-9c2e-5f5b6a7c8d90",
+      "rev": 1786439700123,
+      "progress": {
+        "state": "running",
+        "percent": 42.5,
+        "data": {
+          "rows_done": 510,
+          "rows_total": 1200
+        },
+        "result_kind": "acme.import.report",
+        "origin_session": "account:42",
+        "origin_connection": "conn-7",
+        "created_at": "2026-08-11T09:15:00.000Z",
+        "updated_at": "2026-08-11T09:15:04.250Z",
+        "title": {
+          "key": "acme.importer.title",
+          "text": "Importing"
+        },
+        "label": {
+          "key": "acme.importer.rows",
+          "params": {
+            "rows": 1200
+          },
+          "text": "Importing 1200 rows"
+        },
+        "icon": "upload"
+      },
+      "dialogs": [],
+      "cancel_requested": false,
+      "server_time": "2026-08-11T09:15:04.317Z",
+      "poll_after_ms": 400
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "kind": "result",
+  "document": {
+    "kind": "acme.import.report",
+    "label": {
+      "text": "Imported 1200 rows"
+    },
+    "value": {
+      "imported": 1200,
+      "skipped": 3
+    }
+  }
+}

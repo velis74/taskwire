@@ -1,0 +1,11 @@
+{
+  "kind": "error",
+  "document": {
+    "code": "dispatch_failed",
+    "message": {
+      "key": "taskwire.error.dispatch_failed",
+      "text": "Could not dispatch the task"
+    },
+    "retryable": true
+  }
+}

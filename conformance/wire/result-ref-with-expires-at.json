@@ -1,0 +1,15 @@
+{
+  "kind": "result",
+  "document": {
+    "kind": "taskwire.download",
+    "label": {
+      "key": "taskwire.result.download"
+    },
+    "ref": {
+      "href": "https://example.test/exports/2026-08-11.csv",
+      "mime": "text/csv",
+      "bytes": 48213,
+      "expires_at": "2026-08-18T09:15:00.000Z"
+    }
+  }
+}

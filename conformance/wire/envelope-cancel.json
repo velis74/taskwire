@@ -1,0 +1,10 @@
+{
+  "kind": "envelope",
+  "document": {
+    "v": 1,
+    "token": "6b1f1c9e-0f2a-4a7d-9c2e-5f5b6a7c8d90",
+    "rev": 1786439700135,
+    "kind": "cancel",
+    "body": {}
+  }
+}

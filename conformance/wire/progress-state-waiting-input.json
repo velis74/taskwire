@@ -1,0 +1,38 @@
+{
+  "kind": "progress",
+  "document": {
+    "state": "waiting_input",
+    "percent": 100.0,
+    "data": {
+      "rows_done": 510,
+      "rows_total": 1200
+    },
+    "result_kind": "acme.import.report",
+    "origin_session": "account:42",
+    "origin_connection": "conn-7",
+    "created_at": "2026-08-11T09:15:00.000Z",
+    "updated_at": "2026-08-11T09:15:04.250Z",
+    "title": {
+      "key": "acme.importer.title",
+      "text": "Importing"
+    },
+    "label": {
+      "key": "acme.importer.rows",
+      "params": {
+        "rows": 1200
+      },
+      "text": "Importing 1200 rows"
+    },
+    "icon": "upload",
+    "result": {
+      "kind": "acme.import.report",
+      "label": {
+        "text": "Imported 1200 rows"
+      },
+      "value": {
+        "imported": 1200,
+        "skipped": 3
+      }
+    }
+  }
+}

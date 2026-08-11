@@ -1,0 +1,37 @@
+{
+  "kind": "dialog_request",
+  "document": {
+    "id": "0d9c8b7a-6543-4210-9fed-cba987654321",
+    "dialog_id": "acme.import.conflict",
+    "buttons": [
+      {
+        "id": "overwrite",
+        "label": {
+          "key": "acme.import.overwrite"
+        },
+        "style": "primary"
+      },
+      {
+        "id": "skip",
+        "label": {
+          "key": "acme.import.skip"
+        }
+      }
+    ],
+    "inputs": [
+      {
+        "name": "comment",
+        "type": "string",
+        "required": false,
+        "label": {
+          "key": "acme.import.note"
+        }
+      }
+    ],
+    "params": {
+      "file": "rows.csv"
+    },
+    "state": "open",
+    "created_at": "2026-08-11T09:15:00.000Z"
+  }
+}

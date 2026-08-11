@@ -1,0 +1,10 @@
+{
+  "kind": "result",
+  "document": {
+    "kind": "taskwire.dialog",
+    "params": {
+      "dialog_id": "acme.import.summary",
+      "rows": 1200
+    }
+  }
+}
