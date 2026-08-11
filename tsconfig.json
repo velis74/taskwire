@@ -1,0 +1,17 @@
+{
+  "extends": "./node_modules/eslint-config-velis/tsconfig.json",
+  "compilerOptions": {
+    // The base config sets `module: commonjs`, which contradicts this package: it is `"type":
+    // "module"`, vite compiles ESM sources into both ES and CJS outputs, and `import.meta` is a
+    // syntax error under commonjs. Overriding here keeps the shared config's other opinions
+    // (target, strict, esModuleInterop) while letting the source be what it actually is.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "paths": { "@/*": ["./ts/*"], "~/*": ["./node_modules/*"] },
+    "types": ["vitest/globals", "node"],
+    "skipLibCheck": true
+  },
+  "include": ["ts/**/*"],
+  "exclude": ["dist", "coverage", "node_modules", "docs", "examples", "taskwire"]
+}

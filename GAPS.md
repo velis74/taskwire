@@ -79,3 +79,42 @@ form MAY be exported as additional sugar; I have not written one.
 **What I assumed:** `taskwire/conformance` as a subpath export, matching the Python name. It is not
 counted among the three feature subpaths (`/vue`, `/muxws`, `/vuetify`) because it is a test-time
 export, not a capability.
+
+## taskwire-m0-scaffolding.md §3 — `tsconfig.json` — RESOLVED
+
+**What I needed:** `vue-tsc --noEmit` to pass on a spec file that resolves a path relative to itself.
+
+**What the brief says:** extend `eslint-config-velis/tsconfig.json` and override four options. That
+base config sets `"module": "commonjs"`, under which `import.meta` is a syntax error (TS1343).
+
+**What I did:** added `"module": "esnext"` and `"moduleResolution": "bundler"` to the override
+block, with a comment saying why. This is not a judgement call — the package is `"type": "module"`,
+vite compiles ESM sources, and the brief's own config cannot type-check the package it configures.
+Reported here because it is a defect in the brief, not licence to improvise further.
+
+---
+
+## taskwire-m0-scaffolding.md §3 — muxws version floor — RESOLVED
+
+**What I needed:** the version of muxws the `[muxws]` extra and the npm peer should require.
+
+**What the brief says:** `muxws>=0.1` and `"muxws": "^0.1.0"`.
+
+**What I did:** raised both to `0.2`, matching the spec amendment of the previous commit. muxws 0.2.0
+is the released version and the first that carries `PeerRegistry.peers_for` and `peer.tags`, which
+M5 and M8 need. `0.1` would resolve to a release that cannot satisfy them.
+
+---
+
+## taskwire-m0-scaffolding.md §3 — where the design documents live — RESOLVED
+
+**What I needed:** the design brief and the specification kept out of the published documentation.
+
+**What the brief says:** `docs/` holds both the VitePress site and (from the design repository's
+layout) the specification and design document.
+
+**What I did:** moved `taskwire-spec.md`, `taskwire-progress-and-dialogs.md` and `briefs/` to a
+sibling `design/` directory, so `docs/` is exactly the user-facing site and nothing has to be
+excluded from the build. The author's instruction was explicit that design documents are not user
+documentation. `design/` is also added to ruff's exclude list: the documents quote Python, and
+`ruff format` rewrites code inside fenced markdown blocks.

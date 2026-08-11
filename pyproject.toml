@@ -1,0 +1,87 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "taskwire"
+dynamic = ["version"]
+description = "Progress reporting and awaitable dialogs for long-running server-side operations."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Jure Erznožnik", email = "jure.erznoznik@gmail.com" }]
+requires-python = ">=3.10"
+keywords = ["progress", "dialogs", "celery", "fastapi", "websocket", "dynamicforms"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Typing :: Typed",
+]
+dependencies = []   # DELIBERATE: core has no runtime dependency of any kind (TW-CORE-006)
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+celery = ["celery>=5.3", "nest_asyncio>=1.6"]
+fastapi = ["fastapi>=0.100"]
+muxws = ["muxws>=0.2"]
+dev = ["coverage", "pytest", "pytest-asyncio", "pytest-cov", "hypothesis", "httpx", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/velis74/taskwire"
+Repository = "https://github.com/velis74/taskwire"
+Issues = "https://github.com/velis74/taskwire/issues"
+Documentation = "https://docs.velis.si/taskwire/"
+
+[tool.hatch.version]
+path = "taskwire/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["taskwire"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/taskwire", "/conformance", "/README.md", "/LICENSE"]
+exclude = ["**/*_test.py"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+# `design` holds the normative specification and the design brief. They are prose that happens to
+# quote Python, and ruff would otherwise reformat the code inside their fenced blocks.
+exclude = ['docs', 'design', 'examples', 'ts', 'node_modules', 'dist', 'build', '.git', '.idea',
+    '.pytest_cache', '.ruff_cache']
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "Q", "B", "UP", "N", "PT", "S", "C4", "ARG"]
+ignore = ["E731", "E722", "C408"]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"*_test.py" = ["S101"]
+"taskwire/conformance.py" = ["S101"]   # the exported suite asserts, and is not a *_test.py
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+case-sensitive = false
+lines-between-types = 1
+combine-as-imports = true
+order-by-type = false
+
+[tool.coverage.run]
+omit = ["examples/*", "examples/**/*", "test_*.py", "*_test.py"]

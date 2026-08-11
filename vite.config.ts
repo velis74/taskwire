@@ -1,0 +1,46 @@
+/// <reference types="vitest" />
+import vue from '@vitejs/plugin-vue';
+import { resolve } from 'path';
+import { visualizer } from 'rollup-plugin-visualizer';
+import { defineConfig } from 'vite';
+import dts from 'vite-plugin-dts';
+
+export default defineConfig({
+  plugins: [
+    vue(),
+    dts({ tsconfigPath: './tsconfig.build.json', rollupTypes: true }),
+    visualizer({ open: false, filename: 'coverage/stats.html', gzipSize: true, brotliSize: true }),
+  ],
+  resolve: {
+    alias: { '@': resolve(__dirname, './ts') },
+    extensions: ['.js', '.mjs', '.ts'],
+  },
+  build: {
+    target: 'es2015',
+    sourcemap: true,
+    lib: {
+      entry: {
+        index: resolve(__dirname, 'ts/index.ts'),
+        vue: resolve(__dirname, 'ts/vue.ts'),
+        muxws: resolve(__dirname, 'ts/muxws.ts'),
+        vuetify: resolve(__dirname, 'ts/vuetify.ts'),
+      },
+      formats: ['es', 'cjs'],
+    },
+    rollupOptions: {
+      external: [
+        '@dynamicforms/vuetify-modal-form-kit',
+        'muxws',
+        'axios',
+        'vue',
+        'vuetify',
+      ],
+      output: { globals: (id: string) => id },
+    },
+  },
+  test: {
+    coverage: { provider: 'v8', include: ['ts/**/*'], exclude: ['**/index.ts'] },
+    globals: true,
+    environment: 'jsdom',
+  },
+});

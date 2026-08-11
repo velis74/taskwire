@@ -19,6 +19,8 @@ htmlcov/
 node_modules/
 *.tsbuildinfo
 coverage/
+# Not committed, matching the muxws repository's convention.
+/package-lock.json
 
 # VitePress
 docs/.vitepress/cache/
