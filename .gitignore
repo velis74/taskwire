@@ -1,0 +1,30 @@
+# Claude Code session artefacts
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node
+node_modules/
+*.tsbuildinfo
+coverage/
+
+# VitePress
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
