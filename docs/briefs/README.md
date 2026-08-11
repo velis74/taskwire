@@ -83,9 +83,10 @@ PyPI and npm from this one repository. The store is the truth; a push is only an
 
 | # | Brief | Delivers |
 |---|---|---|
-| M0 | [`taskwire-m0-scaffolding.md`](./taskwire-m0-scaffolding.md) | The repository: a Python package with **zero** required runtime dependencies, an npm package with four subpath exports, the toolchain, and the test that proves core imports none of redis/celery/fastapi/muxws/vue. |
+| M0 | [`taskwire-m0-scaffolding.md`](./taskwire-m0-scaffolding.md) | The repository: a Python package with **zero** required runtime dependencies, an npm package with three subpath exports (`/vue`, `/muxws`, `/vuetify`) whose **core carries the whole operating half** (TW-SYM-001), the toolchain, a VitePress workspace, and the test that proves core imports none of redis/celery/fastapi/muxws/vue. |
 | M1 | [`taskwire-m1-store-reporter-register-rest.md`](./taskwire-m1-store-reporter-register-rest.md) | *(server half)* Models, `settings`, the `TaskwireStore` port with `MemoryStore` and the exported conformance suite, the `Reporter` with inline-clock throttling and **no settable state**, `operation()` in both async and sync forms with its terminal-write-then-drop exit, the namespace-scoped register of **shared** operations with its percentage-free aggregate, private operations, `migrate_namespace`, the two polling REST endpoints, and the reader as the only caller of `transport.notify()`. |
 | M1b | [`taskwire-m1b-ts-client-core.md`](./taskwire-m1b-ts-client-core.md) | *(client half, part 1)* The one snake↔camel wire converter, the polling ladder as a pure function, `Operation<T>` as a `PromiseLike`, `use_taskwire`, `run`, `track`, `subscribe`, `new_token`. Persists nothing; can never be talked into polling faster. |
+| M1s | *(no separate brief; §5.5a of the spec is the work order)* | *(operating half, TypeScript)* The store port with `MemoryStore` and the TS conformance suite, the `Reporter` with throttling and nesting against an injected clock, `operation()` in its callback form, and `LocalTransport`. **No ambient proxy** (TW-SYM-004). This is what makes a browser-only application first-class (TW-SYM-001). |
 | M1c | [`taskwire-m1c-ts-register-and-vue.md`](./taskwire-m1c-ts-register-and-vue.md) | *(client half, part 2)* `tw.register` (the shared register plus this tab's private operations merged locally), `tw.aggregate` with the domination rule and no percentage, `tw.selected` with its FIFO default, `tw.operations` as a deliberately smaller visible subset, and the `/vue` composables. |
 | M2 | [`taskwire-m2-nesting-and-ambient.md`](./taskwire-m2-nesting-and-ambient.md) | `subtask()` / `split()` with per-child contribution accounting (not last-write-wins), and the `contextvars`-bound ambient `taskwire.progress` proxy with its `Token`-reset discipline. No wire change at all. |
 | M3 | [`taskwire-m3-dialogs.md`](./taskwire-m3-dialogs.md) | *(server half)* `ask()`: write the `DialogRequest`, push `dialog.open`, and block until the store arbitrates a reply - **with no timeout and no default answer**. `resolve_dialog` / `withdraw_dialogs` / `await_dialog`, the reply endpoint's 204/404/409/410/422 matrix, and `waiting_input` derived as a disjunction. |
@@ -109,8 +110,14 @@ renumbered by any of these splits.**
 M0 → M1 ─┬─→ M2 ──→ M3 ─┬─→ M4 ─→ M5 ─→ M6 ─→ M7 ─→ M7b ─→ M8 ─→ M9
          │              │         ▲
          ├─→ M1b → M1c ─┴─→ M3b ──┘
+         │
+         └─→ M1s (TypeScript operating half; joins M3 for dialogs, M6 for cancel, M7 for results)
 ```
 
+- M1s depends on M1 only for its *shapes* - it ports the same store port, the same `Reporter` and
+  the same `operation()` into TypeScript, so M1 must be settled before it starts, and every later
+  milestone that changes the operating half (M3's dialogs, M6's cancellation, M7's results) lands in
+  both languages or in neither (TW-SYM-002).
 - M1b depends on M1 (for the wire shapes and the two endpoints) and M1c depends on M1b. M3b depends
   on M3 and on M1b/M1c. M5 onward depend on the whole of M1, M1b, M1c, M3 and M3b. M7b depends on
   M7: the footer renders result rows and the collect/dismiss affordances that M7 builds, and M8's

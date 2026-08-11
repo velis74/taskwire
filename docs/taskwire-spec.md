@@ -46,7 +46,10 @@ Rule ids are stable. Cross-references use ids only.
 | **collectable result** | A written `Result` that has not been released. Holds the operation in `waiting_input` without holding a worker. |
 
 Packaging: Python package root `taskwire`, extras `[redis]`, `[muxws]`, `[fastapi]`, `[celery]`;
-npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`.
+npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`. Both roots carry the whole
+operating half (TW-SYM-001) with no optional dependency: the store port with `MemoryStore`, the
+`Reporter`, `operation()`, `LocalTransport` and `NullTransport`. The subpaths and the extras add
+adapters to things outside the process, never a capability the core lacks.
 
 ---
 
@@ -158,10 +161,15 @@ npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`.
 - **TW-STORE-010** Once a document is in a terminal state, a later `commit` MAY update `label`,
   `data` and `updated_at` and MUST NOT change `state`. Enforced by the store, not by the caller.
   Test: `conformance` — `test_commit_after_terminal_keeps_state`.
-- **TW-STORE-011** Shipped implementations MUST be `MemoryStore` (core) and `RedisStore` (extra
-  `[redis]`). `RedisStore` MUST pass the exported conformance suite unchanged.
-- **TW-STORE-012** The conformance suite MUST be exported (`taskwire.conformance`) so that an
-  application's own store implementation can import and run it.
+- **TW-STORE-011** `MemoryStore` MUST ship in the core of **both** languages. `RedisStore` MUST ship
+  in the Python extra `[redis]` and MUST pass the exported conformance suite unchanged. There is
+  deliberately **no** TypeScript `RedisStore`: omitting one costs nothing, since the store is a port
+  and an implementation that is not written is simply absent. The port stays open, and TW-STORE-012
+  is what an application writing its own would prove it against.
+- **TW-STORE-012** The conformance suite MUST be exported by both languages
+  (`taskwire.conformance`, `taskwire/conformance`) so that an application's own store implementation
+  can import and run it. The two suites MUST assert the same behaviours, so that a store is judged
+  by the same standard whichever language it is written in.
 - **TW-STORE-013** `commit`, `put_dialog`, `resolve_dialog`, `withdraw_dialogs` and `release_result`
   MUST be Lua scripts under `RedisStore`. The three dialog scripts additionally maintain
   `tw:{ns}:asking` (TW-KEY-005) inside their own atomic step; that adds no script. Other read shapes
@@ -559,8 +567,21 @@ npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`.
   MUST apply the delivery decision (TW-DEL-010) as the only per-connection judgement.
 - **TW-TR-006** A transport that does not know about connections MAY ignore overrides and the
   predicate entirely and is still correct.
-- **TW-TR-007** Shipped implementations MUST be `NullTransport` (`notify` is `pass`) and
-  `MuxwsTransport` (extra `[muxws]`).
+- **TW-TR-007** Shipped implementations MUST be `NullTransport` (`notify` is `pass`),
+  `LocalTransport` (core, both languages) and `MuxwsTransport` (extra `[muxws]`, Python).
+- **TW-TR-008** `LocalTransport` MUST deliver each envelope to every subscriber registered against
+  that namespace, in registration order, without a wire, a socket or a serialization step. It MUST
+  require no optional dependency and MUST live in the core of both languages, because an application
+  that never leaves its own process is a first-class deployment (TW-SYM-001), not a test double.
+- **TW-TR-009** `LocalTransport` MUST hand each subscriber a document **no other party retains a
+  reference to**. A subscriber that mutates what it received MUST NOT be able to alter the store,
+  another subscriber's copy, or what a later read returns. In-process delivery is the one path where
+  a live reference could leak where a wire transport would have copied, and TW-CORE-002 must hold
+  identically on all of them. Test: `local_transport_test.py::test_subscriber_mutation_is_contained`.
+- **TW-TR-010** `LocalTransport` MUST obey TW-TR-002 and TW-TR-003 unchanged: a subscriber that
+  raises, or that takes longer than `push_timeout`, is a dropped push. It MUST NOT propagate out of
+  `notify()`, MUST NOT reach the reporter, and MUST NOT stop the remaining subscribers from being
+  called. Test: `local_transport_test.py::test_raising_subscriber_does_not_starve_the_others`.
 
 ### 2.14 muxws transport (`TW-WS-*`)
 
@@ -877,6 +898,41 @@ npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`.
   terminal (TW-REG-007), and MUST NOT be countable in the aggregate at any point except while
   TW-PRIV-004 has it listed. Test: `delivery_test.py::test_private_operation_is_invisible_to_a_second_socket`
   and `..._becomes_visible_while_it_asks`.
+
+### 2.22 Language symmetry (`TW-SYM-*`)
+
+- **TW-SYM-001** **A program that runs entirely in one language and one process MUST be able to use
+  every feature of taskwire**, with no transport, no REST endpoint, no second process and no second
+  language present. Both languages MUST therefore ship the whole operating half — the store port with
+  `MemoryStore` (TW-STORE-011), the `Reporter` with its nesting and throttling, `operation()`,
+  `ask()`, cancellation and collectable results — and not merely the reading half. A back-end-only
+  service and a browser-only application are the same first-class deployment seen from two sides.
+  Test: `local_only.spec.ts` / `local_only_test.py` — one file per language driving an operation from
+  `queued` through a dialog to a collected result with `LocalTransport` and nothing else configured.
+- **TW-SYM-002** The two implementations MUST agree on §3's documents and §4's state machines: they
+  are one protocol with two implementations, never two protocols. The store conformance suite
+  (TW-STORE-012) MUST therefore be run by both, and any sequence corpus MUST be replayed by both.
+- **TW-SYM-003** **The asymmetries MUST be exactly these, and each MUST be a fact about the host
+  platform rather than a decision about the language:**
+
+  | Python only | TypeScript only |
+  |---|---|
+  | `RedisStore` and the `twx:{ns}` backplane (TW-STORE-011) | the polling client and its ladder (TW-REST-010) |
+  | the Celery worker entry (`TW-CELERY-*`) | the `/vue` and `/vuetify` subpaths |
+  | the FastAPI / ASGI adapters (TW-REST-001) | `tw.register`, `tw.aggregate`, `tw.selected`, `tw.operations` |
+  | `MuxwsTransport`'s server side (`TW-WS-*`) | the tab-hint rules (`TW-TAB-*`) |
+  | the ambient reporter proxy (`TW-AMB-*`, see TW-SYM-004) | — |
+
+  Anything not in this table MUST exist in both. A capability MUST NOT be added to one language alone
+  because it was convenient there.
+- **TW-SYM-004** **The ambient reporter MUST NOT be ported to TypeScript, and TypeScript callers MUST
+  pass the reporter explicitly.** `TW-AMB-*` rests on `contextvars`; Node's `AsyncLocalStorage` is the
+  near-equivalent but **browsers have none at all**, and TW-SYM-001 makes a browser-only application
+  first-class. A proxy that silently worked under Node and silently no-opped in a browser would be
+  worse than its absence: TW-AMB-002 already makes an unbound proxy a silent no-op, so the failure
+  would be a progress bar that never moves, with no error anywhere. Explicit passing is also already
+  the rule for concurrent siblings in both languages (TW-NEST-014). Test:
+  `packaging.spec.ts::no ambient progress proxy is exported`.
 
 ---
 
@@ -1297,6 +1353,67 @@ class Operation<T> implements PromiseLike<T> {
   close(): void;                                // automatic on a terminal state
 }
 ```
+
+### 5.5a TypeScript — the operating half (TW-SYM-001)
+
+Everything above reads an operation somebody else is running. This half *is* the operation, and it
+is what makes a browser-only or Node-only program a first-class deployment with no server, no wire
+and no Python anywhere.
+
+```ts
+import {
+  operation, MemoryStore, LocalTransport, NullTransport,
+  type Reporter, type TaskwireStore, type TaskwireTransport,
+} from 'taskwire';
+
+function operation<T>(
+  opts: {
+    ns: string;                                 // already-resolved namespace (TW-AMB-007)
+    store: TaskwireStore;
+    token?: string | null;                      // null yields an inert reporter (TW-AMB-010)
+    transport?: TaskwireTransport;              // defaults to NullTransport
+    title?: Text;
+    data?: Record<string, unknown>;
+    resultKind?: string;                        // absent = a private operation (TW-PRIV-001)
+  },
+  body: (reporter: Reporter) => Promise<T>,
+): Promise<T>;
+
+interface Reporter {
+  set(fields: {                                 // no `state` key, ever (TW-PROG-012)
+    percent?: number | null; title?: Text; label?: Text;
+    data?: Record<string, unknown>; raiseOnCancel?: boolean;
+  }): Promise<void>;
+  ask(req: {
+    dialogId: string; title?: Text; text?: Text;
+    buttons: string[] | DialogButton[]; inputs?: DialogInput[];
+    params?: Record<string, unknown>;
+  }): Promise<DialogAnswer>;                    // no timeout parameter (TW-DLG-005)
+  subtask(start: number, end: number): Reporter;
+  split(...weights: number[]): Reporter[];
+  setResult(result: Result): Promise<void>;     // root reporter only (TW-RES-003)
+  done(): Promise<void>;
+  readonly cancelled: boolean;                  // last known, free to poll (TW-CANCEL-004)
+  wasAborted(): Promise<boolean>;               // forces a store read
+}
+```
+
+- **TW-TS-014** `operation()` MUST take its body as a callback and MUST write the terminal state on
+  the way out of it, whether the callback returned or threw, exactly as the Python context manager
+  does. A `Symbol.asyncDispose` form MAY additionally be exported as sugar, but MUST NOT be the only
+  form: `await using` needs TypeScript 5.2 and a runtime with explicit resource management, and
+  TW-SYM-001 does not get to depend on either. Test:
+  `operation.spec.ts::a throwing body still writes failed and drops the entry`.
+- **TW-TS-015** The TypeScript `Reporter` MUST implement TW-THR-001..006 and TW-NEST-001..014 with
+  the same numbers and the same guarantees as Python's, against an injected clock. Throttling MUST
+  check the clock inline in `set()` (TW-THR-002); a `setInterval` flush MUST NOT be relied on, for
+  the same reason Python may not rely on a background task — a tight loop that never yields would
+  otherwise commit nothing. Test: `reporter.spec.ts::tight loop without await still commits`.
+- **TW-TS-016** `operation()` MUST take an already-resolved `ns` string (TW-AMB-007) and MUST NOT
+  accept a user, a request, a session object or a resolver. In a browser with no server there is
+  still exactly one namespace; the application names it.
+- **TW-TS-017** The TypeScript core MUST NOT export an ambient reporter proxy, a `progress` singleton
+  or an `ask` free function bound to implicit context (TW-SYM-004).
 
 - **TW-TS-011** The module-level factory MUST be exported as **`new_token`**, not `newToken`, keeping
   the Python name verbatim exactly as `route_rest` and `use_taskwire` do. There MUST be no
