@@ -216,3 +216,248 @@ defensible and they disagree with each other, so one of them will surprise someb
 I left both as they are: `Text`'s behaviour is consistent with the `t()` factory, which already
 normalises empty params to absent, and no fixture or rule distinguishes the two cases. M3 introduces
 dialog `params` and is the point at which this should be settled deliberately rather than inherited.
+
+
+---
+
+## taskwire-m1b-ts-client-core.md §5 vs taskwire-spec.md §5.5 — `ProgressState` names two different things
+
+**What I needed:** a type for `Operation.progress`.
+
+**What the brief/spec say:** §5.5 declares `readonly progress: ProgressState | null` and imports
+`type ProgressState` from `'taskwire'`, so there `ProgressState` is the *progress document*. `ts/wire.ts`
+(M1s) already uses `ProgressState` for the closed state vocabulary (`queued | running | ...`) and calls the
+document `Progress`, matching Python's `models.py`.
+
+**What I assumed:** `wire.ts` wins, because TW-SYM-002 makes the two languages one protocol and Python's
+document is `Progress`. `Operation.progress` is therefore `Progress | null`, and `ProgressState` stays the
+state union. M1c's `use_operation` (`progress: Ref<ProgressState | null>`) has the same collision and must
+resolve it the same way, or the spec's §5.5 should be corrected to say `Progress`.
+
+---
+
+## taskwire-spec.md §5.5 — `Subscription` and `ClientTransport` are named but never declared
+
+**What I needed:** the return type of `subscribe()` and the parameter type of `attachTransport()`.
+
+**What the spec says:** `subscribe(token: string): Subscription` and
+`attachTransport(t: ClientTransport): void`. Neither shape appears anywhere in the specification.
+
+**What I assumed:** the smallest shapes that satisfy the rules that *are* stated. `Subscription` is
+`{ token, snapshot, onSnapshot, onError, onClose, close }` — snapshots as they are read and nothing else,
+because TW-TS-007 says only that it keeps polling. `ClientTransport` is
+`{ subscribe(onEnvelope), watch?(overrides), close?() }`, taking the envelope direction from TW-CORE-009
+(no envelope travels client to server) and `watch` from TW-DEL/TW-REG-019. **M5 owns `ClientTransport` and
+should be free to change it**; `attachTransport()` in M1b only stores what it is given and wires nothing,
+so no behaviour depends on the guess.
+
+---
+
+## taskwire-m1b-ts-client-core.md §5 — what settles a `track()` handle's promise
+
+**What I needed:** `track<T>(token): Operation<T>` is a `PromiseLike<T>` with no `fn` behind it, so
+something has to settle it.
+
+**What the brief says:** only what settles a `run()` handle (TW-TS-002: `fn`'s own promise). It is silent
+on `track()`.
+
+**What I assumed:** the terminal state settles it — `done` resolves with `undefined`, `failed` and
+`cancelled` reject with an `OperationFailed` carrying `progress.error`. A disappearance *after* the
+operation was seen with no terminal state (a TTL expiry) rejects with `OperationGone`; the
+"never written, `fn` settled" case of TW-TS-004 resolves, because nothing failed. A `run()` handle is
+untouched by all of this: TW-TS-002 says `await run(fn)` is `await fn(...)`, and an operation that ends
+`failed` after the start request succeeded must not retroactively reject what the caller already has.
+
+---
+
+## taskwire-m1b-ts-client-core.md §5 — an inert `collect(): Promise<Result>`
+
+**What I needed:** a body for `collect()`, which is M7's.
+
+**What the brief says:** members belonging to a later milestone "MUST exist now with these signatures and
+be inert — resolving promises, `null` refs, no-op voids".
+
+**What I assumed:** `Promise<Result>` has no inert resolution — there is no `Result` to resolve with when
+none has been written. `collect()` resolves with `progress.result` when there is one and rejects when there
+is not, which is the shape of the `409` TW-REST-008 specifies, so the call site written today is the call
+site M7 keeps.
+
+---
+
+## taskwire-m1b-ts-client-core.md §6 — `previousDelay` is ambiguous in `nextDelay`
+
+**What I needed:** to know whether `nextDelay({ ..., previousDelay })` is fed the previous *emitted*
+(jittered) delay or the previous *ladder* interval.
+
+**What the brief says:** `nextDelay({ anyActive, anyDialogOpen, revChanged, previousDelay, pollAfterMs },
+draw)`, with no statement either way.
+
+**What I assumed:** the previous **un-jittered ladder interval**. Feeding the jittered emission back would
+compound the jitter — a run of unlucky draws would climb 20 % faster than ×1.5 and a run of lucky ones
+would never reach the ceiling. `PollLadder` carries the value so a scheduler cannot get it wrong, and
+`poll.spec.ts::climbs on the un-jittered ladder, so unlucky draws cannot compound` pins it.
+
+---
+
+## taskwire-m1b-ts-client-core.md — three client behaviours the brief does not specify
+
+**The first poll.** Nothing says whether watching a token polls immediately or after an interval. I
+schedule the first poll one base interval out: TW-REST-010 says a client MUST NOT poll sooner than its base
+interval, and an immediate poll would also race the very request that starts the operation.
+
+**Absence and the ladder.** A `404` is "no change", so the ladder backs off while waiting for a document
+that does not exist yet, and `anyActive` is treated as `true` while absent — an operation is expected, and
+dropping to the 5 s heartbeat would make a bar that should appear in half a second take five.
+
+**`use_taskwire()` identity.** The spec does not say whether it is a singleton, a factory or memoised. It
+is memoised per `(axios instance, basePath)`: it installs a request interceptor, and a composable called
+from twenty components must not install twenty of them. `use_taskwire()` with no arguments returns the
+client already in use. `Taskwire.dispose()` is mine and is not in §5.5 — a page that tears the client down
+needs the interceptor back off the instance and the timers stopped.
+
+---
+
+## taskwire-m1b-ts-client-core.md §8 — `grep -rn "newToken" ts/` does not return nothing
+
+The *Done when* checklist requires that grep to be empty. It is not: `ts/operation-scope.ts` (M1s) explains
+TW-TS-011 in a doc comment that spells the forbidden name, and `ts/client.spec.ts` must spell it to assert
+it is absent. No **code** in `ts/` contains it. `client.spec.ts::new_token is the only spelling` strips
+comments before scanning, which is the check the item was reaching for — a static assertion that fires on
+its own explanation is one nobody keeps. The checklist item should say "no code", or the comment should be
+reworded.
+
+---
+
+## taskwire-m1b-ts-client-core.md §3 — `ts/index.ts` was not mine to write
+
+The file table lists `ts/index.ts` (the public exports of §5.5). I was assigned `poll.ts`, `poll.spec.ts`,
+`operation.ts`, `taskwire.ts` and `client.spec.ts` only, and was told not to touch another agent's files.
+`ts/index.ts` still exports `VERSION` alone, so **nothing this milestone wrote is reachable from the package
+entry point yet**. Whoever closes M1b or opens M1c must add the exports; the `taskwire` and `operation`
+modules are otherwise complete.
+
+---
+
+## taskwire-m1c-ts-register-and-vue.md §6 — when does the register poll start?
+
+**What I needed:** something has to decide when `GET {prefix}/operations` begins.
+
+**What the brief says:** nothing. It describes the loop, the ladder and the payload, but never says
+whether a client polls the register from construction or on demand.
+
+**What I assumed:** on demand. Reading `tw.register`, `tw.aggregate` or `tw.selected`, or calling
+`onRegisterChange()`, starts the loop; `tw.operations` and `onOperationsChange()` deliberately do not,
+because the visible collection is local policy over handles this tab already has and is never
+populated from the register (TW-REG-021). An application that only ever calls `run()` therefore polls
+its own tokens and never a second endpoint. The cost is that the first read of `tw.register` is empty
+and the data arrives one base interval later — invisible under the reactive collections that are the
+documented default (TW-TS-008), and visible to a test, which must touch the register before advancing
+its clock.
+
+---
+
+## taskwire-m1c-ts-register-and-vue.md §4 — what a departing entry does to its handle
+
+**What I needed:** a register entry vanishes from the payload. The handle behind it has to do
+something.
+
+**What the brief says:** that the entry leaves `tw.register`, and (§4.3) that `close()`/dispose
+removes it from the visible collection. It does not say what settles the handle.
+
+**What I assumed:** the loop closes **only the handles it minted itself** — the ones adopted for
+payload rows the tab never started or tracked — and leaves every other handle to its own poller,
+which is the party that can tell a terminal state from a disappearance (TW-TS-004). A closed adopted
+handle does not settle its promise: a departure is "terminal with nothing to collect" (TW-REG-007),
+and inventing `done` or `failed` from an absence would be a guess. Nobody awaits an adopted handle —
+it was minted from a payload row, not from a call.
+
+A visible entry that departs without any terminal state ever having been read leaves the visible
+collection at once rather than lingering: `progressUi.failureLinger` holds a row the client **saw**
+fail (TW-REG-015), and for a register-only row the client never sees the failure, only the absence.
+
+---
+
+## taskwire-m1c-ts-register-and-vue.md §5 — TW-TS-012 — a pinned selection whose entry leaves
+
+**What I needed:** `select(token)` pins an entry; that entry then leaves the register.
+
+**What the brief says:** `select(token)` pins a different one, `select(null)` returns to FIFO, and the
+FIFO default advances on its own. It is silent about a pin that outlives its operation.
+
+**What I assumed:** the pin is dropped and FIFO resumes. A footer that went permanently blank because
+the operation an application pinned two minutes ago finished is worse than one that advances, and a
+register entry never returns, so "drop the pin" and "fall back while absent" are the same behaviour.
+
+---
+
+## taskwire-m1c-ts-register-and-vue.md §4 — the order of `tw.operations`
+
+**What I needed:** an order for the visible subset.
+
+**What the brief says:** TW-REG-005 orders `tw.register`. Nothing orders `tw.operations`.
+
+**What I assumed:** the order entries joined it — a `Map`'s insertion order. A visible row is
+something a user is watching, and re-sorting the list under them every time an entry's
+`needs_attention` flips would move the row they were reading. `tw.register` is where the specified
+sort applies.
+
+---
+
+## taskwire-spec.md §5.5 — `use_operations()` and `use_register()` take no arguments
+
+**What I needed:** a way for a component to bind to a client that is not the memoised default —
+which is the same need `use_operation(token | { token, basePath, axiosInstance })` already has.
+
+**What the spec says:** `use_operations(): Ref<Operation<unknown>[]>` and `use_register(): {...}`,
+with no parameters at all.
+
+**What I assumed:** an **optional** `TaskwireOptions` argument on both, mirroring `use_operation`'s
+object form and `use_taskwire`'s. Called with no arguments they behave exactly as declared, so no call
+site written against the spec changes.
+
+---
+
+## taskwire-spec.md §5.5 — `Operation.hide()` cannot dismiss a lingering row
+
+**What I needed:** the ✕ on a failed row that `progressUi.failureLinger` is holding on screen.
+
+**What the spec says:** §4.3 makes `hide()` one of the ways an entry leaves the visible collection,
+and §5.5 puts `hide()` on `Operation`.
+
+**What I found:** a lingering row is by definition a **closed** handle — the terminal state settles
+and closes it — and `Operation.close()` (M1b) drops its host reference, so `op.hide()` on a corpse
+reaches nothing. `tw.hide(token)` still works and is what `register.spec.ts` uses.
+
+**What I assumed:** this is a defect in `operation.ts` rather than in the register, and it is not mine
+to fix — `close()` nulls the host so `release()` cannot run twice, which is a rule worth keeping. The
+narrow fix is for `close()` to keep the host for the two purely-local members (`show`/`hide`) or for
+`Operation` to remember its client separately. **M7b's `TaskwireFooter` needs one of the two**, or its
+dismiss button has to call `tw.hide(op.token)`.
+
+---
+
+## taskwire-m1b-ts-client-core.md — `poll.spec.ts::confines the ladder to the poller`
+
+**What I needed:** `register.ts` schedules the register poll and must use M1b's ladder, because
+TW-REST-011 says the register poll and the single-token poll are the same ladder and the brief says
+in as many words not to fork it.
+
+**What the test said:** `expect(importers).toEqual(['taskwire.ts'])` — exactly one importer of
+`./poll` in all of `ts/`.
+
+**What I did:** widened it to `['register.ts', 'taskwire.ts']` and said why in the test. This is the
+one edit M1c made to another milestone's file, and the rule it guards (TW-THR-007 — nothing derives a
+duration from the cadence) is unchanged: both importers are schedulers, and `ts/index.ts` deliberately
+does **not** re-export the ladder, so no application can reach it at all.
+
+---
+
+## taskwire-m1c-ts-register-and-vue.md §8 — the `weights|average|mean` grep cannot return nothing
+
+The *Done when* checklist requires `grep -rniE "weights|average|mean" ts/ --include='*.ts' | grep -v
+spec` to be empty. It is not, and cannot be: `Reporter.split(...weights: number[])` is §5.5a's own
+signature (TW-NEST subdivides *one* operation's bar, which is a different thing entirely from an
+aggregate), and "means", "meant" and "meaning" are ordinary English that appears in five files' prose.
+`aggregate.spec.ts::aggregate carries no percent field` scans for the arithmetic instead —
+`averag|weighted|percentSum|sumOfPercent|percentOf(` over comment-stripped sources — which is what the
+item was reaching for. The checklist should name the arithmetic, not the word.

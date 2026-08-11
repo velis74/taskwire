@@ -34,6 +34,7 @@ from taskwire.models import (
     Input,
     INPUT_TYPES,
     now_iso,
+    OperationSummary,
     Progress,
     ProgressState,
     PUSHED_KINDS,
@@ -478,3 +479,97 @@ def test_envelope_kinds_are_closed() -> None:
 
     with pytest.raises(ValueError, match="not a valid EnvelopeKind"):
         Envelope.from_dict({"v": 1, "token": "t", "rev": 1786439700123, "kind": "command", "body": {}})
+
+
+# --------------------------------------------------------------- TW-CORE-010, the insertion direction
+# The corpus invariant above deletes every explicit null and asserts the parse is unchanged. That
+# catches a parser which *needs* a null, but not one which mishandles a null it is *given* - and the
+# whole family of defects here was of the second kind. `dict.get(key, default)` fires only on a
+# MISSING key, so an explicit null sails straight past the default and lands in the model.
+#
+# Seven fields had it. The corpus cannot grow a fixture for each without asserting that a null is the
+# canonical spelling, which it is not, so they are enumerated.
+
+_PROGRESS = {
+    "state": "running",
+    "percent": None,
+    "result_kind": None,
+    "origin_session": "ns",
+    "origin_connection": None,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-01T00:00:00.000Z",
+    "data": {},
+}
+_SNAPSHOT = {"token": "t", "rev": 1, "progress": _PROGRESS, "dialogs": [], "server_time": "2026-01-01T00:00:00.000Z"}
+_PROGRESS_NO_SESSION = {k: v for k, v in _PROGRESS.items() if k != "origin_session"}
+
+
+@pytest.mark.parametrize(
+    ("model", "absent", "nulled"),
+    [
+        pytest.param(
+            Snapshot,
+            _SNAPSHOT,
+            {**_SNAPSHOT, "v": None, "poll_after_ms": None, "cancel_requested": None},
+            id="snapshot-v-poll_after_ms-cancel_requested",
+        ),
+        pytest.param(
+            Register,
+            {"operations": [], "server_time": "2026-01-01T00:00:00.000Z"},
+            {"operations": [], "server_time": "2026-01-01T00:00:00.000Z", "v": None, "poll_after_ms": None},
+            id="register-v-poll_after_ms",
+        ),
+        pytest.param(
+            Envelope,
+            {"token": "t", "rev": 1, "kind": "progress", "body": {}},
+            {"token": "t", "rev": 1, "kind": "progress", "body": {}, "v": None},
+            id="envelope-v",
+        ),
+        pytest.param(
+            Progress,
+            _PROGRESS_NO_SESSION,
+            {**_PROGRESS_NO_SESSION, "origin_session": None},
+            id="progress-origin_session",
+        ),
+        pytest.param(
+            Error,
+            {"code": "c", "message": {}},
+            {"code": "c", "message": {}, "retryable": None},
+            id="error-retryable",
+        ),
+        pytest.param(
+            DialogRequest,
+            {"id": "i", "dialog_id": "d"},
+            {"id": "i", "dialog_id": "d", "state": None},
+            id="dialog_request-state",
+        ),
+        pytest.param(
+            OperationSummary,
+            {"token": "t", "snapshot": _SNAPSHOT, "origin_session": "ns"},
+            {"token": "t", "snapshot": _SNAPSHOT, "origin_session": "ns", "progress_delivery": None},
+            id="operation_summary-progress_delivery",
+        ),
+    ],
+)
+def test_an_explicit_null_parses_exactly_as_an_absent_key(model, absent, nulled):
+    """TW-CORE-010: "Absent optional fields MAY be omitted or `null` interchangeably".
+
+    `DialogRequest.state` is the loudest of the seven - it used to raise `ValueError` on an explicit
+    null - but `OperationSummary.progress_delivery` is the one with silent damage: a null parsed to
+    `False`, and `False` there suppresses an operation's progress bar (TW-DEL-014) on a document that
+    never meant to say anything about delivery.
+    """
+    assert model.from_dict(absent).to_dict() == model.from_dict(nulled).to_dict()
+
+
+def test_progress_delivery_false_is_not_confused_with_absent():
+    """The counterexample that rules out the obvious fix.
+
+    Six of the seven are repaired with `raw.get(k) or default`. `progress_delivery` cannot be: its
+    default is `True`, so `or` would read a deliberate `False` as "unset" and flip it - turning a
+    suppressed operation back on (TW-DEL-014). It needs the null tested explicitly.
+    """
+    summary = OperationSummary.from_dict(
+        {"token": "t", "snapshot": _SNAPSHOT, "origin_session": "ns", "progress_delivery": False}
+    )
+    assert summary.progress_delivery is False

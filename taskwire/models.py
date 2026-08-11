@@ -158,7 +158,7 @@ class Error:
         return cls(
             code=raw["code"],
             message=Text.from_dict(raw.get("message")) or Text(),
-            retryable=bool(raw.get("retryable", False)),
+            retryable=bool(raw.get("retryable") or False),
         )
 
 
@@ -398,7 +398,7 @@ class DialogRequest:
             buttons=[Button.from_dict(b) for b in raw.get("buttons") or []],
             inputs=[Input.from_dict(i) for i in raw.get("inputs") or []],
             params=raw.get("params"),
-            state=DialogState(raw.get("state", "open")),
+            state=DialogState(raw.get("state") or "open"),
             created_at=raw.get("created_at") or now_iso(),
             reply=DialogReply.from_dict(raw.get("reply")),
         )
@@ -463,7 +463,7 @@ class Progress:
             error=Error.from_dict(raw.get("error")),
             result=Result.from_dict(raw.get("result")),
             result_kind=raw.get("result_kind"),
-            origin_session=raw.get("origin_session", ""),
+            origin_session=raw.get("origin_session") or "",
             origin_connection=raw.get("origin_connection"),
             created_at=raw.get("created_at") or now_iso(),
             updated_at=raw.get("updated_at") or now_iso(),
@@ -510,14 +510,14 @@ class Snapshot:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Snapshot:
         return cls(
-            v=raw.get("v", WIRE_VERSION),
+            v=raw.get("v") or WIRE_VERSION,
             token=raw["token"],
             rev=raw["rev"],
             progress=Progress.from_dict(raw["progress"]),
             dialogs=[DialogRequest.from_dict(d) for d in raw.get("dialogs") or []],
-            cancel_requested=bool(raw.get("cancel_requested", False)),
+            cancel_requested=bool(raw.get("cancel_requested") or False),
             server_time=raw.get("server_time") or now_iso(),
-            poll_after_ms=raw.get("poll_after_ms", 5000),
+            poll_after_ms=raw.get("poll_after_ms") or 5000,
         )
 
     @property
@@ -567,10 +567,10 @@ class OperationSummary:
             token=raw["token"],
             snapshot=Snapshot.from_dict(raw["snapshot"]),
             result_kind=raw.get("result_kind"),
-            origin_session=raw.get("origin_session", ""),
+            origin_session=raw.get("origin_session") or "",
             result=Result.from_dict(raw.get("result")),
             needs_attention=bool(raw.get("needs_attention", False)),
-            progress_delivery=bool(raw.get("progress_delivery", True)),
+            progress_delivery=(True if raw.get("progress_delivery") is None else bool(raw["progress_delivery"])),
         )
 
 
@@ -638,11 +638,11 @@ class Register:
     def from_dict(cls, raw: dict[str, Any]) -> Register:
         raw_aggregate = raw.get("aggregate")
         return cls(
-            v=raw.get("v", WIRE_VERSION),
+            v=raw.get("v") or WIRE_VERSION,
             operations=[OperationSummary.from_dict(o) for o in raw.get("operations") or []],
             aggregate=Aggregate.from_dict(raw_aggregate) if raw_aggregate else None,
             server_time=raw.get("server_time") or now_iso(),
-            poll_after_ms=raw.get("poll_after_ms", 5000),
+            poll_after_ms=raw.get("poll_after_ms") or 5000,
         )
 
 
@@ -673,7 +673,7 @@ class Envelope:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Envelope:
         return cls(
-            v=raw.get("v", WIRE_VERSION),
+            v=raw.get("v") or WIRE_VERSION,
             token=raw["token"],
             rev=raw["rev"],
             kind=EnvelopeKind(raw["kind"]),
