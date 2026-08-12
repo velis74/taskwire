@@ -56,6 +56,47 @@ remaining subscribers being called.
 The same is available in TypeScript, which is what makes a browser-only application a first-class
 deployment rather than a degraded one.
 
+## Mounting the socket
+
+Two calls, one at handshake and one on the client. **Both halves are needed**: without the server
+handler, envelopes still push down but the client's calls back up reach nothing — and `watch` is one
+of those. A client that cannot `watch` never obtains a connection id, so a private operation's
+progress reaches no socket and muting silently does nothing.
+
+```python
+# server, once per connection
+from muxws import PeerRegistry
+from taskwire.contrib.muxws import MuxwsTransport, serve_peer, tag_peer
+
+registry = PeerRegistry()
+taskwire.configure(store=..., transport=MuxwsTransport(registry), session_resolver=session_resolver)
+
+async def on_socket(peer, request):
+    ns = session_resolver(request)      # the same resolver REST uses
+    tag_peer(peer, ns)
+    registry.add(peer)
+    await serve_peer(peer, ns)
+```
+
+```ts
+// client, once
+import { connect } from 'muxws';
+import { attachMuxws } from 'taskwire/muxws';
+
+const socket = attachMuxws(tw, await connect('wss://example.test/ws'));
+await socket.announce();               // obtain this socket's connection id
+```
+
+After a login or a `migrate_namespace`, a socket whose tag names the old namespace is **closed with
+`goaway`, never retagged** — `goaway_if_stale(peer, current_ns)` does it. Retagging would leave a
+socket authorised for a namespace nobody re-checked, and the client's next register read under the
+new namespace is the whole of the recovery.
+
+Replying to a dialog over the socket is **optional and off by default**
+(`serve_peer(..., allow_socket_replies=True)`). REST is the recommended reply path: it is the one
+that works with no socket at all, and the reply path is the one place where "works everywhere" beats
+"arrives sooner".
+
 ## Polling, and why the client can only be slowed down
 
 The cadence: 400 ms base while anything is `queued` or `running`; ×1.5 on no change up to a 5 s

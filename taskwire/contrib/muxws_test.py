@@ -423,3 +423,123 @@ async def test_a_suppressed_operation_stays_in_the_register_in_full() -> None:
             assert entry.snapshot.progress.percent == 30.0, "with its state, not a redacted stub"
     finally:
         taskwire.settings.progress_interval = previous
+
+
+# ------------------------------------------------------------------ the server handler
+
+
+class FakeStream:
+    """A muxws `Stream` reduced to the one call this handler makes."""
+
+    def __init__(self) -> None:
+        self.replies: list = []
+
+    def reply(self, payload, **_kwargs) -> None:
+        self.replies.append(payload)
+
+
+class ServingPeer(FakePeer):
+    """A peer that remembers its stream handler, so a test can drive one through it."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.handler = None
+        self.closed_with: list = []
+
+    def on_stream(self, handler) -> None:
+        self.handler = handler
+
+    async def close(self, **kwargs) -> None:
+        self.closed_with.append(kwargs)
+
+    async def deliver(self, payload) -> FakeStream:
+        stream = FakeStream()
+        await self.handler(payload, stream)
+        return stream
+
+
+async def test_the_socket_carries_watch_up_and_answers_it():
+    """Without this handler the socket is half a socket.
+
+    Envelopes push down, but the client's calls back up reach nothing - and `watch` is one of those.
+    A client that cannot `watch` never obtains a connection id, so `origin_connection` stays null, a
+    private operation's progress reaches no socket (TW-PRIV-003), and muting silently does nothing.
+    """
+    from taskwire.contrib.muxws import serve_peer
+    from taskwire.delivery import overrides_of
+
+    peer = ServingPeer("p")
+    tag_peer(peer, "acct-42")
+    await serve_peer(peer, "acct-42")
+
+    reply = (await peer.deliver({"kind": "watch", "overrides": {"tok": False}})).replies[0]
+    assert reply["status"] == 0
+    assert isinstance(reply["connection"], str), "the connection id comes back over the socket"
+    assert overrides_of(peer) == {"tok": False}, "and the declaration reached the peer's own map"
+
+
+async def test_socket_dialog_replies_are_off_by_default():
+    """TW-WS-008: optional, and off by default.
+
+    REST is the recommended reply path because it is the one that works with no socket at all, and
+    the reply path is the one place where "works everywhere" beats "arrives sooner".
+    """
+    from taskwire.contrib.muxws import serve_peer
+
+    peer = ServingPeer("p")
+    tag_peer(peer, "acct-42")
+    await serve_peer(peer, "acct-42")
+
+    refused = (await peer.deliver({"kind": "dialog.reply", "token": "t", "id": "d"})).replies[0]
+    assert refused["status"] == 2
+    assert "disabled" in refused["detail"]
+
+
+async def test_an_unknown_kind_is_answered_rather_than_ignored():
+    """TW-CORE-007: the vocabulary is closed, and silence would leave a client waiting on a stream."""
+    from taskwire.contrib.muxws import serve_peer
+
+    peer = ServingPeer("p")
+    tag_peer(peer, "acct-42")
+    await serve_peer(peer, "acct-42")
+
+    answered = (await peer.deliver({"kind": "command", "do": "something"})).replies[0]
+    assert answered["status"] == 2
+    assert "command" in answered["detail"]
+
+
+async def test_a_stale_socket_is_closed_rather_than_retagged():
+    """TW-WS-007 / TW-AMB-012: `goaway`, never a retag.
+
+    Retagging would leave a socket authorised for a namespace nobody re-checked. The client's next
+    register read under the new namespace is the whole of the recovery - there is nothing worth
+    preserving by keeping the connection.
+    """
+    from taskwire.contrib.muxws import goaway_if_stale
+
+    peer = ServingPeer("p")
+    tag_peer(peer, "anon-session")
+
+    assert await goaway_if_stale(peer, "anon-session") is False
+    assert peer.closed_with == []
+
+    assert await goaway_if_stale(peer, "account-42") is True, "a changed identity must close the socket"
+    assert peer.closed_with, "closed with goaway"
+    assert peer.tags[SESSION_TAG] == "anon-session", "and NOT retagged"
+
+
+async def test_the_socket_reply_path_derives_the_session_from_the_tag():
+    """TW-WS-007: never from a value the client put in the message.
+
+    A client that could name its own namespace over the socket would have found a way around the one
+    authorization scope the system has (TW-SEC-003).
+    """
+    import inspect
+
+    from taskwire.contrib import muxws as module
+
+    source = inspect.getsource(module.serve_peer)
+    body = "\n".join(line for line in source.splitlines() if not line.strip().startswith("#"))
+    assert "Client(session=session" in body, "the session comes from the handler's own argument"
+    assert 'payload.get("session")' not in body, "and never from the message"
+    assert 'payload.get("ns")' not in body

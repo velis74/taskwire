@@ -218,3 +218,89 @@ def prune_override(peers: list[Any], token: str) -> None:
         tags = getattr(peer, "tags", None)
         if isinstance(tags, dict) and isinstance(tags.get(OVERRIDES_TAG), dict):
             tags[OVERRIDES_TAG].pop(token, None)
+
+
+# --------------------------------------------------------------------------- the server handler
+
+
+async def serve_peer(peer: Any, session: str, *, allow_socket_replies: bool = False) -> None:
+    """Mount taskwire on one connected muxws peer. **Call this once, at handshake.**
+
+    Without it the socket is half a socket: envelopes still push *down*, but the client's calls back
+    *up* reach nothing - and `watch` is one of those. A client that cannot `watch` never obtains a
+    connection id, and without a connection id `origin_connection` stays null, so a **private
+    operation's progress reaches no socket at all** (TW-PRIV-003) and `progress_delivery` falls back
+    to the predicate alone. Muting would silently do nothing.
+
+    ```python
+    from muxws import PeerRegistry
+    from taskwire.contrib.muxws import MuxwsTransport, serve_peer, tag_peer
+
+    registry = PeerRegistry()
+    taskwire.configure(store=..., transport=MuxwsTransport(registry), session_resolver=...)
+
+    async def on_socket(peer):
+        ns = session_resolver(request)          # the same resolver REST uses (TW-WS-007)
+        tag_peer(peer, ns)
+        registry.add(peer)
+        await serve_peer(peer, ns)
+    ```
+
+    `session` is the value `session_resolver` returned for this socket, and it is the only
+    authorization scope this handler has (TW-SEC-003). It is **not** re-derived from anything the
+    client sent: a namespace that crossed a boundary travels as inert data (TW-AMB-008).
+
+    `allow_socket_replies` is **off by default** (TW-WS-008). REST is the recommended reply path
+    because it is the one that works with no socket at all, and the reply path is the one place where
+    "works everywhere" beats "arrives sooner".
+    """
+    from ..delivery import Client
+    from ..rest import reply_to_dialog
+
+    async def on_stream(payload: Any, stream: Any) -> None:
+        kind = (payload or {}).get("kind") if isinstance(payload, dict) else None
+
+        if kind == "watch":
+            # TW-DEL-007: this reads no store, in either direction. An override for a token that
+            # does not exist is accepted and inert - putting a per-tab display preference on the
+            # path of every socket's first message would be a poor trade.
+            stream.reply(handle_watch(peer, payload))
+            return
+
+        if kind == "dialog.reply":
+            if not allow_socket_replies:
+                stream.reply({"v": 1, "status": 2, "detail": "socket replies are disabled"})
+                return
+            # The session is derived the same way REST derives it, from the tag this handler was
+            # given - never from a value the client put in the message (TW-WS-007).
+            status, body = await reply_to_dialog(
+                Client(session=session, connection=connection_id(peer), peer=peer),
+                str(payload.get("token", "")),
+                str(payload.get("id", "")),
+                {"button": payload.get("button"), "values": payload.get("values") or {}},
+            )
+            stream.reply({"v": 1, "status": status, "detail": body})
+            return
+
+        # TW-CORE-007: the wire vocabulary is closed. An unknown kind is answered rather than
+        # ignored, so a client learns immediately instead of waiting on a stream nobody will end.
+        stream.reply({"v": 1, "status": 2, "detail": f"unknown kind {kind!r}"})
+
+    peer.on_stream(on_stream)
+
+
+async def goaway_if_stale(peer: Any, current_session: str | None) -> bool:
+    """Close a socket whose session tag no longer names the current identity (TW-WS-007, TW-AMB-012).
+
+    After a login or a `migrate_namespace`, a peer tagged with the old namespace must be **closed
+    with `goaway`, not retagged**. Retagging would leave a socket authorised for a namespace nobody
+    re-checked, and the client's next register read under the new namespace is the whole of the
+    recovery - there is nothing to preserve by keeping the connection.
+
+    Returns True when it closed the peer.
+    """
+    tagged = getattr(peer, "tags", {}).get(SESSION_TAG)
+    if current_session is not None and tagged == current_session:
+        return False
+    await peer.close(reason="taskwire: session changed")
+    return True
