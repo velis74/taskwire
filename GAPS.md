@@ -461,3 +461,52 @@ aggregate), and "means", "meant" and "meaning" are ordinary English that appears
 `aggregate.spec.ts::aggregate carries no percent field` scans for the arithmetic instead —
 `averag|weighted|percentSum|sumOfPercent|percentOf(` over comment-stripped sources — which is what the
 item was reaching for. The checklist should name the arithmetic, not the word.
+
+---
+
+# What is NOT built
+
+Recorded plainly, because a report that rounds up is worse than one that admits a hole.
+
+## `taskwire/contrib/celery.py` — the worker entry — NOT BUILT
+
+M4 delivered `RedisStore`, the `twx:{ns}` backplane and the reader lifecycle, all verified against a
+real Redis. It did **not** deliver the Celery worker entry that owns the terminal write, including
+the `dispatch_failed` and `dialog_timeout` error codes (TW-CELERY-*).
+
+Everything it would sit on exists: `operation()` already works as a synchronous context manager on a
+private event loop it owns for that thread (TW-API-002), `mark_queued` / `mark_failed` are the web
+side's writes, and `Error` already reserves both codes. What is missing is the decorator that binds
+them to a Celery task and the test that a worker killed by its own execution timeout lands as
+`failed` with `dialog_timeout` and `retryable: true` (TW-DLG-006).
+
+## `ts/vuetify.ts` — the Vuetify deliverables (M7b) — NOT BUILT
+
+Still `export {}`. The `/vuetify` subpath, the dialog adapter, `TaskwireFooter`, and the three tab
+hints (`progressUi.delay`, `dialogAdoptDelay`, `failureLinger` — TW-TAB-002/003/004/005) are all
+outstanding. The rules they implement are specified and the client surface they need
+(`tw.register`, `tw.selected`, `Operation.dialog`, `startedHere`) is finished and tested.
+
+Note the one rule most easily lost here: `TaskwireFooter` draws **one selected operation's own
+percentage** and never an aggregate one (TW-REG-013), because there is no unit in which two
+operations' percentages are commensurable.
+
+## `ts/muxws.ts` — the TypeScript socket client (M5's client half) — NOT BUILT
+
+Still `export {}`. The Python server side of the transport is done and tested; the browser side that
+would attach it via `tw.attachTransport()` is not. `attachTransport` exists and stores what it is
+given, so nothing needs redesigning — but no envelope reaches a client over a socket today, and the
+polling path is doing all the work.
+
+## The TypeScript half of M8 — PARTIAL
+
+`mute()` / `unmute()` / `clearOverride()` exist on the client and are no-ops with no transport
+attached, which is what TW-DEL-018 requires. What is missing is the part that only matters once
+`ts/muxws.ts` exists: actually sending the `watch` message and reading the `{v, status, connection}`
+reply. The server half is complete and tested.
+
+## Coverage of the two languages
+
+Python 202 tests (5 skipped: they drive an injected clock, and Redis owns its own expiry).
+TypeScript 314 tests. Both lint- and type-clean; the Python core still imports none of redis,
+fastapi, celery or muxws.

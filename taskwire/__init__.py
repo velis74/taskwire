@@ -16,6 +16,13 @@ __version__ = "0.1.0"
 
 from .ambient import ask, current_reporter, progress
 from .conformance import run_conformance
+from .decorators import (
+    declared_result_kind,
+    declared_result_params,
+    dialog_result,
+    downloadable_result,
+    panel_result,
+)
 from .delivery import Client, OperationRef
 from .models import (
     Aggregate,
@@ -101,6 +108,11 @@ __all__ = [
     "aggregate",
     "build_register",
     "check_taskwire_readers",
+    "dialog_result",
+    "downloadable_result",
+    "panel_result",
+    "declared_result_kind",
+    "declared_result_params",
     "configure",
     "configured",
     "key",

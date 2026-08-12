@@ -302,3 +302,36 @@ async def test_the_three_result_shapes_round_trip():
 
     for result in (download, panel, dialog):
         assert Result.from_dict(result.to_dict()) == result
+
+
+def test_the_result_decorators_are_sugar_over_result_kind_and_nothing_else():
+    """TW-API-005: they add no mechanism the keyword does not already have.
+
+    An application declares its own kind by passing `result_kind` directly, and taskwire never
+    validates the string against a known set - the frontend maps `kind` to a component exactly as it
+    maps `dialog_id`, so a new kind is a frontend change rather than a protocol one.
+    """
+    from taskwire import declared_result_kind, dialog_result, downloadable_result, panel_result
+    from taskwire.decorators import declared_result_params
+
+    @downloadable_result
+    def export_csv() -> str:
+        return "done"
+
+    @panel_result("acme.import_report")
+    def import_rows() -> str:
+        return "done"
+
+    @dialog_result("acme.finished")
+    def notify_user() -> str:
+        return "done"
+
+    assert declared_result_kind(export_csv) == "taskwire.download"
+    assert declared_result_kind(import_rows) == "acme.import_report"
+    assert declared_result_kind(notify_user) == "taskwire.dialog"
+    assert declared_result_params(notify_user) == {"dialog_id": "acme.finished"}
+
+    # Sugar means the wrapped callable still is what it was.
+    assert export_csv() == "done"
+    assert import_rows.__name__ == "import_rows"
+    assert declared_result_kind(lambda: None) is None, "an undecorated callable declares nothing"
