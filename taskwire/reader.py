@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from typing import Any
+
 from .models import Envelope
 from .settings import configured, settings
 
@@ -38,18 +40,33 @@ async def dispatch(ns: str, envelope: Envelope) -> None:
         logger.debug("taskwire: dropped a push for %s", ns, exc_info=True)
 
 
-async def start_taskwire_reader() -> None:
-    """Reader lifecycle (§5.4). In-process delivery needs no long-lived reader.
+_running: list[Any] = []
+"""The readers started in this process. A list rather than a flag, because a process may hold more
+than one store - a test suite certainly does."""
 
-    `MemoryStore.publish` calls `dispatch` synchronously, so there is nothing to start. The
-    cross-process form - a task consuming `twx:{ns}` from Redis - is M4's, and this signature exists
-    now so an application writes the same startup code either way.
+
+async def start_taskwire_reader() -> None:
+    """Reader lifecycle (§5.4). Starts a backplane reader when the store has one.
+
+    A single-process deployment needs none: `MemoryStore.publish` drives `dispatch` directly, so
+    calling this is harmless and does nothing. A `RedisStore` gets a long-lived consumer of
+    `twx:{ns}`, which is then the only caller of `transport.notify()` in that process
+    (TW-CORE-004, TW-BP-005).
     """
+    store = configured.store
+    reader = getattr(store, "make_reader", None)
+    if reader is None:
+        return None
+    instance = reader()
+    await instance.start()
+    _running.append(instance)
     return None
 
 
 async def stop_taskwire_reader() -> None:
-    """Counterpart of `start_taskwire_reader`. M4 gives it a body."""
+    """Stop every reader this process started."""
+    while _running:
+        await _running.pop().stop()
     return None
 
 
@@ -57,10 +74,21 @@ def check_taskwire_readers() -> None:
     """Warn when a transport is configured but no reader is running (TW-BP-006).
 
     The message names the exact call the user forgot to make, because the symptom otherwise is
-    "pushes silently stop arriving and polling quietly covers for it" - which is a latency
-    regression nobody attributes to a missing call at startup.
-
-    In M1 there is no separate reader to be missing: `MemoryStore.publish` drives `dispatch`
-    directly. M4 gives this a real check against the Redis subscription.
+    "pushes silently stop arriving and polling quietly covers for it" - a latency regression nobody
+    attributes to a missing line in their startup code, and one that polling hides well enough that
+    it can survive a release.
     """
+    store = configured.store
+    if configured.transport is None or store is None:
+        return None
+    if getattr(store, "make_reader", None) is None:
+        return None  # a single-process store publishes directly; there is no reader to miss
+    if not _running:
+        logger.warning(
+            "taskwire: a transport and a cross-process store are configured but no reader is "
+            "running, so pushes will never leave this process. Call "
+            "`await taskwire.start_taskwire_reader()` during startup (TW-BP-006). Polling will "
+            "cover for it, which is why this is a warning and not an error - and why it is easy to "
+            "miss."
+        )
     return None

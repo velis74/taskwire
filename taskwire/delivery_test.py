@@ -64,6 +64,25 @@ def _progress(**overrides) -> Progress:
     return Progress(**fields)
 
 
+def _without_strings(source: str) -> str:
+    """Blank out comments, docstrings and string literals, keeping line numbers intact.
+
+    A textual scan that counts prose finds the rule's own explanation and calls it a violation, which
+    is a test that fails for being right about the wrong thing.
+    """
+    import io
+    import tokenize
+
+    lines = source.splitlines()
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type not in (tokenize.STRING, tokenize.COMMENT):
+            continue
+        start_row, end_row = token.start[0] - 1, token.end[0] - 1
+        for row in range(start_row, min(end_row + 1, len(lines))):
+            lines[row] = ""
+    return "\n".join(lines)
+
+
 def test_only_reader_calls_notify():
     """TW-CORE-003 / TW-CORE-004: a transport's `notify()` is called from `reader.py` and nowhere else.
 
@@ -98,7 +117,13 @@ def test_only_reader_calls_notify():
         ]
         if attribute_lines:
             ast_offenders[relative] = attribute_lines
-        literal_lines = [n for n, line in enumerate(source.splitlines(), start=1) if NOTIFY_CALL.search(line)]
+        # Strip comments and string literals before the textual scan. The AST pass above is the
+        # authoritative one; this is the same grep the done-when checklist runs, and prose is
+        # allowed to *name* `transport.notify()` while explaining who may call it - which is exactly
+        # what reader.py's and RedisReader's docstrings do.
+        literal_lines = [
+            n for n, line in enumerate(_without_strings(source).splitlines(), start=1) if NOTIFY_CALL.search(line)
+        ]
         if literal_lines:
             text_offenders[relative] = literal_lines
 
