@@ -211,6 +211,28 @@ export class Reporter {
 
   private cancelledValue = false;
 
+  /**
+   * Nesting (M2). `notifyParent` is the whole of a subtask's relationship to its parent, and it does
+   * not tell the child its own range: TW-NEST-001 says the callee MUST NOT be able to learn it. A
+   * child reports a *local* 0-100 and the parent does the mapping, which is also why TW-NEST-002's
+   * recursive composition needs no arithmetic of its own.
+   */
+  private readonly notifyParent: ((local: number | null, force: boolean) => Promise<void>) | null;
+
+  /**
+   * TW-NEST-004 / TW-INV-010: one entry per child handed out, never a last-written percent, and each
+   * commit rewrites exactly one entry. The bug this prevents survives a monotonicity property test -
+   * four equal siblings where whichever finishes last reports first pin a last-write-wins bar at
+   * 100% for three quarters of the work.
+   */
+  private readonly contribution = new Map<number, number>();
+
+  private childSeq = 0;
+
+  private ownPercent: number | null = null;
+
+  private highWater: number | null = null;
+
   constructor(options: {
     key: string;
     ns: string;
@@ -221,6 +243,7 @@ export class Reporter {
     clock?: () => number;
     settings?: ReporterSettings;
     raiseOnCancel?: boolean;
+    notifyParent?: (local: number | null, force: boolean) => Promise<void>;
   }) {
     this.key = options.key;
     this.ns = options.ns;
@@ -230,6 +253,7 @@ export class Reporter {
     this.clock = options.clock ?? defaultClock;
     this.settings = options.settings ?? DEFAULT_SETTINGS;
     this.raiseOnCancelValue = options.raiseOnCancel ?? this.settings.raiseOnCancel;
+    this.notifyParent = options.notifyParent ?? null;
   }
 
   /** The `rev` of the last commit this reporter made. `0` before the first one. */
@@ -278,18 +302,25 @@ export class Reporter {
     // was, so that the throw is a rejected call rather than a half-applied one (TW-PROG-008).
     if (data !== undefined) checkSize('data', data, this.settings.maxDataBytes);
 
-    if (percent !== undefined) this.progress.percent = clampPercent(percent);
+    if (percent !== undefined) this.ownPercent = clampPercent(percent);
+    // The display fields live on the ONE document a token has (TW-NEST-013), so a subtask's
+    // `set({ label })` names the current step of the operation rather than of a sub-range no client
+    // can see. Only `percent` is per-reporter, and only because the parent has to map it.
     if (title !== undefined) this.progress.title = title;
     if (label !== undefined) this.progress.label = label;
     if (icon !== undefined) this.progress.icon = icon;
     if (data !== undefined) this.progress.data = data;
     if (raiseOnCancel !== undefined) this.raiseOnCancelValue = raiseOnCancel;
 
-    await this.tick();
+    await this.propagate(false);
   }
 
-  /** Force an unthrottled commit (TW-THR-004). */
+  /** Force an unthrottled commit (TW-THR-004). A subtask forces its root's. */
   async flush(): Promise<void> {
+    if (this.notifyParent !== null) {
+      await this.propagate(true);
+      return;
+    }
     await this.commit();
   }
 
@@ -302,6 +333,14 @@ export class Reporter {
    * (TW-NEST-008, M2).
    */
   async done(): Promise<void> {
+    // TW-NEST-008: a subtask's `done()` fills its contribution to its full width and does NOT put
+    // the operation into a terminal state. It reports a local 100 rather than writing a width it is
+    // not allowed to know (TW-NEST-001) - the same number, by a route that keeps the range with the
+    // parent. Confusing the two ends the whole job when one branch finishes.
+    if (this.notifyParent !== null) {
+      await this.notifyParent(100, true);
+      return;
+    }
     await this.writeTerminal('done');
   }
 
@@ -343,12 +382,100 @@ export class Reporter {
 
   /** M2. */
   subtask(start: number, end: number): Reporter {
-    throw new Error(`taskwire: nesting arrives in M2 (asked for the range ${start}..${end})`);
+    const childKey = ++this.childSeq;
+    const width = end - start;
+    this.contribution.set(childKey, 0);
+
+    const notify = async (local: number | null, force: boolean): Promise<void> => {
+      if (local === null) {
+        // TW-NEST-011: freeze this child's contribution at its last known value rather than dropping
+        // it to zero. A child that has gone indeterminate has not un-done its work, and zeroing it
+        // would walk the bar backwards for a reason no user could act on.
+        await this.propagate(force);
+        return;
+      }
+      // Exactly this one entry is rewritten (TW-NEST-004). TW-NEST-012 falls out: the value can
+      // never exceed `width`, so a child reporting 500% still cannot reach into a sibling's range.
+      this.contribution.set(childKey, (width * Math.max(0, Math.min(100, local))) / 100);
+      await this.propagate(force);
+    };
+
+    return new Reporter({
+      key: this.key,
+      ns: this.ns,
+      token: this.token,
+      store: this.store,
+      progress: this.progress,
+      clock: this.clock,
+      settings: this.settings,
+      raiseOnCancel: this.raiseOnCancelValue,
+      notifyParent: notify,
+    });
   }
 
   /** M2. */
   split(...weights: number[]): Reporter[] {
-    throw new Error(`taskwire: nesting arrives in M2 (asked for ${weights.length} parts)`);
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    if (total <= 0) throw new RangeError('taskwire: split() needs at least one positive weight');
+
+    const children: Reporter[] = [];
+    let cursor = 0;
+    for (const weight of weights) {
+      const span = (100 * weight) / total;
+      children.push(this.subtask(cursor, cursor + span));
+      cursor += span;
+    }
+    return children;
+  }
+
+  /**
+   * This reporter's own progress as a 0-100, or null.
+   *
+   * TW-NEST-005: its own value when childless, the contribution sum when it has children, and the
+   * LARGER of the two when it has both. "Larger" rather than "sum": a reporter that both works and
+   * delegates would otherwise jump past 100 the moment its first child reports.
+   */
+  private localPercent(): number | null {
+    if (this.contribution.size === 0) return this.ownPercent;
+    let total = 0;
+    for (const value of this.contribution.values()) total += value;
+    if (this.ownPercent === null) return total;
+    return Math.max(this.ownPercent, total);
+  }
+
+  /**
+   * Push this reporter's local percent one level up, or commit it if this is the root.
+   *
+   * `force` travels with the propagation rather than stopping at the reporter that was asked: a
+   * subtask's `flush()` has to reach the store unthrottled (TW-THR-004), and the store is several
+   * levels up.
+   */
+  private async propagate(force: boolean): Promise<void> {
+    const local = this.localPercent();
+    if (this.notifyParent !== null) {
+      await this.notifyParent(local, force);
+      return;
+    }
+
+    if (local === null) {
+      this.progress.percent = null;
+    } else if (this.contribution.size > 0) {
+      // TW-NEST-010: a monotonic clamp on the ROOT's committed percent, as a final safety net only -
+      // it is emphatically not the correctness mechanism, the contribution map is. It nets the
+      // *nesting arithmetic*, so it applies only once ranges have been handed out: a childless root
+      // setting its own percent is not doing that arithmetic, and TW-PROG-002 entitles it to go
+      // backwards (-5 clamps to 0) when a phase restarts.
+      this.highWater = this.highWater === null ? local : Math.max(this.highWater, local);
+      this.progress.percent = this.highWater;
+    } else {
+      this.progress.percent = local;
+    }
+
+    if (force) {
+      await this.commit();
+      return;
+    }
+    await this.tick();
   }
 
   // -------------------------------------------------------------- internals

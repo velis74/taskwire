@@ -905,3 +905,241 @@ async def test_migrate_namespace_without_a_configured_store_moves_nothing():
     """TW-AMB-011 delegates to the store; with no store there is nothing to delegate to."""
     reset_configuration()
     assert await migrate_namespace("anon", "account") == 0
+
+
+# ============================================================ M2: nesting (TW-NEST-*)
+#
+# The rule this section exists for is TW-NEST-004: a parent keeps a per-child CONTRIBUTION MAP and
+# each commit rewrites exactly one entry. The alternative - a last-written percent - passes a
+# monotonicity property test and is still wrong, which is why TW-NEST-006 names its test and says so.
+
+
+@pytest.fixture
+def _unthrottled():
+    """Commit on every set(), so a test reads a deterministic document.
+
+    Throttling has its own tests above; here it would only make the assertions depend on a clock.
+    """
+    previous = settings.progress_interval
+    settings.progress_interval = 0.0
+    yield
+    settings.progress_interval = previous
+
+
+async def _percent(store: MemoryStore, session: str, token: str) -> float | None:
+    snapshot = await store.snapshot(make_key(session, token))
+    assert snapshot is not None
+    return snapshot.progress.percent
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_concurrent_siblings_sum_contributions():
+    """TW-NEST-006 / TW-INV-010, named in the specification.
+
+    Four equal siblings under `gather`, and the one that finishes LAST reports FIRST. Under
+    last-write-wins the bar reads 100 % from the first report onwards - for three quarters of the
+    work - and a monotonicity assertion passes on that trace happily. So assert the SUM.
+    """
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        first, second, third, fourth = reporter.split(1, 1, 1, 1)
+
+        # The last sibling finishes first. This ordering is the whole point of the test.
+        await fourth.set(percent=100)
+        assert await _percent(store, "ns", token) == pytest.approx(25.0), (
+            "one of four equal siblings finishing must move the bar to 25%, not to 100%"
+        )
+
+        await asyncio.gather(
+            first.set(percent=100),
+            second.set(percent=50),
+            third.set(percent=0),
+        )
+        # 25 + 12.5 + 0 + 25
+        assert await _percent(store, "ns", token) == pytest.approx(62.5)
+
+        await asyncio.gather(second.set(percent=100), third.set(percent=100))
+        assert await _percent(store, "ns", token) == pytest.approx(100.0)
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_subtask_mapping_composes_recursively():
+    """TW-NEST-002, spelled out: `r.subtask(10, 25).subtask(50, 100)` covers **17.5-25** of `r`.
+
+    "Covers" is the exact word. The inner reporter owns 7.5 of the root's hundred - the upper half of
+    the fifteen its parent owns - sitting at an offset of 17.5. It does not *start* the root's bar at
+    17.5, because the 10-17.5 slice belongs to its parent's undelegated lower half and nobody has
+    reported that work. Filling both halves is what walks the root from 10 to 25, and each level maps
+    only its own child, which is the whole of why the composition needs no arithmetic of its own.
+    """
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        middle = reporter.subtask(10, 25)
+        lower = middle.subtask(0, 50)
+        inner = middle.subtask(50, 100)
+
+        await inner.set(percent=100)
+        assert await _percent(store, "ns", token) == pytest.approx(7.5), (
+            "inner owns 7.5 of the root - (25-10) * (100-50)/100 - and filling it contributes exactly that"
+        )
+
+        await lower.set(percent=100)
+        assert await _percent(store, "ns", token) == pytest.approx(15.0), (
+            "both halves full fills the parent's whole 15-unit range"
+        )
+
+    # The offset the rule names, shown from the other side: with only the lower half reported, the
+    # root sits at 7.5, which is where `inner`'s 17.5-25 slice begins once the parent's own 10 is
+    # added back. `inner` is responsible for the run from there to 25 and for nothing below it.
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_a_callee_cannot_learn_its_range():
+    """TW-NEST-001: the child has the identical API and no way to read its own range.
+
+    This is what makes a subtask genuinely substitutable for a root reporter: a function that takes
+    a `Reporter` cannot behave differently depending on how much of the bar it owns.
+    """
+    store = MemoryStore()
+    async with operation(new_token(), session="ns", result_kind="k", store=store) as reporter:
+        child = reporter.subtask(10, 25)
+        exposed = {name for name in dir(child) if not name.startswith("_")}
+        assert exposed == {name for name in dir(reporter) if not name.startswith("_")}
+        for forbidden in ("start", "end", "range", "width", "span"):
+            assert forbidden not in exposed
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_split_partitions_in_proportion_to_weights():
+    """TW-NEST-003."""
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        small, large = reporter.split(1, 3)
+        await small.set(percent=100)
+        assert await _percent(store, "ns", token) == pytest.approx(25.0)
+        await large.set(percent=100)
+        assert await _percent(store, "ns", token) == pytest.approx(100.0)
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_own_percent_and_children_take_the_larger():
+    """TW-NEST-005: own when childless, the sum when parented, the LARGER when both.
+
+    Not the sum of the two: a reporter that both works and delegates would otherwise jump past 100.
+    Not the child sum alone either, or the work it did itself would vanish the moment it delegated.
+    """
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        await reporter.set(percent=40)
+        assert await _percent(store, "ns", token) == pytest.approx(40.0)
+
+        child = reporter.subtask(0, 100)
+        await child.set(percent=10)
+        assert await _percent(store, "ns", token) == pytest.approx(40.0), "own 40 beats children 10"
+
+        await child.set(percent=70)
+        assert await _percent(store, "ns", token) == pytest.approx(70.0), "children 70 beats own 40"
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_subtask_done_fills_its_width_without_ending_the_operation():
+    """TW-NEST-008: `sub.done()` is not `operation.done()`, and confusing them ends the job early."""
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        first, _second = reporter.split(1, 1)
+        await first.done()
+
+        snapshot = await store.snapshot(make_key("ns", token))
+        assert snapshot is not None
+        assert snapshot.progress.percent == pytest.approx(50.0)
+        assert ProgressState(snapshot.progress.state) is ProgressState.RUNNING, (
+            "a subtask finishing must not put the OPERATION into a terminal state"
+        )
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_a_subtask_that_never_finishes_keeps_its_partial_contribution():
+    """TW-NEST-009: it leaves its contribution wherever it got to, rather than at zero or full."""
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        first, second = reporter.split(1, 1)
+        await first.set(percent=60)
+        await second.done()
+        assert await _percent(store, "ns", token) == pytest.approx(80.0)  # 30 + 50
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_child_reporting_none_freezes_its_contribution():
+    """TW-NEST-011: indeterminate is not zero.
+
+    A child that goes indeterminate has not un-done its work, and dropping its contribution would
+    walk the bar backwards for a reason no user could act on.
+    """
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        first, second = reporter.split(1, 1)
+        await first.set(percent=80)
+        assert await _percent(store, "ns", token) == pytest.approx(40.0)
+
+        await first.set(percent=None)
+        assert await _percent(store, "ns", token) == pytest.approx(40.0), "frozen, not dropped to 0"
+
+        await second.set(percent=100)
+        assert await _percent(store, "ns", token) == pytest.approx(90.0)
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_a_child_cannot_overflow_into_a_sibling_range():
+    """TW-NEST-012. A child reporting 500 % still owns only its own width."""
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        first, _second = reporter.split(1, 1)
+        await first.set(percent=500)
+        assert await _percent(store, "ns", token) == pytest.approx(50.0)
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_one_token_is_one_document_however_deep_the_tree():
+    """TW-NEST-013 / TW-INV-020: no wire field expresses the subtask tree, and none may."""
+    store = MemoryStore()
+    token = new_token()
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        deep = reporter.subtask(0, 50).subtask(0, 50).subtask(0, 50)
+        await deep.set(percent=100, label=Text(text="deep step"))
+
+        assert len(await store.list_operations("ns")) == 1, "one register entry, whatever the depth"
+        snapshot = await store.snapshot(make_key("ns", token))
+        assert snapshot is not None
+        wire = snapshot.progress.to_dict()
+        for forbidden in ("subtasks", "children", "tree", "contribution", "range"):
+            assert forbidden not in wire, f"{forbidden} must not reach the wire"
+        assert snapshot.progress.label is not None
+        assert snapshot.progress.label.text == "deep step", "one document carries the step, not a child's"
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_gather_with_split_reporters_do_not_interfere():
+    """TW-NEST-014, named in the specification: siblings get their OWN reporter, explicitly.
+
+    The wrong form shares one ambient binding across a `gather` and lands three branches'
+    contributions on one child's range. This is the right form, and it must total exactly 100.
+    """
+    store = MemoryStore()
+    token = new_token()
+
+    async def branch(reporter_for_branch, steps: int) -> None:
+        for step in range(steps):
+            await reporter_for_branch.set(percent=100.0 * (step + 1) / steps)
+
+    async with operation(token, session="ns", result_kind="k", store=store) as reporter:
+        a, b, c = reporter.split(1, 1, 1)
+        await asyncio.gather(branch(a, 3), branch(b, 7), branch(c, 5))
+        assert await _percent(store, "ns", token) == pytest.approx(100.0)

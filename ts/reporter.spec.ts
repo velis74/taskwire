@@ -717,15 +717,15 @@ describe('cancellation', () => {
 });
 
 describe('the surfaces later milestones fill in', () => {
-  it('throws rather than silently doing nothing (M2, M3, M7)', async () => {
+  it('throws rather than silently doing nothing (M3, M7)', async () => {
     // A stub must be loud. A `setResult()` that quietly did nothing would let an application ship a
     // result nobody can collect, and the failure would surface as a missing download weeks later.
+    // `subtask` and `split` were here until M2 landed; their assertions moved to the nesting
+    // section below rather than being deleted.
     const store = new RecordingStore();
     await operation(options(store, new_token()), async (reporter) => {
       await expect(reporter.setResult({ kind: 'taskwire.download' })).rejects.toThrow(/M7/);
       await expect(reporter.ask({ dialogId: 'confirm', buttons: ['ok'] })).rejects.toThrow(/M3/);
-      expect(() => reporter.subtask(0, 50)).toThrow(/M2/);
-      expect(() => reporter.split(1, 1)).toThrow(/M2/);
     });
   });
 
@@ -863,5 +863,205 @@ describe('the Reporter port', () => {
     await reporter.flush();
     expect(written).toEqual([[key(token), { state: 'running' }]]);
     expect(reporter.rev).toBe(1);
+  });
+});
+
+// ============================================================ M2: nesting (TW-NEST-*)
+//
+// The rule this section exists for is TW-NEST-004: a parent keeps a per-child CONTRIBUTION MAP and
+// each commit rewrites exactly one entry. The alternative - a last-written percent - passes a
+// monotonicity property test and is still wrong, which is why TW-NEST-006 names its test.
+
+describe('nesting', () => {
+  /** Commit on every set(), so a test reads a deterministic document rather than a clock's mood. */
+  const eager = { ...DEFAULT_SETTINGS, progressInterval: 0 };
+
+  function nested(store: RecordingStore, token: string): OperationOptions {
+    return { ...options(store, token), settings: eager };
+  }
+
+  async function percentOf(store: RecordingStore, token: string): Promise<number | null | undefined> {
+    return (await store.snapshot(key(token)))?.progress.percent;
+  }
+
+  it('concurrent siblings sum contributions (TW-NEST-006)', async () => {
+    // Four equal siblings, and the one that finishes LAST reports FIRST. Under last-write-wins the
+    // bar reads 100% from that first report onwards - for three quarters of the work - and a
+    // monotonicity assertion passes on the trace happily. So assert the SUM.
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const [first, second, third, fourth] = reporter.split(1, 1, 1, 1);
+
+      await fourth.set({ percent: 100 });
+      expect(await percentOf(store, token)).toBeCloseTo(25, 6);
+
+      await Promise.all([first.set({ percent: 100 }), second.set({ percent: 50 }), third.set({ percent: 0 })]);
+      expect(await percentOf(store, token)).toBeCloseTo(62.5, 6);
+
+      await Promise.all([second.set({ percent: 100 }), third.set({ percent: 100 })]);
+      expect(await percentOf(store, token)).toBeCloseTo(100, 6);
+    });
+  });
+
+  it('composes recursively, so a child covers a slice of a slice (TW-NEST-002)', async () => {
+    // `r.subtask(10, 25).subtask(50, 100)` covers 17.5-25 of `r`: the inner reporter owns 7.5 of the
+    // root's hundred, at an offset of 17.5. It does not START the root at 17.5 - the 10-17.5 slice
+    // belongs to its parent's undelegated lower half, which nobody has reported.
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const middle = reporter.subtask(10, 25);
+      const lower = middle.subtask(0, 50);
+      const inner = middle.subtask(50, 100);
+
+      await inner.set({ percent: 100 });
+      expect(await percentOf(store, token)).toBeCloseTo(7.5, 6);
+
+      await lower.set({ percent: 100 });
+      expect(await percentOf(store, token)).toBeCloseTo(15, 6);
+    });
+  });
+
+  it('gives the callee no way to learn its range (TW-NEST-001)', async () => {
+    // What makes a subtask genuinely substitutable for a root: a function taking a Reporter cannot
+    // behave differently depending on how much of the bar it happens to own.
+    const store = new RecordingStore();
+    await operation(nested(store, new_token()), async (reporter) => {
+      const child = reporter.subtask(10, 25);
+      for (const forbidden of ['start', 'end', 'range', 'width', 'span']) {
+        expect(forbidden in (child as unknown as Record<string, unknown>)).toBe(false);
+      }
+      expect(typeof child.set).toBe('function');
+      expect(typeof child.subtask).toBe('function');
+    });
+  });
+
+  it('splits in proportion to the weights (TW-NEST-003)', async () => {
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const [small, large] = reporter.split(1, 3);
+      await small.set({ percent: 100 });
+      expect(await percentOf(store, token)).toBeCloseTo(25, 6);
+      await large.set({ percent: 100 });
+      expect(await percentOf(store, token)).toBeCloseTo(100, 6);
+    });
+  });
+
+  it('takes the larger of its own percent and its children (TW-NEST-005)', async () => {
+    // Not the sum of the two - a reporter that both works and delegates would jump past 100. Not the
+    // children alone either, or the work it did itself vanishes the moment it delegates.
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      await reporter.set({ percent: 40 });
+      expect(await percentOf(store, token)).toBeCloseTo(40, 6);
+
+      const child = reporter.subtask(0, 100);
+      await child.set({ percent: 10 });
+      expect(await percentOf(store, token)).toBeCloseTo(40, 6);
+
+      await child.set({ percent: 70 });
+      expect(await percentOf(store, token)).toBeCloseTo(70, 6);
+    });
+  });
+
+  it('fills a subtask width on done() without ending the operation (TW-NEST-008)', async () => {
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const [first] = reporter.split(1, 1);
+      await first.done();
+
+      const stored = await store.snapshot(key(token));
+      expect(stored?.progress.percent).toBeCloseTo(50, 6);
+      expect(stored?.progress.state).toBe('running');
+    });
+  });
+
+  it('leaves an unfinished subtask wherever it got to (TW-NEST-009)', async () => {
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const [first, second] = reporter.split(1, 1);
+      await first.set({ percent: 60 });
+      await second.done();
+      expect(await percentOf(store, token)).toBeCloseTo(80, 6);
+    });
+  });
+
+  it('freezes a contribution when a child goes indeterminate (TW-NEST-011)', async () => {
+    // Indeterminate is not zero. A child that stops knowing its percentage has not un-done its work,
+    // and dropping the contribution would walk the bar backwards for a reason nobody can act on.
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const [first, second] = reporter.split(1, 1);
+      await first.set({ percent: 80 });
+      expect(await percentOf(store, token)).toBeCloseTo(40, 6);
+
+      await first.set({ percent: null });
+      expect(await percentOf(store, token)).toBeCloseTo(40, 6);
+
+      await second.set({ percent: 100 });
+      expect(await percentOf(store, token)).toBeCloseTo(90, 6);
+    });
+  });
+
+  it('cannot overflow into a sibling range (TW-NEST-012)', async () => {
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const [first] = reporter.split(1, 1);
+      await first.set({ percent: 500 });
+      expect(await percentOf(store, token)).toBeCloseTo(50, 6);
+    });
+  });
+
+  it('keeps one token to one document however deep the tree (TW-NEST-013)', async () => {
+    const store = new RecordingStore();
+    const token = new_token();
+    await operation(nested(store, token), async (reporter) => {
+      const deep = reporter.subtask(0, 50).subtask(0, 50).subtask(0, 50);
+      await deep.set({ percent: 100, label: { text: 'deep step' } });
+
+      expect((await store.listOperations(NS)).length).toBe(1);
+      const stored = await store.snapshot(key(token));
+      const wire = JSON.stringify(stored?.progress ?? {});
+      for (const forbidden of ['subtasks', 'children', 'tree', 'contribution']) {
+        expect(wire).not.toContain(forbidden);
+      }
+      expect(stored?.progress.label?.text).toBe('deep step');
+    });
+  });
+
+  it('keeps concurrent branches from interfering when each has its own reporter (TW-NEST-014)', async () => {
+    // The wrong form shares one reporter across concurrent branches and lands three sets of
+    // contributions on one range. This is the right form, and it must total exactly 100.
+    const store = new RecordingStore();
+    const token = new_token();
+
+    async function branch(own: Reporter, steps: number): Promise<void> {
+      for (let step = 0; step < steps; step += 1) {
+        await own.set({ percent: (100 * (step + 1)) / steps });
+      }
+    }
+
+    await operation(nested(store, token), async (reporter) => {
+      const [a, b, c] = reporter.split(1, 1, 1);
+      await Promise.all([branch(a, 3), branch(b, 7), branch(c, 5)]);
+      expect(await percentOf(store, token)).toBeCloseTo(100, 6);
+    });
+  });
+
+  it('exports no ambient progress proxy (TW-SYM-004, TW-TS-017)', async () => {
+    // contextvars has no browser equivalent, and TW-AMB-002 makes an unbound proxy a SILENT no-op -
+    // so a proxy that worked under Node and no-opped in a browser would fail as a progress bar that
+    // never moves, with nothing logged. TypeScript callers pass the reporter explicitly.
+    const entry = await import('./index');
+    for (const forbidden of ['progress', 'ask', 'current_reporter', 'currentReporter']) {
+      expect(forbidden in entry).toBe(false);
+    }
   });
 });
