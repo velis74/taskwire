@@ -425,7 +425,7 @@ describe('MemoryStore publish (TW-STORE-008)', () => {
 });
 
 describe('the milestone boundary', () => {
-  it('dialogs and collectable results announce their milestone rather than lying', async () => {
+  it('collectable results announce their milestone rather than lying', async () => {
     const store = new MemoryStore();
     const k = key('ns', 'tok');
     const reply = { button: 'ok', values: {} };
@@ -438,11 +438,15 @@ describe('the milestone boundary', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
 
-    await expect(store.putDialog(k, dialog, 60)).rejects.toThrow(/M3/);
-    await expect(store.resolveDialog(k, 'd1', reply)).rejects.toThrow(/M3/);
-    await expect(store.withdrawDialogs(k)).rejects.toThrow(/M3/);
-    await expect(store.awaitDialog(k, 'd1')).rejects.toThrow(/M3/);
+    // The four dialog methods left this list when M3 landed; their behaviour is asserted in the
+    // dialog section below and in the exported conformance suite. `releaseResult` is still M7's.
     await expect(store.releaseResult(k)).rejects.toThrow(/M7/);
+
+    // A store with no such operation answers rather than throwing: `putDialog` on a key that is not
+    // there is a lost race with expiry, not a programming error.
+    expect(await store.putDialog(k, dialog, 60)).toBe(0);
+    expect(await store.resolveDialog(k, 'd1', reply)).toBe('not_found');
+    expect(await store.withdrawDialogs(k)).toEqual([]);
   });
 
   it('DialogVanished is a distinguishable fault (TW-DLG-008)', () => {

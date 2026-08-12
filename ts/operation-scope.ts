@@ -23,6 +23,11 @@
  * but browsers have none at all, and an unbound ambient proxy is a *silent* no-op - so a proxy that
  * worked under Node and no-opped in a browser would fail as a progress bar that never moves, with no
  * error anywhere. The reporter is passed to the callback and to everything the callback calls.
+ *
+ * `OperationCancelled` and `new_token` live in `reporter.ts`: `Reporter.ask()` needs both, and
+ * importing upward from there would close a cycle. They are re-exported from here, because this is
+ * the module callers have always imported them from - moving a symbol must not move its import
+ * path.
  */
 
 import {
@@ -30,6 +35,8 @@ import {
   DEFAULT_SETTINGS,
   InertReporter,
   keepalivePeriod,
+  new_token,
+  OperationCancelled,
   Reporter,
   type ReporterSettings,
   type ReporterStore,
@@ -38,53 +45,7 @@ import {
 import { key as storeKey } from './store';
 import { nowIso, type Progress, type ProgressState, type TaskwireError, type Text, type WireObject } from './wire';
 
-/**
- * TW-CANCEL-005: its own type.
- *
- * Never a bare `Error` - callers must be able to catch precisely this - and never something the
- * host's own cancellation machinery also throws, which would make every generic `catch` in the
- * application swallow a user-requested cancel as if the runtime had done it.
- */
-export class OperationCancelled extends Error {
-  constructor(message = 'taskwire: the operation was cancelled') {
-    super(message);
-    // Restores the prototype chain under `target: es5`-style downlevelling, so `instanceof` holds in
-    // every build of this package rather than only in the modern one.
-    Object.setPrototypeOf(this, OperationCancelled.prototype);
-    this.name = 'OperationCancelled';
-  }
-}
-
-/**
- * A UUIDv4 and nothing more. An address, never an authorization grant (TW-SEC-003).
- *
- * Exported under its Python name (TW-TS-011): the module-level factories keep their names verbatim
- * across the two languages, and there is deliberately no `newToken` alias - two spellings of one
- * export is how half a codebase ends up importing the one that gets deprecated.
- */
-export function new_token(): string {
-  const cryptoApi = globalThis.crypto;
-  if (cryptoApi !== undefined && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID();
-
-  // `crypto.randomUUID` needs a secure context, and a page served over plain HTTP is a deployment
-  // this library has no business refusing to run in. The bytes below come from the same CSPRNG.
-  const bytes = new Uint8Array(16);
-  if (cryptoApi !== undefined && typeof cryptoApi.getRandomValues === 'function') {
-    cryptoApi.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0'));
-  return [
-    hex.slice(0, 4).join(''),
-    hex.slice(4, 6).join(''),
-    hex.slice(6, 8).join(''),
-    hex.slice(8, 10).join(''),
-    hex.slice(10, 16).join(''),
-  ].join('-');
-}
+export { new_token, OperationCancelled };
 
 export interface OperationOptions {
   /**

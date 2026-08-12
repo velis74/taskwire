@@ -86,6 +86,29 @@ export const DIALOG_RESOLUTIONS: readonly DialogResolution[] = [
  * this; it must not resolve with a synthesised reply, because a caller cannot tell a synthesised
  * "cancel" from a user who pressed cancel.
  */
+export const CANCELLED_BUTTON = '__taskwire_cancelled__';
+/**
+ * The reserved button a withdrawal pushes onto a dialog's reply channel (TW-CANCEL-007).
+ *
+ * With dialog timeouts gone (TW-DLG-005), a sentinel on the reply channel is the ONLY thing that can
+ * wake a worker blocked in `ask()`. It is a reserved name rather than a second channel or a separate
+ * flag so that the waking path and the answering path are the same code - a second path is a second
+ * place to forget to wake somebody.
+ *
+ * `ask()` recognises it and throws `OperationCancelled` whatever `raiseOnCancel` says (TW-DLG-012);
+ * it is never returned to an application as an answer.
+ */
+
+const CANCELLED_SENTINEL: DialogReply = { button: CANCELLED_BUTTON, values: {} };
+
+const AWAIT_POLL_MS = 5;
+/**
+ * How long `awaitDialog` waits before re-reading (TW-BP-008).
+ *
+ * A liveness device inside the store, never a deadline offered to `ask()` - the loop it bounds has
+ * no overall deadline at all. A lost wakeup costs this much latency instead of hanging forever.
+ */
+
 export class DialogVanished extends Error {
   constructor(message = 'taskwire: the dialog document no longer exists') {
     super(message);
@@ -176,6 +199,24 @@ export interface MemoryStoreOptions {
 }
 
 /** One operation's stored state. Not a wire shape - the store's own bookkeeping. */
+/**
+ * Present `waiting_input` while a dialog is open, without ever having written it.
+ *
+ * TW-DLG-009 says the state is `waiting_input` while a dialog is open and `running` again on
+ * resolution. TW-PROG-010 and TW-PROG-012 say it must be **derived** and that no caller may write
+ * it. Both hold at once only if the derivation happens on the way out.
+ *
+ * The copy is not tidiness. The reporter reads a snapshot, mutates the `Progress` it finds and
+ * commits it back; handing it the same object with a derived state would persist that state, and an
+ * operation would stay `waiting_input` after its last question closed - parked, with nothing left to
+ * release it (TW-INV-006).
+ */
+function derivedProgress(entry: Entry): Progress {
+  const hasOpen = Array.from(entry.dialogs.values()).some((dialog) => dialog.state === 'open');
+  if (!hasOpen || isTerminal(entry.progress)) return entry.progress;
+  return { ...entry.progress, state: 'waiting_input' };
+}
+
 interface Entry {
   progress: Progress;
   rev: number;
@@ -269,12 +310,13 @@ export class MemoryStore implements TaskwireStore {
   }
 
   private buildSnapshot(k: string, entry: Entry): Snapshot {
+    // (see `derivedProgress` below - the state a reader sees is computed here, never stored)
     const [, token] = splitKey(k);
     return {
       v: WIRE_VERSION,
       token,
       rev: entry.rev,
-      progress: entry.progress,
+      progress: derivedProgress(entry),
       dialogs: Array.from(entry.dialogs.values()),
       cancelRequested: entry.cancelRequested,
       serverTime: this.nowIso(),
@@ -490,20 +532,138 @@ export class MemoryStore implements TaskwireStore {
    */
   /* eslint-disable @typescript-eslint/no-unused-vars */
 
+  /**
+   * Write a dialog and bump `rev` atomically (TW-STORE-002).
+   *
+   * Adds the token to the asking set, which is the only thing that set is for (TW-KEY-005): it
+   * answers TW-STORE-006's second term, so a private operation is listed for exactly as long as it
+   * holds a question. It is not a subscription, not a watcher list, and never an authorization scope.
+   */
   async putDialog(key: string, dialog: DialogRequest, ttl: number): Promise<number> {
-    throw new Error('taskwire: dialogs arrive in M3');
+    const entry = this.live(key);
+    if (entry === undefined) return 0;
+    const [ns, token] = splitKey(key);
+
+    entry.dialogs.set(dialog.id, dialog);
+    if (!entry.replies.has(dialog.id)) entry.replies.set(dialog.id, []);
+    entry.rev = Math.max(this.nowMs(), entry.rev + 1);
+    entry.expiresAt = this.clock() + ttl;
+
+    // TW-PRIV-004: privacy never narrows the dialog family. A question nobody can see is a worker
+    // nobody can free (TW-INV-005, TW-INV-022).
+    const asking = this.asking.get(ns) ?? new Set<string>();
+    asking.add(token);
+    this.asking.set(ns, asking);
+    return entry.rev;
   }
 
+  /**
+   * **The single arbiter of first-answer-wins** (TW-STORE-003).
+   *
+   * Atomically: verify the dialog is still `open`, record the reply, flip it to `answered`, bump
+   * `rev`, wake any waiter, return ACCEPTED. Otherwise return the reason and change NOTHING.
+   *
+   * Its return value is the ONLY signal any caller may trust about who won. A caller reading the
+   * document instead would be reading it after the race rather than during it, and two tabs
+   * answering at once would both believe they had.
+   *
+   * There is no `await` in this body, and that - not a lock - is what makes it atomic here.
+   */
   async resolveDialog(key: string, did: string, reply: DialogReply): Promise<DialogResolution> {
-    throw new Error('taskwire: dialogs arrive in M3');
+    const entry = this.live(key);
+    if (entry === undefined) return 'not_found';
+    const dialog = entry.dialogs.get(did);
+    if (dialog === undefined) return 'not_found';
+    if (dialog.state === 'answered') return 'already_answered';
+    if (dialog.state === 'cancelled') return 'cancelled';
+
+    dialog.reply = reply;
+    dialog.state = 'answered';
+    entry.rev = Math.max(this.nowMs(), entry.rev + 1);
+    this.wake(entry, did, reply);
+    this.releaseAskingIfQuiet(key, entry);
+    return 'accepted';
   }
 
+  /**
+   * Flip every still-open dialog to `cancelled`, through the same arbiter (TW-STORE-004).
+   *
+   * A dialog a reply reached first is left `answered` - the two paths race and exactly one wins,
+   * which is why they share this code rather than each having their own idea of the state. Called
+   * when an operation goes terminal (TW-CANCEL-011) and when a cancel is observed, so a dialog can
+   * never outlive the operation that asked it.
+   */
   async withdrawDialogs(key: string): Promise<string[]> {
-    throw new Error('taskwire: dialogs arrive in M3');
+    const entry = this.live(key);
+    if (entry === undefined) return [];
+
+    const withdrawn: string[] = [];
+    for (const [did, dialog] of entry.dialogs) {
+      if (dialog.state !== 'open') continue;
+      dialog.state = 'cancelled';
+      withdrawn.push(did);
+      this.wake(entry, did, CANCELLED_SENTINEL);
+    }
+    if (withdrawn.length > 0) {
+      // One bump for the whole withdrawal: it is a single change of the operation's situation, and
+      // `rev` labels the document rather than the dialogs.
+      entry.rev = Math.max(this.nowMs(), entry.rev + 1);
+      this.releaseAskingIfQuiet(key, entry);
+    }
+    return withdrawn;
   }
 
+  /**
+   * Block until the dialog is resolved. **Takes no deadline** (TW-DLG-005, TW-STORE-005).
+   *
+   * The caller has none to give: `ask()` has no timeout, no default answer and no `DialogTimeout`,
+   * and their absence is the design. What ends this wait is a reply, a withdrawal, or the document
+   * disappearing - and the last of those raises `DialogVanished`, because a vanished question is a
+   * distinguishable fault rather than an answer nobody gave (TW-DLG-008).
+   *
+   * The wait RE-READS the dialog on every wakeup (TW-BP-008), so a lost notification degrades to
+   * poll latency instead of hanging forever. That bound is a liveness device inside the store; it is
+   * never a deadline offered to `ask()`.
+   */
   async awaitDialog(key: string, did: string): Promise<DialogReply> {
-    throw new Error('taskwire: dialogs arrive in M3');
+    for (;;) {
+      const entry = this.live(key);
+      if (entry === undefined || !entry.dialogs.has(did)) {
+        throw new DialogVanished(`taskwire: dialog ${did} no longer exists`);
+      }
+      const dialog = entry.dialogs.get(did)!;
+      if (dialog.state === 'answered' && dialog.reply !== undefined && dialog.reply !== null) {
+        return dialog.reply;
+      }
+      if (dialog.state === 'cancelled') return CANCELLED_SENTINEL;
+
+      const queued = entry.replies.get(did);
+      if (queued !== undefined && queued.length > 0) return queued.shift()!;
+
+      await new Promise((resolve) => setTimeout(resolve, AWAIT_POLL_MS));
+    }
+  }
+
+  /** Push onto the dialog's reply channel so a blocked worker wakes immediately. */
+  private wake(entry: Entry, did: string, reply: DialogReply): void {
+    const queued = entry.replies.get(did) ?? [];
+    queued.push(reply);
+    entry.replies.set(did, queued);
+  }
+
+  /**
+   * Leave the asking set once no dialog under this token is still `open` (TW-KEY-005).
+   *
+   * Membership is a fact about a token's *dialogs*, so it never makes a private operation shared:
+   * the moment its last question closes it leaves the set and the entry leaves the register, while
+   * `resultKind` stays what it was at start (TW-PROG-006).
+   */
+  private releaseAskingIfQuiet(key: string, entry: Entry): void {
+    for (const dialog of entry.dialogs.values()) {
+      if (dialog.state === 'open') return;
+    }
+    const [ns, token] = splitKey(key);
+    this.asking.get(ns)?.delete(token);
   }
 
   async releaseResult(key: string): Promise<Result | null> {

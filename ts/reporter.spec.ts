@@ -15,6 +15,7 @@ import {
 import { DEFAULT_SETTINGS, encodedSize, InertReporter, Reporter, type ReporterStore } from './reporter';
 import { key as storeKey, MemoryStore } from './store';
 import { LocalTransport } from './transport';
+import type { DialogReply, DialogRequest } from './wire';
 import {
   type Envelope,
   isShared,
@@ -57,6 +58,7 @@ interface Entry {
   rev: number;
   expiresAt: number;
   cancelRequested: boolean;
+  dialogs: Map<string, DialogRequest>;
 }
 
 /**
@@ -71,6 +73,26 @@ interface Entry {
  * itself is dropped in the same step (TW-REG-007).
  */
 class RecordingStore implements ReporterStore {
+  /** M3: `ask()` writes through these two, so the double has to answer them. */
+  async putDialog(k: string, dialog: DialogRequest, ttl: number): Promise<number> {
+    const entry = this.entries.get(k);
+    if (entry === undefined) return 0;
+    entry.dialogs.set(dialog.id, dialog);
+    entry.rev = Math.max(Math.floor(this.clock() * 1000), entry.rev + 1);
+    entry.expiresAt = this.clock() + ttl;
+    return entry.rev;
+  }
+
+  async awaitDialog(k: string, did: string): Promise<DialogReply> {
+    for (;;) {
+      const dialog = this.entries.get(k)?.dialogs.get(did);
+      if (dialog === undefined) throw new Error(`taskwire: dialog ${did} no longer exists`);
+      if (dialog.state === 'answered' && dialog.reply != null) return dialog.reply;
+      if (dialog.state === 'cancelled') return { button: '__taskwire_cancelled__', values: {} };
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  }
+
   readonly calls: [string, string][] = [];
 
   readonly commits: Progress[] = [];
@@ -133,7 +155,13 @@ class RecordingStore implements ReporterStore {
       written.createdAt = existing.progress.createdAt;
     }
     const rev = Math.max(Math.floor(this.clock() * 1000), previousRev + 1);
-    const entry: Entry = existing ?? { progress: written, rev, expiresAt: 0, cancelRequested: false };
+    const entry: Entry = existing ?? {
+      progress: written,
+      rev,
+      expiresAt: 0,
+      cancelRequested: false,
+      dialogs: new Map(),
+    };
     entry.progress = written;
     entry.rev = rev;
     entry.expiresAt = this.clock() + ttl;
@@ -717,15 +745,14 @@ describe('cancellation', () => {
 });
 
 describe('the surfaces later milestones fill in', () => {
-  it('throws rather than silently doing nothing (M3, M7)', async () => {
+  it('throws rather than silently doing nothing (M7)', async () => {
     // A stub must be loud. A `setResult()` that quietly did nothing would let an application ship a
     // result nobody can collect, and the failure would surface as a missing download weeks later.
-    // `subtask` and `split` were here until M2 landed; their assertions moved to the nesting
-    // section below rather than being deleted.
+    // `subtask`, `split` and `ask` were here until M2 and M3 landed; their assertions moved to the
+    // nesting and dialog sections rather than being deleted.
     const store = new RecordingStore();
     await operation(options(store, new_token()), async (reporter) => {
       await expect(reporter.setResult({ kind: 'taskwire.download' })).rejects.toThrow(/M7/);
-      await expect(reporter.ask({ dialogId: 'confirm', buttons: ['ok'] })).rejects.toThrow(/M3/);
     });
   });
 
@@ -828,7 +855,7 @@ describe('one language, one process (TW-SYM-001)', () => {
 });
 
 describe('the Reporter port', () => {
-  it('needs six store methods and nothing else (TW-STORE-001)', async () => {
+  it('needs a small structural subset of the store and nothing else (TW-STORE-001)', async () => {
     // The reporter is written against a structural subset of the store port, so an application's own
     // store satisfies it by having the methods rather than by inheriting anything.
     const written: [string, WireObject][] = [];
@@ -840,6 +867,8 @@ describe('the Reporter port', () => {
       snapshot: async () => null,
       touch: async () => true,
       isCancelled: async () => false,
+      putDialog: async () => 1,
+      awaitDialog: async () => ({ button: 'ok', values: {} }),
       publish: async () => undefined,
       drop: async () => undefined,
     };

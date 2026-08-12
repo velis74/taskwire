@@ -22,14 +22,18 @@
  * (TW-SYM-002).
  */
 
-import type { TaskwireStore } from './store';
+import { CANCELLED_BUTTON, type TaskwireStore } from './store';
 import {
+  type Button,
   type DialogAnswer,
+  type DialogRequest,
+  type InputField,
   type Envelope,
   nowIso,
   type Progress,
   type ProgressState,
   type Result,
+  serializeDialogRequest,
   serializeProgress,
   type TaskwireError,
   type Text,
@@ -81,7 +85,10 @@ export function keepalivePeriod(settings: ReporterSettings): number {
  * The import is type-only: nothing in this module depends on a store implementation at runtime, and
  * the reporter is never the thing that chooses one.
  */
-export type ReporterStore = Pick<TaskwireStore, 'commit' | 'snapshot' | 'touch' | 'isCancelled' | 'publish' | 'drop'>;
+export type ReporterStore = Pick<
+  TaskwireStore,
+  'commit' | 'snapshot' | 'touch' | 'isCancelled' | 'publish' | 'drop' | 'putDialog' | 'awaitDialog'
+>;
 
 /** The three states `operation()`'s exit may write, and the only ones it may (TW-PROG-011). */
 export type TerminalState = 'done' | 'failed' | 'cancelled';
@@ -181,6 +188,67 @@ function yieldToHost(): Promise<void> {
  * One reporter per operation in M1; `subtask()` and `split()` arrive in M2. The reporter never
  * touches a transport (TW-CORE-003): it writes to the store and calls `store.publish()`.
  */
+/**
+ * TW-CANCEL-005: its own type.
+ *
+ * Never a bare `Error` - callers must be able to catch precisely this - and never something the
+ * host's own cancellation machinery also throws, which would make every generic `catch` in the
+ * application swallow a user-requested cancel as if the runtime had done it.
+ */
+export class OperationCancelled extends Error {
+  constructor(message = 'taskwire: the operation was cancelled') {
+    super(message);
+    // Restores the prototype chain under `target: es5`-style downlevelling, so `instanceof` holds in
+    // every build of this package rather than only in the modern one.
+    Object.setPrototypeOf(this, OperationCancelled.prototype);
+    this.name = 'OperationCancelled';
+  }
+}
+
+/**
+ * A UUIDv4 and nothing more. An address, never an authorization grant (TW-SEC-003).
+ *
+ * Exported under its Python name (TW-TS-011): the module-level factories keep their names verbatim
+ * across the two languages, and there is deliberately no `newToken` alias - two spellings of one
+ * export is how half a codebase ends up importing the one that gets deprecated.
+ */
+export function new_token(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi !== undefined && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID();
+
+  // `crypto.randomUUID` needs a secure context, and a page served over plain HTTP is a deployment
+  // this library has no business refusing to run in. The bytes below come from the same CSPRNG.
+  const bytes = new Uint8Array(16);
+  if (cryptoApi !== undefined && typeof cryptoApi.getRandomValues === 'function') {
+    cryptoApi.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0'));
+  return [
+    hex.slice(0, 4).join(''),
+    hex.slice(4, 6).join(''),
+    hex.slice(6, 8).join(''),
+    hex.slice(8, 10).join(''),
+    hex.slice(10, 16).join(''),
+  ].join('-');
+}
+
+/**
+ * TW-DLG-003: the object form on the wire, a list of strings as sugar for the caller.
+ *
+ * Each expanded label defaults to `{ key: 'taskwire.button.<id>' }` with **no** `text`: a frontend
+ * with a catalogue renders its own wording, and one without shows the id - a better failure than a
+ * hard-coded English string nobody downstream can translate.
+ */
+function expandButtons(buttons: Array<string | Button>): Button[] {
+  return buttons.map((button) =>
+    typeof button === 'string' ? { id: button, label: { key: `taskwire.button.${button}` } } : button,
+  );
+}
+
 export class Reporter {
   readonly key: string;
 
@@ -376,8 +444,70 @@ export class Reporter {
   }
 
   /** TW-DLG-*: no timeout, no default answer. M3. */
-  async ask(request: { dialogId: string; buttons: unknown[] }): Promise<DialogAnswer> {
-    throw new Error(`taskwire: dialogs arrive in M3 (asked '${request.dialogId}')`);
+  async ask(request: {
+    dialogId: string;
+    buttons: Array<string | Button>;
+    inputs?: InputField[];
+    params?: Record<string, unknown>;
+    title?: Text;
+    text?: Text;
+  }): Promise<DialogAnswer> {
+    if (this.store === null) throw new Error('taskwire: ask() needs a store');
+    if (request.params !== undefined) checkSize('dialog params', request.params, this.settings.maxDataBytes);
+
+    // TW-DLG-001: `id` is *this asking* - a minted UUID unique within the token - and is the only
+    // one of the two ever used as a key, a path segment or a store argument. `dialogId` is *which
+    // question*, the frontend component identity, and keying by it would let two concurrent
+    // operations rendering the same component answer each other's question (TW-DLG-002, TW-INV-008).
+    const did = new_token();
+    const dialog: DialogRequest = {
+      id: did,
+      dialogId: request.dialogId,
+      buttons: expandButtons(request.buttons),
+      inputs: request.inputs ?? [],
+      params: request.params,
+      state: 'open',
+      createdAt: nowIso(),
+    };
+    if (request.title !== undefined) this.progress.title = request.title;
+    if (request.text !== undefined) this.progress.label = request.text;
+
+    // A dialog open is never throttled (TW-THR-004/005, TW-INV-005): a question the user cannot see
+    // is a worker nobody can free.
+    await this.flush();
+    const rev = await this.store.putDialog(this.key, dialog, this.settings.activeTtl);
+    await this.store.publish(this.ns, {
+      v: WIRE_VERSION,
+      token: this.token,
+      rev,
+      kind: 'dialog.open',
+      body: serializeDialogRequest(dialog) as Record<string, unknown>,
+    });
+
+    const reply = await this.store.awaitDialog(this.key, did);
+
+    // TW-DLG-012: a withdrawal is not an answer. Returning one would let the caller act on a choice
+    // nobody made, and with no dialog timeouts the sentinel is also the only thing that could have
+    // woken this wait (TW-CANCEL-007).
+    if (reply.button === CANCELLED_BUTTON) {
+      this.cancelledValue = true;
+      throw new OperationCancelled(`taskwire: operation ${this.token} was cancelled while asking ${request.dialogId}`);
+    }
+
+    const after = await this.store.snapshot(this.key);
+    const closed = after?.dialogs.find((candidate) => candidate.id === did);
+    await this.store.publish(this.ns, {
+      v: WIRE_VERSION,
+      token: this.token,
+      rev: after?.rev ?? rev,
+      kind: 'dialog.close',
+      body: { id: did, state: closed?.state ?? 'answered', reply: { ...reply } },
+    });
+    // The state returns to `running` on resolution (TW-DLG-009) with nothing written: it was never
+    // written on the way in either. `waiting_input` is derived from the open dialogs themselves,
+    // which is what TW-PROG-010 requires and what keeps the two ends agreeing.
+    await this.flush();
+    return { button: reply.button, values: reply.values };
   }
 
   /** M2. */
