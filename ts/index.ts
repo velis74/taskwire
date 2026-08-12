@@ -53,6 +53,23 @@ export {
 // from the cadence (TW-THR-007), and an export is an invitation to try.
 export { sortEntries } from './register';
 
+// M7b's tab hints. Framework-free on purpose: these are the rules a Vuetify footer or a
+// React modal would OBEY, and putting them in a UI layer would mean writing them again for
+// every UI - each time slightly differently, and each time with the timing re-derived.
+export {
+  clampAdoptDelay,
+  DialogAdoption,
+  type AdoptableDialog,
+  type AdoptOptions,
+  MAX_ADOPT_DELAY_MS,
+  MIN_ADOPT_DELAY_MS,
+  REAL_TIMERS,
+  TAB_ID,
+  type Timers,
+  VisibilityDelay,
+  type VisibilityOptions,
+} from './tab-hints';
+
 // §5.5a - the operating half: this is what makes a browser-only program a first-class deployment.
 export { markFailed, markQueued, operation, OperationCancelled, type OperationOptions } from './operation-scope';
 

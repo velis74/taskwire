@@ -479,15 +479,23 @@ event loop (TW-CELERY-001/008), and for what an unanswered dialog looks like fro
 The docstring states the blocked-worker hazard in the words TW-CELERY-010 requires, with the
 `task_routes` snippet, and presents none of the mitigations as a solution.
 
-## `ts/vuetify.ts` — the Vuetify deliverables (M7b) — NOT BUILT
+## M7b — the tab hints are BUILT; the Vuetify components are NOT
 
-Still `export {}`. The `/vuetify` subpath, the dialog adapter, `TaskwireFooter`, and the three tab
-hints (`progressUi.delay`, `dialogAdoptDelay`, `failureLinger` — TW-TAB-002/003/004/005) are all
-outstanding. The rules they implement are specified and the client surface they need
-(`tw.register`, `tw.selected`, `Operation.dialog`, `startedHere`) is finished and tested.
+`ts/tab-hints.ts` implements every TW-TAB-* rule and exports it from the package root, deliberately
+**framework-free**: `DialogAdoption` (TW-TAB-003/004/005) and `VisibilityDelay` (TW-TAB-002,
+TW-REG-021, `failureLinger`). These are the rules a Vuetify footer or a React modal would *obey*, and
+putting them in a UI layer would mean writing them again for every UI, each time with the timing
+re-derived. `adopt.spec.ts::two tabs, injected clock` — the test the specification names — asserts
+all four of its cases.
 
-Note the one rule most easily lost here: `TaskwireFooter` draws **one selected operation's own
-percentage** and never an aggregate one (TW-REG-013), because there is no unit in which two
+**Not built:** `ts/vuetify.ts` is still `export {}`. The `/vuetify` subpath's rendering pieces — the
+dialog adapter over `@dynamicforms/vuetify-modal-form-kit`, and `TaskwireFooter` — need Vuetify and
+the modal kit as installed peers, and neither is present in this checkout. Everything they would
+bind to is finished: `tw.register`, `tw.selected`, `Operation.dialog`, `startedHere`, and now the
+tab hints.
+
+The rule most easily lost when they are written: `TaskwireFooter` draws **one selected operation's
+own percentage** and never an aggregate one (TW-REG-013), because there is no unit in which two
 operations' percentages are commensurable.
 
 ## `ts/muxws.ts` and the TypeScript half of M8 — BUILT
