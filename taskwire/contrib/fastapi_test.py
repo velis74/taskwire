@@ -183,7 +183,11 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
     # cannot pass merely because something earlier in the session happened to leave it right.
     assert taskwire.Settings().rest_prefix == "/taskwire"
     api = router()
-    assert {route.path for route in api.routes} == {"/taskwire/operations", "/taskwire/{token}"}
+    assert {route.path for route in api.routes} == {
+        "/taskwire/operations",
+        "/taskwire/{token}",
+        "/taskwire/{token}/dialogs/{did}",
+    }
 
     with TestClient(_make_app(store)) as http:
         headers = {USER_HEADER: "alice"}
@@ -211,28 +215,42 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         malformed = http.get("/taskwire/not-a-uuid", headers=headers)
         assert malformed.status_code == 404
 
-    # The prefix is an argument, not a constant, and both routes move with it.
+    # The prefix is an argument, not a constant, and every route moves with it.
     custom = router(prefix="/tw")
-    assert {route.path for route in custom.routes} == {"/tw/operations", "/tw/{token}"}
+    assert {route.path for route in custom.routes} == {
+        "/tw/operations",
+        "/tw/{token}",
+        "/tw/{token}/dialogs/{did}",
+    }
 
 
-def test_router_does_not_register_the_four_endpoints_that_arrive_later() -> None:
-    """TW-REST-004: dialogs, cancel, collect and dismiss are M3/M6/M7 and MUST NOT be routed yet.
+def test_router_does_not_register_the_endpoints_that_arrive_later() -> None:
+    """TW-REST-004: cancel, collect and dismiss are M6/M7 and MUST NOT be routed yet.
 
     A route that answers 404 because its handler does not exist is worse than no route at all: a
     client cannot tell it from an expired token (TW-SEC-002 makes an expired token a 404 too).
+
+    `dialogs` left this list when M3 landed and is asserted present below instead.
     """
     api = router()
     paths = [route.path for route in api.routes]
-    for later in ("dialogs", "cancel", "collect", "dismiss"):
+    for later in ("cancel", "collect", "dismiss"):
         assert not any(later in path for path in paths), f"{later} belongs to a later milestone"
 
-    methods: set[str] = set()
-    for route in api.routes:
-        methods |= set(route.methods)
-    # Both mounted rows are reads. Nothing this milestone owns is a POST, so no future POST path can
-    # be swallowed by an existing route either.
-    assert methods == {"GET"}
+    assert any("/dialogs/" in path for path in paths), "the reply path is M3's, and M3 has landed"
+
+
+def test_the_dialog_reply_path_is_declared_before_the_token_path() -> None:
+    """TW-REST-006's reason, applied to a second route.
+
+    FastAPI matches in declaration order, so `/{token}/dialogs/{did}` has to be offered before
+    `/{token}` or the token route swallows it - and the failure would be a reply that 404s while the
+    dialog sits open, holding a worker.
+    """
+    paths = [route.path for route in router().routes]
+    reply = next(index for index, path in enumerate(paths) if "/dialogs/" in path)
+    token_only = next(index for index, path in enumerate(paths) if path.endswith("/{token}"))
+    assert reply < token_only, paths
 
 
 def test_operations_is_matched_before_token(store: object) -> None:

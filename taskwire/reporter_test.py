@@ -728,7 +728,7 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
     handlers = {
         name for name in dir(rest) if not name.startswith("_") and inspect.iscoroutinefunction(getattr(rest, name))
     }
-    assert handlers == {"get_operations", "get_snapshot"}, handlers
+    assert handlers == {"get_operations", "get_snapshot", "reply_to_dialog"}, handlers
 
 
 # --------------------------------------------------------------------- surfaces the brief declares
@@ -794,10 +794,8 @@ async def test_later_milestone_surfaces_raise_rather_than_silently_doing_nothing
     async with operation(new_token(), session="ns", result_kind="k", store=store) as reporter:
         with pytest.raises(NotImplementedError, match="M7"):
             await reporter.set_result(taskwire.Result(kind="k"))
-        with pytest.raises(NotImplementedError, match="M3"):
-            await reporter.ask("confirm")
-        # `subtask` and `split` were stubs here until M2 landed and are now real; the assertion moved
-        # to reporter_test.py's nesting section rather than being deleted.
+        # `subtask`, `split` and `ask` were stubs here until M2 and M3 landed. Their assertions
+        # moved to the nesting section below and to dialogs_test.py rather than being deleted.
 
 
 async def test_reporter_fail_writes_an_error_without_a_stack_trace():

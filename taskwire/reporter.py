@@ -33,10 +33,15 @@ from typing import Any
 
 from .ambient import bind as ambient_bind, unbind as ambient_unbind
 from .models import (
+    Button,
+    DialogAnswer,
+    DialogRequest,
+    DialogState,
     encoded_size,
     Envelope,
     EnvelopeKind,
     Error,
+    Input,
     now_iso,
     Progress,
     ProgressState,
@@ -44,7 +49,7 @@ from .models import (
     Text,
 )
 from .settings import configured, settings
-from .store import key as make_key
+from .store import CANCELLED_BUTTON, key as make_key
 
 logger = logging.getLogger("taskwire.reporter")
 
@@ -87,6 +92,22 @@ def _check_size(name: str, value: Any) -> None:
             f"cap (settings.max_data_bytes). It is not truncated; reduce it or store it yourself "
             f"and pass a reference."
         )
+
+
+def _expand_buttons(buttons: list[str] | list[Button]) -> list[Button]:
+    """TW-DLG-003: the object form on the wire, a list of strings as sugar in Python.
+
+    Each expanded label defaults to `Text(key=f"taskwire.button.{id}")` with **no** `text`: a
+    frontend with a catalogue renders its own wording, and one without shows the id, which is a
+    better failure than a hard-coded English string nobody can translate.
+    """
+    expanded: list[Button] = []
+    for button in buttons:
+        if isinstance(button, Button):
+            expanded.append(button)
+        else:
+            expanded.append(Button(id=button, label=Text(key=f"taskwire.button.{button}")))
+    return expanded
 
 
 class Reporter:
@@ -414,9 +435,96 @@ class Reporter:
         """TW-RES-001/003. The mechanism is M7's; the guard that makes it write-once is here."""
         raise NotImplementedError("collectable results arrive in M7")
 
-    async def ask(self, dialog_id: str, **kwargs: Any) -> Any:
-        """TW-DLG-*: no timeout, no default answer. M3."""
-        raise NotImplementedError("dialogs arrive in M3")
+    async def ask(
+        self,
+        dialog_id: str,
+        *,
+        buttons: list[str] | list[Button],
+        inputs: list[Input] | None = None,
+        params: dict | None = None,
+        title: Text | None = None,
+        text: Text | None = None,
+    ) -> DialogAnswer:
+        """Ask the user a question and **block until the store arbitrates a reply**.
+
+        **There is no timeout** (TW-DLG-005). No `timeout` parameter, no `settings.dialog_timeout`,
+        no `timeout_at`, no declared default outcome, no `DialogTimeout` and no `expired` state.
+        Their absence is the design, not an omission: a deadline would need a default answer, and
+        there is no answer a library can invent on a user's behalf. A programmer who wants one
+        implements it at whatever level suits them.
+
+        The consequence is stated plainly rather than softened (TW-DLG-006): **an unanswered dialog
+        blocks its worker** until Celery's own execution timeout kills the task, at which point the
+        operation becomes `failed` with code `dialog_timeout` and `retryable: true` and its open
+        dialogs are withdrawn. The general problem of a blocked worker is deliberately unsolved.
+
+        `ask()` MUST NOT be called while holding a database transaction (TW-DLG-017). It waits for a
+        human. A transaction held across it holds its locks for as long as the user takes to answer,
+        which may be the rest of the afternoon.
+
+        Returns only when the store arbitrated a reply, so `DialogAnswer` carries no `timed_out`
+        flag - there is no second way out (TW-DLG-007).
+        """
+        if params is not None:
+            _check_size("dialog params", params)
+
+        # TW-DLG-001: `id` is *this asking* - a server-minted UUID unique within the token - and is
+        # the only one of the two ever used as a key, a path segment or a store argument.
+        # `dialog_id` is *which question*, the frontend component identity, and keying by it would
+        # let two concurrent operations rendering the same component answer each other's question
+        # (TW-DLG-002, TW-INV-008).
+        did = str(uuid.uuid4())
+        request = DialogRequest(
+            id=did,
+            dialog_id=dialog_id,
+            buttons=_expand_buttons(buttons),
+            inputs=list(inputs or []),
+            params=params,
+            state=DialogState.OPEN,
+        )
+        if title is not None:
+            self._progress.title = title
+        if text is not None:
+            self._progress.label = text
+
+        # A dialog open is never throttled (TW-THR-004/005, TW-INV-005): a question the user cannot
+        # see is a worker nobody can free.
+        await self.flush()
+        rev = await self._store.put_dialog(self._key, request, settings.active_ttl)
+        await self._store.publish(
+            self._ns,
+            Envelope(token=self._token, rev=rev, kind=EnvelopeKind.DIALOG_OPEN, body=request.to_dict()),
+        )
+
+        reply = await self._store.await_dialog(self._key, did)
+
+        # TW-DLG-012: a dialog on a cancelled operation is flipped to `cancelled` and `ask()` raises
+        # OperationCancelled whatever `raise_on_cancel` says. A withdrawal is not an answer, and
+        # returning one would let the caller act on a choice nobody made.
+        if reply.button == CANCELLED_BUTTON:
+            self._cancelled = True
+            raise OperationCancelled(f"taskwire: operation {self._token} was cancelled while asking {dialog_id}")
+
+        snapshot = await self._store.snapshot(self._key)
+        closed = next((d for d in (snapshot.dialogs if snapshot else []) if d.id == did), None)
+        await self._store.publish(
+            self._ns,
+            Envelope(
+                token=self._token,
+                rev=snapshot.rev if snapshot else rev,
+                kind=EnvelopeKind.DIALOG_CLOSE,
+                body={
+                    "id": did,
+                    "state": DialogState(closed.state).value if closed else DialogState.ANSWERED.value,
+                    "reply": reply.to_dict(),
+                },
+            ),
+        )
+        # The state returns to `running` on resolution (TW-DLG-009) with nothing written: it was
+        # never written on the way in either. `waiting_input` is derived from the open dialogs
+        # themselves, which is what TW-PROG-010 requires and what makes the two ends agree.
+        await self.flush()
+        return DialogAnswer(button=reply.button, values=reply.values)
 
     async def flush(self) -> None:
         """A subtask has nothing of its own to flush; it forces the root's (TW-THR-004)."""

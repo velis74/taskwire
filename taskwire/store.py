@@ -21,6 +21,7 @@ import time
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import replace
 from enum import Enum
 
 from .models import (
@@ -62,6 +63,28 @@ class DialogResolution(Enum):
     NOT_FOUND = "not_found"
     ALREADY_ANSWERED = "already_answered"
     CANCELLED = "cancelled"
+
+
+CANCELLED_BUTTON = "__taskwire_cancelled__"
+"""The reserved button a withdrawal pushes onto a dialog's reply channel (TW-CANCEL-007).
+
+With dialog timeouts gone (TW-DLG-005), a sentinel on the reply channel is the ONLY thing that can
+wake a worker blocked in `ask()`. It is spelled with a reserved name rather than by a second channel
+or a separate flag so that the waking path and the answering path are the same code - a second path
+is a second place to forget to wake somebody.
+
+`ask()` recognises it and raises `OperationCancelled` whatever `raise_on_cancel` says (TW-DLG-012);
+it is never returned to an application as an answer.
+"""
+
+_CANCELLED_SENTINEL = DialogReply(button=CANCELLED_BUTTON, values={})
+
+_AWAIT_POLL_SECONDS = 0.05
+"""How long `await_dialog` blocks before re-reading (TW-BP-008).
+
+A liveness device inside the store, never a deadline offered to `ask()` - the loop it bounds has no
+overall deadline at all. A lost wakeup costs this much latency instead of hanging forever.
+"""
 
 
 class DialogVanished(Exception):  # noqa: N818 - the name is specified (TW-DLG-008)
@@ -208,10 +231,29 @@ class MemoryStore(TaskwireStore):
         return Snapshot(
             token=token,
             rev=entry.rev,
-            progress=entry.progress,
+            progress=self._derived_progress(entry),
             dialogs=list(entry.dialogs.values()),
             cancel_requested=entry.cancel_requested,
         )
+
+    @staticmethod
+    def _derived_progress(entry: _Entry) -> Progress:
+        """Present `waiting_input` while a dialog is open, without ever having written it.
+
+        TW-DLG-009 says the state is `waiting_input` while a dialog is open and `running` again on
+        resolution. TW-PROG-010 and TW-PROG-012 say the state must be **derived** and that no caller
+        may write it. Both hold at once only if the derivation happens here, on the way out.
+
+        The copy is not tidiness. The reporter reads a snapshot, mutates the `Progress` it finds and
+        commits it back; handing it the same object with a derived state would persist that state,
+        and an operation would stay `waiting_input` after its last question closed - parked forever,
+        with nothing to release it (TW-INV-006).
+        """
+        progress = entry.progress
+        has_open_dialog = any(DialogState(d.state) is DialogState.OPEN for d in entry.dialogs.values())
+        if not has_open_dialog or progress.is_terminal:
+            return progress
+        return replace(progress, state=ProgressState.WAITING_INPUT)
 
     # ---------------------------------------------------------------- writes
 
@@ -393,16 +435,133 @@ class MemoryStore(TaskwireStore):
     # ---------------------------------------------------------------- M3 / M7
 
     async def put_dialog(self, key: str, dialog: DialogRequest, ttl: float) -> int:  # noqa: A002
-        raise NotImplementedError("dialogs arrive in M3")
+        """Write a dialog and bump `rev` atomically (TW-STORE-002).
+
+        Adds the token to the asking set, which is the ONLY thing that set is for (TW-KEY-005): it
+        answers TW-STORE-006's second term, so a private operation is listed for exactly as long as
+        it holds a question and no longer. It is not a subscription, not a watcher list, and never an
+        authorization scope.
+        """
+        async with self._lock:
+            ns, token = split_key(key)
+            entry = self._live(key)
+            if entry is None:
+                return 0
+            entry.dialogs[dialog.id] = dialog
+            entry.replies.setdefault(dialog.id, asyncio.Queue())
+            entry.rev = max(self._now_ms(), entry.rev + 1)
+            entry.expires_at = self._clock() + ttl
+            # TW-PRIV-004: privacy never narrows the dialog family. A private operation asking a
+            # question joins the register for as long as it asks, because a question nobody can see
+            # is a worker nobody can free (TW-INV-005).
+            self._asking.setdefault(ns, set()).add(token)
+            return entry.rev
 
     async def resolve_dialog(self, key: str, did: str, reply: DialogReply) -> DialogResolution:  # noqa: A002
-        raise NotImplementedError("dialogs arrive in M3")
+        """**The single arbiter of first-answer-wins** (TW-STORE-003).
+
+        Atomically: verify the dialog is still `open`, record the reply, flip it to `answered`, bump
+        `rev`, wake any waiter, return ACCEPTED. Otherwise return the reason and change NOTHING.
+
+        Its return value is the ONLY signal any caller may trust about who won. A caller that read
+        the document instead would be reading it after the race, not during it, and two tabs
+        answering at once would both believe they had.
+        """
+        async with self._lock:
+            entry = self._live(key)
+            if entry is None:
+                return DialogResolution.NOT_FOUND
+            dialog = entry.dialogs.get(did)
+            if dialog is None:
+                return DialogResolution.NOT_FOUND
+
+            state = DialogState(dialog.state)
+            if state is DialogState.ANSWERED:
+                return DialogResolution.ALREADY_ANSWERED
+            if state is DialogState.CANCELLED:
+                return DialogResolution.CANCELLED
+
+            dialog.reply = reply
+            dialog.state = DialogState.ANSWERED
+            entry.rev = max(self._now_ms(), entry.rev + 1)
+            self._wake(entry, did, reply)
+            self._release_asking_if_quiet(key, entry)
+            return DialogResolution.ACCEPTED
 
     async def withdraw_dialogs(self, key: str) -> list[str]:  # noqa: A002
-        raise NotImplementedError("dialogs arrive in M3")
+        """Flip every still-open dialog to `cancelled`, through the same arbiter (TW-STORE-004).
+
+        A dialog a reply reached first is left `answered` - the two paths race and exactly one wins,
+        which is why they share the lock rather than each having their own idea of the state.
+
+        Called when an operation reaches a terminal state (TW-CANCEL-011) and when a cancel is
+        observed, so a dialog can never outlive the operation that asked it.
+        """
+        async with self._lock:
+            entry = self._live(key)
+            if entry is None:
+                return []
+            withdrawn: list[str] = []
+            for did, dialog in entry.dialogs.items():
+                if DialogState(dialog.state) is not DialogState.OPEN:
+                    continue
+                dialog.state = DialogState.CANCELLED
+                withdrawn.append(did)
+                self._wake(entry, did, _CANCELLED_SENTINEL)
+            if withdrawn:
+                # One bump for the whole withdrawal, not one per dialog: it is a single change of
+                # the operation's situation, and `rev` labels the document, not the dialogs.
+                entry.rev = max(self._now_ms(), entry.rev + 1)
+                self._release_asking_if_quiet(key, entry)
+            return withdrawn
 
     async def await_dialog(self, key: str, did: str) -> DialogReply:  # noqa: A002
-        raise NotImplementedError("dialogs arrive in M3")
+        """Block until the dialog is resolved. **Takes no deadline** (TW-DLG-005, TW-STORE-005).
+
+        The caller has none to give: `ask()` has no timeout, no default answer and no
+        `DialogTimeout`, and their absence is the design rather than an omission. What ends this wait
+        is a reply, a withdrawal, or the document disappearing.
+
+        The wait is a bounded loop that RE-READS the dialog on every wakeup (TW-BP-008), so a lost
+        notification degrades to poll latency instead of hanging forever. The bound is a liveness
+        device inside the store; it is never a deadline offered to `ask()`.
+        """
+        while True:
+            async with self._lock:
+                entry = self._live(key)
+                if entry is None or did not in entry.dialogs:
+                    raise DialogVanished(f"taskwire: dialog {did} no longer exists")
+                dialog = entry.dialogs[did]
+                state = DialogState(dialog.state)
+                if state is DialogState.ANSWERED and dialog.reply is not None:
+                    return dialog.reply
+                if state is DialogState.CANCELLED:
+                    return _CANCELLED_SENTINEL
+                queue = entry.replies.setdefault(did, asyncio.Queue())
+
+            try:
+                return await asyncio.wait_for(queue.get(), timeout=_AWAIT_POLL_SECONDS)
+            except TimeoutError:
+                # Re-read and wait again. No overall deadline is consumed by this.
+                continue
+
+    def _wake(self, entry: _Entry, did: str, reply: DialogReply) -> None:
+        """Push onto the dialog's reply channel so a blocked worker wakes immediately."""
+        queue = entry.replies.setdefault(did, asyncio.Queue())
+        queue.put_nowait(reply)
+
+    def _release_asking_if_quiet(self, key: str, entry: _Entry) -> None:
+        """Leave the asking set once no dialog under this token is still `open` (TW-KEY-005).
+
+        Membership is a fact about a token's *dialogs*, so it never makes a private operation shared:
+        the moment its last question closes it leaves the set and the entry leaves the register,
+        while `result_kind` stays what it was at start (TW-PROG-006).
+        """
+        if any(DialogState(d.state) is DialogState.OPEN for d in entry.dialogs.values()):
+            return
+        ns, token = split_key(key)
+        if ns in self._asking:
+            self._asking[ns].discard(token)
 
     async def release_result(self, key: str) -> Result | None:  # noqa: A002
         raise NotImplementedError("collectable results arrive in M7")

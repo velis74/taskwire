@@ -25,8 +25,19 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .models import Envelope, EnvelopeKind, Error, Progress, ProgressState, Text
-from .store import key as make_key
+from .models import (
+    Button,
+    DialogReply,
+    DialogRequest,
+    DialogState,
+    Envelope,
+    EnvelopeKind,
+    Error,
+    Progress,
+    ProgressState,
+    Text,
+)
+from .store import DialogResolution, key as make_key
 
 StoreFactory = Callable[..., Any]
 
@@ -321,6 +332,69 @@ async def test_error_survives_a_round_trip(make_store: StoreFactory) -> None:
     assert "Traceback" not in str(snapshot.progress.error.message.to_dict())
 
 
+async def test_list_operations_includes_a_private_operation_only_while_it_asks(
+    make_store: StoreFactory,
+) -> None:
+    """TW-STORE-006's second term, TW-PRIV-004 and TW-KEY-005, named in the specification.
+
+    Privacy narrows listing and fan-out; it never narrows the dialog family (TW-INV-022). A question
+    nobody can see is a worker nobody can free, so a private operation joins the register for exactly
+    as long as it holds a question - and leaves the moment its last one closes, without ever becoming
+    shared: `result_kind` stays what it was at start (TW-PROG-006).
+    """
+    store = make_store()
+    k = make_key(NS, "private-asker")
+    await store.commit(k, _progress(result_kind=None), 60)
+    assert await store.list_operations(NS) == [], "unlisted before it asks (TW-PRIV-002)"
+
+    dialog = DialogRequest(id="d1", dialog_id="confirm", buttons=[Button(id="ok")])
+    await store.put_dialog(k, dialog, 60)
+
+    listed = await store.list_operations(NS)
+    assert [s.token for s in listed] == ["private-asker"]
+    assert listed[0].progress.result_kind is None, "listed, and still private while listed"
+
+    await store.resolve_dialog(k, "d1", DialogReply(button="ok"))
+    assert await store.list_operations(NS) == [], "gone again once its last question closes"
+
+
+async def test_resolve_dialog_accepts_exactly_once(make_store: StoreFactory) -> None:
+    """TW-STORE-003, under REAL concurrency rather than sequentially.
+
+    The return value is the ONLY signal any caller may trust about who won. A store that decided by
+    reading the document would be reading it after the race rather than during it.
+    """
+    store = make_store()
+    k = make_key(NS, "raced")
+    await store.commit(k, _progress(), 60)
+    await store.put_dialog(k, DialogRequest(id="d1", dialog_id="confirm", buttons=[Button(id="ok")]), 60)
+
+    outcomes = await asyncio.gather(
+        *[store.resolve_dialog(k, "d1", DialogReply(button="ok", values={"tab": i})) for i in range(16)]
+    )
+    assert sum(1 for o in outcomes if o is DialogResolution.ACCEPTED) == 1, outcomes
+    assert all(o is DialogResolution.ALREADY_ANSWERED for o in outcomes if o is not DialogResolution.ACCEPTED)
+
+
+async def test_withdraw_and_resolve_race_has_one_winner(make_store: StoreFactory) -> None:
+    """TW-STORE-004: both paths share the arbiter, so a dialog a reply reached first stays answered."""
+    store = make_store()
+    k = make_key(NS, "withdrawn")
+    await store.commit(k, _progress(), 60)
+    await store.put_dialog(k, DialogRequest(id="d1", dialog_id="confirm", buttons=[Button(id="ok")]), 60)
+
+    resolved, withdrawn = await asyncio.gather(
+        store.resolve_dialog(k, "d1", DialogReply(button="ok")),
+        store.withdraw_dialogs(k),
+    )
+    assert resolved is DialogResolution.ACCEPTED
+    assert withdrawn == []
+
+    snapshot = await store.snapshot(k)
+    assert snapshot is not None
+    assert DialogState(snapshot.dialogs[0].state) is DialogState.ANSWERED
+
+
 CHECKS: tuple[Callable[[StoreFactory], Awaitable[None]], ...] = (
     test_commit_bumps_rev_monotonically,
     test_concurrent_commits_rev_and_body_agree,
@@ -334,6 +408,9 @@ CHECKS: tuple[Callable[[StoreFactory], Awaitable[None]], ...] = (
     test_drop_is_idempotent_and_leaves_siblings,
     test_publish_never_raises,
     test_migrate_is_idempotent_and_preserves_rev,
+    test_list_operations_includes_a_private_operation_only_while_it_asks,
+    test_resolve_dialog_accepts_exactly_once,
+    test_withdraw_and_resolve_race_has_one_winner,
     test_terminal_document_can_still_be_dropped,
     test_error_survives_a_round_trip,
 )

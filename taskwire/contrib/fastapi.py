@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request, Response
 
 from ..delivery import Client
-from ..rest import get_operations, get_snapshot
+from ..rest import get_operations, get_snapshot, reply_to_dialog
 from ..settings import configured, settings
 
 CONNECTION_HEADER = "X-Taskwire-Connection"
@@ -54,6 +54,15 @@ def router(prefix: str | None = None) -> APIRouter:
     @api.get("/operations")
     async def operations(request: Request, response: Response) -> Any:
         status, payload = await get_operations(build_client(request))
+        response.status_code = status
+        return payload
+
+    # Declared before `/{token}` for the same reason `/operations` is: FastAPI matches in
+    # declaration order, and a longer path must be offered first or the token route swallows it.
+    @api.post("/{token}/dialogs/{did}")
+    async def dialog_reply(token: str, did: str, request: Request, response: Response) -> Any:
+        body = await request.json() if await request.body() else {}
+        status, payload = await reply_to_dialog(build_client(request), token, did, body)
         response.status_code = status
         return payload
 
