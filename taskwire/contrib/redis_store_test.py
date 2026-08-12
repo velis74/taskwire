@@ -277,3 +277,90 @@ async def test_a_dialog_answered_in_another_process_wakes_the_worker(redis_url) 
 
     await worker.aclose()
     await web.aclose()
+
+
+async def test_serving_a_socket_subscribes_this_process_to_that_namespace(redis_url) -> None:
+    """TW-BP-004, end to end, and the hole it closes.
+
+    A started reader that was never told which namespaces this process holds connections for is
+    subscribed to NOTHING. The backplane is connected and silent, no envelope ever arrives, and
+    polling covers for it well enough that the deployment looks fine - which is the worst shape a
+    bug can have.
+
+    `serve_peer` is where a process learns it holds a connection, so that is where the subscription
+    happens.
+    """
+    import asyncio
+
+    import taskwire
+
+    from taskwire.contrib.muxws import serve_peer, tag_peer
+    from taskwire.models import Envelope, EnvelopeKind
+
+    class Peer:
+        def __init__(self) -> None:
+            self.tags: dict = {}
+
+        def on_stream(self, handler) -> None:  # noqa: ARG002
+            self.handler = handler
+
+    received: list = []
+
+    class Recorder(taskwire.TaskwireTransport):
+        async def notify(self, session: str, envelope: Envelope) -> None:
+            received.append((session, envelope))
+
+    store = RedisStore(redis_url)
+    taskwire.configure(store=store, transport=Recorder())
+    await taskwire.start_taskwire_reader()
+    try:
+        peer = Peer()
+        tag_peer(peer, "acct-42")
+        await serve_peer(peer, "acct-42")
+        await asyncio.sleep(0.2)  # let the subscription land
+
+        writer = RedisStore(redis_url)
+        await writer.publish("acct-42", Envelope(token="t", rev=3, kind=EnvelopeKind.PROGRESS, body={}))
+        for _ in range(60):
+            if received:
+                break
+            await asyncio.sleep(0.05)
+        await writer.aclose()
+
+        assert received, "the reader was started but subscribed to nothing"
+        assert received[0][0] == "acct-42"
+        assert received[0][1].rev == 3
+    finally:
+        await taskwire.stop_taskwire_reader()
+        taskwire.reset_configuration()
+        await store.aclose()
+
+
+async def test_a_vanished_watcher_never_touches_the_operation(redis_url) -> None:
+    """TW-REG-008 / TW-INV-015: a disconnect is not a statement of intent.
+
+    Releasing a peer unsubscribes the process; it must not cancel, delete or shorten anything. A
+    `finally` on disconnect that deleted the progress document of a running 90,000-row import is the
+    failure this rule exists to prevent.
+    """
+    import taskwire
+
+    from taskwire.contrib.muxws import release_peer
+    from taskwire.reporter import new_token
+
+    store = RedisStore(redis_url)
+    taskwire.configure(store=store, transport=taskwire.NullTransport())
+    try:
+        token = new_token()
+        key = make_key("acct-42", token)
+        await store.commit(key, Progress(state=ProgressState.RUNNING, result_kind="k", origin_session="acct-42"), 60)
+
+        await release_peer(object(), "acct-42")
+
+        snapshot = await store.snapshot(key)
+        assert snapshot is not None, "the operation must survive its watcher going away"
+        assert ProgressState(snapshot.progress.state) is ProgressState.RUNNING
+        assert snapshot.cancel_requested is False
+    finally:
+        taskwire.reset_configuration()
+        await store.aclose()

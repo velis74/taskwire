@@ -75,8 +75,21 @@ async def on_socket(peer, request):
     ns = session_resolver(request)      # the same resolver REST uses
     tag_peer(peer, ns)
     registry.add(peer)
-    await serve_peer(peer, ns)
+    await serve_peer(peer, ns)          # also subscribes this process to twx:{ns}
+
+async def on_socket_closed(peer, ns):
+    await release_peer(peer, ns, registry)
 ```
+
+`serve_peer` is also where this process learns it holds a connection for that namespace, so its
+Redis reader subscribes to `twx:{ns}` there. **A reader that was never told which namespaces to
+watch is subscribed to nothing**: the backplane is connected and silent, no envelope arrives, and
+polling covers for it well enough that the deployment looks fine. `release_peer` unsubscribes once
+this process holds no more sockets of that namespace.
+
+A vanished watcher never affects the operation itself. A disconnect is not a statement of intent:
+nothing is cancelled, deleted or shortened, and a 90,000-row import keeps running with nobody
+looking at it.
 
 ```ts
 // client, once

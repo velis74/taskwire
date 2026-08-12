@@ -23,6 +23,7 @@ makes the swap safe to make and safe to undo.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from typing import Any
@@ -32,6 +33,7 @@ from muxws.errors import ConnectionLost
 
 from ..delivery import Client, effective_delivery, may_be_suppressed, OperationRef, OVERRIDES_TAG
 from ..models import Envelope, EnvelopeKind, Progress
+from ..reader import unwatch_namespace, watch_namespace
 from ..settings import settings
 from ..transport import TaskwireTransport
 
@@ -288,6 +290,11 @@ async def serve_peer(peer: Any, session: str, *, allow_socket_replies: bool = Fa
 
     peer.on_stream(on_stream)
 
+    # TW-BP-004: this process now holds a connection for `session`, so its reader subscribes to that
+    # namespace's channel. A no-op in a single-process deployment, and the difference between a
+    # working backplane and a silent one in a cross-process deployment.
+    await watch_namespace(session)
+
 
 async def goaway_if_stale(peer: Any, current_session: str | None) -> bool:
     """Close a socket whose session tag no longer names the current identity (TW-WS-007, TW-AMB-012).
@@ -303,4 +310,25 @@ async def goaway_if_stale(peer: Any, current_session: str | None) -> bool:
     if current_session is not None and tagged == current_session:
         return False
     await peer.close(reason="taskwire: session changed")
+    if isinstance(tagged, str):
+        await release_peer(peer, tagged)
     return True
+
+
+async def release_peer(peer: Any, session: str, registry: Any = None) -> None:
+    """Call when a socket closes. Unsubscribes the process once it holds no more of that namespace.
+
+    TW-BP-004's second half. Nothing breaks if it is skipped - the envelopes are simply delivered
+    to nobody - but every process ends up subscribed to every namespace any of them ever saw,
+    which is the cost the per-process rule exists to avoid.
+
+    **A vanished watcher never affects the operation itself** (TW-REG-008, TW-INV-015). A
+    disconnect is not a statement of intent: nothing here cancels, deletes or shortens anything,
+    and a 90,000-row import keeps running with nobody looking at it.
+    """
+    if registry is not None:
+        with contextlib.suppress(Exception):
+            registry.remove(peer)
+        if registry.peers_for(**{SESSION_TAG: session}):
+            return  # this process still holds another socket of that namespace
+    await unwatch_namespace(session)

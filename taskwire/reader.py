@@ -70,6 +70,32 @@ async def stop_taskwire_reader() -> None:
     return None
 
 
+async def watch_namespace(ns: str) -> None:
+    """Tell this process's readers that it now holds a connection for `ns` (TW-BP-004).
+
+    **A web process subscribes only to the namespaces it currently holds connections for**, and that
+    is the ONLY discrimination at the channel level - it is per *process*, never per token and never
+    per tab (TW-BP-002). Without this call a started reader is subscribed to nothing and no envelope
+    ever arrives: the backplane is connected and silent, and polling covers for it well enough that
+    the deployment looks fine.
+
+    A no-op when the store publishes in-process, because there is no channel to join.
+    """
+    for reader in list(_running):
+        await reader.watch(ns)
+
+
+async def unwatch_namespace(ns: str) -> None:
+    """...and unsubscribe when it holds none.
+
+    Not doing so is not a correctness bug - the envelopes would simply be delivered to nobody - but
+    it makes every process a subscriber to every namespace any of them ever saw, which is the cost
+    the per-process rule exists to avoid.
+    """
+    for reader in list(_running):
+        await reader.unwatch(ns)
+
+
 def check_taskwire_readers() -> None:
     """Warn when a transport is configured but no reader is running (TW-BP-006).
 
