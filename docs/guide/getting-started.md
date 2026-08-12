@@ -43,13 +43,25 @@ taskwire.configure(
 )
 ```
 
-Then mount the endpoints:
+Then mount the endpoints. One call, and the whole REST transport exists:
 
 ```python
-from taskwire.contrib.fastapi import router
+from fastapi import APIRouter
+from taskwire.contrib.viewsets import register_taskwire_rest
 
-app.include_router(router())   # /taskwire/operations, /taskwire/{token}, ...
+router = APIRouter()
+register_taskwire_rest(router)   # GET /taskwire, GET /taskwire/{token}, cancel, collect, ...
+app.include_router(router)
 ```
+
+That needs `pip install "taskwire[fastapi,viewsets]"`. taskwire declares its REST API as a
+[fastapi-viewsets](https://docs.velis.si/) viewset, so your middleware chain, your authentication and
+your `@action_configuration` apply to taskwire's endpoints exactly as they do to your own — rather
+than taskwire inventing a second way to be configured and protected.
+
+**On a different framework, or none at all?** `taskwire.rest` holds every decision these endpoints
+make and imports no framework whatsoever; `taskwire.contrib.asgi` mounts the identical protocol with
+nothing installed but Python, in about ninety lines you can copy.
 
 ## Report progress
 

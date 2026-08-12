@@ -7,6 +7,34 @@ deliverable: it is how the specification gets fixed.
 Entries marked **CONFIRMED** were put to the author and answered. Entries marked **OPEN** are my own
 conservative choice and still need a decision.
 
+> **See also `NEXT.md`.** The questions raised after the fastapi-viewsets rework — whether
+> `contrib/fastapi.py` should be deleted now that the viewset supersedes it, and whether the demo
+> should mount `taskwire/vuetify` — live there with the work queue they belong to, rather than being
+> restated here where they would drift out of step with it.
+
+---
+
+## taskwire-spec.md §2.1 / TW-CORE-006 — the dependency arrow was backwards — CORRECTED
+
+**The document said**: `fastapi-viewsets --optional--> taskwire`, and TW-CORE-006 listed
+fastapi-viewsets by name among the imports the Python core must never make — phrased so that it read
+as a ban outright rather than the same confinement FastAPI and Celery get.
+
+**Why that was a problem, not a quibble**: read literally it makes taskwire's REST API un-buildable
+on fastapi-viewsets, because doing so would close a dependency circle. That reading was acted on: it
+produced an argument *against* the author's actual instruction, and cost a round of clarification to
+undo.
+
+**What is true**: taskwire *uses* fastapi-viewsets to declare its own REST API
+(`contrib/viewsets.py`), exactly as it uses FastAPI — banned from the core, allowed in `contrib`.
+An application built with fastapi-viewsets separately uses taskwire for progress. Two relationships,
+no circle. Both the diagram and TW-CORE-006 now say so, each with an amendment note explaining what
+the earlier text was and why it was wrong.
+
+**The lesson worth keeping**: a diagram in a design document is not evidence about a third-party
+library. Checking what `~/Projects/@dynamicforms/fastapi-viewsets` actually imports would have
+settled it in one command.
+
 ---
 
 ## taskwire-spec.md §2.13 — TW-TR-007 — CONFIRMED

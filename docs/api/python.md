@@ -129,10 +129,12 @@ collect is dropped rather than aged out, and a dialog has no deadline at all.
 
 | Method & path | Success | Failures |
 |---|---|---|
-| `GET {prefix}/operations` | `200` `Register` | — |
+| `GET {prefix}` | `200` `Register` | — |
 | `GET {prefix}/{token}` | `200` `Snapshot` | `404` |
 | `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410`, `422` |
 | `POST {prefix}/{token}/cancel` | `202` | `404`, `409` |
+| `POST {prefix}/{token}/collect` | `204` | `404`, `409` |
+| `POST {prefix}/{token}/dismiss` | `204` | `404`, `409` |
 
 Unknown and foreign tokens both return **404, never 403** — a 403 would confirm the token exists in
 somebody's namespace.

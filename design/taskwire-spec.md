@@ -71,11 +71,32 @@ adapters to things outside the process, never a capability the core lacks.
   `RedisStore.publish` performs a Redis `PUBLISH` consumed by a long-lived reader in each web process.
 - **TW-CORE-005** There MUST be no event log, no sequence numbers, no replay endpoint and no
   gap detection. A client is entitled to current state only.
-- **TW-CORE-006** Python core MUST NOT import FastAPI, Celery, Redis, or fastapi-viewsets. Framework
-  imports are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify or the
-  modal kit outside a subpath export.
+- **TW-CORE-006** Python core MUST NOT import FastAPI, Celery, Redis, pydantic or fastapi-viewsets.
+  Framework imports are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify
+  or the modal kit outside a subpath export.
+
+  > **Amended.** This rule previously read as though fastapi-viewsets were forbidden *outright*,
+  > alongside a dependency diagram drawing `fastapi-viewsets --optional--> taskwire`. Both were
+  > wrong, and the error was consequential: it produced a phantom circular dependency and blocked
+  > the REST transport from being built the way the author asked for.
+  >
+  > **taskwire uses fastapi-viewsets as a tool to build its own REST API** (`contrib/viewsets.py`).
+  > It is subject to the same confinement as FastAPI and Celery — banned from the core, allowed in
+  > `contrib` — and to nothing more. Separately, applications built *with* fastapi-viewsets use
+  > taskwire for progress. Those are two different relationships and neither closes a circle.
 - **TW-CORE-007** The wire vocabulary is closed at the six kinds listed in §1. A seventh kind is a
   breaking change requiring a bump of `Envelope.v`. `command` MUST NOT be added.
+
+  > **Scope clarified.** What this forbids is taskwire carrying the **application's** commands —
+  > `export`, `import`, `recalculate_balances`, and whatever is added next week. That is an open set
+  > whose delivery would require taskwire to know about actions, routing, model serialization and
+  > per-command authorization, at which point it is the viewset layer with a progress bar bolted on.
+  >
+  > It does **not** forbid taskwire's own calls travelling as muxws streams. Those are a closed set
+  > of six; `cancel` is already an envelope kind; and `watch` and `dialog.reply` are already
+  > client→server calls that originate on a stream and never travel as a push. Carrying `collect`,
+  > `dismiss` and the two reads the same way adds no vocabulary the specification does not already
+  > enumerate. A stricter reading of this rule once blocked that work; it should not again.
 - **TW-CORE-008** `snapshot` is not a seventh kind; it is the four pushed kinds bundled into one
   document and is spelled in `Envelope.kind` only because it arrives on the same path.
 - **TW-CORE-009** No `Envelope` MAY travel client to server. `dialog.reply` and `watch` originate
@@ -638,8 +659,10 @@ adapters to things outside the process, never a capability the core lacks.
 
 - **TW-REST-001** The REST path MUST work with zero optional dependencies installed. Handlers MUST be
   plain async functions of `(client, token, body) -> (status, payload)` with no framework types.
-  Adapters `taskwire.contrib.fastapi.router()` and `taskwire.contrib.asgi.app()` MUST be the
-  only places a web framework is imported.
+  Adapters `taskwire.contrib.viewsets.register_taskwire_rest()`, `taskwire.contrib.fastapi.router()`
+  and `taskwire.contrib.asgi.app()` MUST be the only places a web framework is imported. The shipped
+  integration is the viewset; `asgi` exists to keep this rule honest by serving the same protocol
+  with nothing installed but Python.
 - **TW-REST-002** The adapter MUST build `Client`: `session_resolver(request)` fills `session`, the
   request fills `request`, and the optional `X-Taskwire-Connection` header fills `connection`.
   The same header MUST be readable on the request that *starts* an operation, because that is where
@@ -650,7 +673,7 @@ adapters to things outside the process, never a capability the core lacks.
 
   | Method & path | Success | Failures |
   |---|---|---|
-  | `GET {prefix}/operations` | `200` `Register` | — |
+  | `GET {prefix}` | `200` `Register` | — |
   | `GET {prefix}/{token}` | `200` `Snapshot` | `404` unknown, expired, or another namespace's |
   | `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410`, `422` per §6.2 |
   | `POST {prefix}/{token}/cancel` | `202` requested | `404` unknown token; `409` already terminal |
@@ -658,8 +681,16 @@ adapters to things outside the process, never a capability the core lacks.
   | `POST {prefix}/{token}/dismiss` | `204` (idempotent) | `404` unknown token; `409` not releasable |
 
 - **TW-REST-005** No endpoint MAY create a token. An unclaimed token MUST simply be unknown.
-- **TW-REST-006** `{prefix}/operations` MUST be matched before `{prefix}/{token}`, and the token
-  handler MUST reject any token that is not a well-formed UUID before touching the store.
+- **TW-REST-006** The token handler MUST reject any token that is not a well-formed UUID before
+  touching the store, so scanning the token space costs the caller a round trip and the server
+  nothing.
+
+  > **Amended.** This rule used to open with *"`{prefix}/operations` MUST be matched before
+  > `{prefix}/{token}`"*, which made correctness depend on the order two routes were declared in.
+  > The register now lives at `{prefix}` itself — the collection at the collection's own URL — so
+  > there is no literal segment after the prefix that a token could ever be mistaken for, and the
+  > hazard is gone by construction rather than by a rule somebody has to remember. The UUID check
+  > remains and is unrelated.
 - **TW-REST-007** The per-token `GET` MUST NOT carry `progress_delivery` (that is a fact about a
   pair, not about a document).
 - **TW-REST-008** **Collect and dismiss MUST be the same act with two names**, both routed through

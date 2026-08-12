@@ -24,10 +24,19 @@ Target artefacts:
 Dependency direction is strict and never inverted:
 
 ```
-fastapi-viewsets  --optional-->  taskwire  --optional-->  muxws
-                                      |
-                                      +--optional, npm subpath adapter only-->  vuetify-modal-form-kit
+taskwire  --optional-->  fastapi-viewsets      (taskwire's REST API is declared as a viewset)
+taskwire  --optional-->  muxws                 (the WebSocket transport)
+
+taskwire  --optional, npm subpath adapter only-->  vuetify-modal-form-kit
+
+an application  -->  fastapi-viewsets  and  -->  taskwire   (two independent uses; no circle)
 ```
+
+**Corrected.** This diagram once drew `fastapi-viewsets --optional--> taskwire`, i.e. that
+fastapi-viewsets was a *consumer* of taskwire and therefore forbidden to it. That produced a phantom
+circular dependency and, for a while, an argument against building the REST transport the way it is
+in fact built. taskwire uses fastapi-viewsets exactly as it uses FastAPI: banned from the core,
+imported in `contrib`. See TW-CORE-006.
 
 taskwire must never import fastapi-viewsets, FastAPI, Celery or Redis in its core, and on the npm
 side must never import Vue, Vuetify or the modal kit outside a subpath export. Anyone must be able to

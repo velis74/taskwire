@@ -5,7 +5,7 @@ collected from the first. This is the case the register exists for.
 
 ## The register is the namespace's, not the tab's
 
-`GET /taskwire/operations` returns **every shared operation of the namespace** — the account when a
+`GET /taskwire` returns **every shared operation of the namespace** — the account when a
 user is logged in, the session otherwise. Not this tab's, not this connection's. A user who starts an
 import in one tab and switches to another still sees it, and can still answer its questions.
 

@@ -55,6 +55,7 @@ same deployment seen from two sides.
 pip install taskwire                 # core: no runtime dependencies at all
 pip install "taskwire[redis]"        # cross-process store and backplane
 pip install "taskwire[fastapi]"      # the REST adapter
+pip install "taskwire[viewsets]"     # the REST API as a fastapi-viewsets viewset
 pip install "taskwire[celery]"       # the worker entry point
 pip install "taskwire[muxws]"        # the WebSocket transport
 ```
@@ -62,6 +63,16 @@ pip install "taskwire[muxws]"        # the WebSocket transport
 ```bash
 npm install taskwire
 ```
+
+## The demo
+
+```bash
+pip install -e ".[fastapi,viewsets,demo]" && npm install
+python demo.py                       # then open http://127.0.0.1:5174
+```
+
+A night batch over one book: three back-office jobs that between them exercise progress, nested
+progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](demo/README.md).
 
 ## Status
 
