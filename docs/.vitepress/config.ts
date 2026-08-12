@@ -21,6 +21,8 @@ export default defineConfig({
             { text: 'Progress and nesting', link: '/guide/progress' },
             { text: 'Dialogs', link: '/guide/dialogs' },
             { text: 'Cancellation', link: '/guide/cancellation' },
+            { text: 'Collectable results', link: '/guide/results' },
+            { text: 'Several operations', link: '/guide/several-operations' },
             { text: 'Transports', link: '/guide/transports' },
           ],
         },

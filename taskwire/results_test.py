@@ -335,3 +335,55 @@ def test_the_result_decorators_are_sugar_over_result_kind_and_nothing_else():
     assert export_csv() == "done"
     assert import_rows.__name__ == "import_rows"
     assert declared_result_kind(lambda: None) is None, "an undecorated callable declares nothing"
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_the_release_hook_receives_the_released_result(configured_store):
+    """TW-RES-010: the event MUST carry the released `Result`.
+
+    Found by running the several-operations example rather than by reading the code: the hook was
+    being handed a snapshot read *after* `release_result`, and `release_result` clears `result` off
+    the document in the same atomic step - so the hook saw `None`.
+
+    That is the exact failure the rule exists to prevent. taskwire stores a pointer and never a file
+    (TW-RES-007), so this hook is the only place that knows how to delete the artefact, and it needs
+    the `ref` to do it. A hook that fires with nothing in it is a hook that leaks every file the
+    application ever generated.
+    """
+    store = configured_store
+    received: list[Result | None] = []
+    configure(result_released=lambda snapshot: received.append(snapshot.progress.result))
+
+    token = new_token()
+    async with operation(token, session=NS, result_kind="taskwire.download", store=store) as reporter:
+        await reporter.set_result(Result.download(href="https://cdn.example.test/report.csv", mime="text/csv"))
+
+    assert (await collect_result(Client(session=NS), token))[0] == 204
+
+    assert len(received) == 1
+    released = received[0]
+    assert released is not None, "the hook fired with no result - the artefact would leak"
+    assert released.kind == "taskwire.download"
+    assert released.ref is not None
+    assert released.ref.href.endswith("report.csv"), "the ref is what the application deletes by"
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_dismiss_carries_the_result_too(configured_store):
+    """Collect and dismiss are the same act (TW-REST-008), so the hook is the same on both paths.
+
+    Dismiss is the path an application is *more* likely to need this on: the user said they do not
+    want it, so the artefact is certainly rubbish and certainly wants deleting.
+    """
+    store = configured_store
+    received: list = []
+    configure(result_released=lambda snapshot: received.append(snapshot.progress.result))
+
+    token = new_token()
+    async with operation(token, session=NS, result_kind="acme.report", store=store) as reporter:
+        await reporter.set_result(Result.panel("acme.report", value={"rows": 7}))
+
+    assert (await dismiss_result(Client(session=NS), token))[0] == 204
+    assert len(received) == 1
+    assert received[0] is not None
+    assert received[0].value == {"rows": 7}

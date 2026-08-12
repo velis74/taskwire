@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from dataclasses import replace
 from typing import Any
 
 from .delivery import Client
@@ -264,11 +265,15 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
         )
     # TW-REG-007: `done` with nothing left to collect leaves the register in the same step.
     await store.drop(key)
-    _fire_result_released(after)
+    # TW-RES-010: the event must CARRY THE RELEASED RESULT. `release_result` clears `result` off the
+    # document as part of the same atomic step, so a snapshot read afterwards has none - and an
+    # application that deletes its own artefact in this hook would have nothing to delete it by.
+    # The released Result is put back on the copy the hook is handed.
+    _fire_result_released(after, released)
     return 204, None
 
 
-def _fire_result_released(snapshot: Any) -> None:
+def _fire_result_released(snapshot: Any, released: Any) -> None:
     """TW-RES-011: the application's hook, and it may not prevent the release.
 
     taskwire deletes nothing on an application's behalf - it stores a pointer, never a file
@@ -279,6 +284,9 @@ def _fire_result_released(snapshot: Any) -> None:
     hook = configured.result_released
     if hook is None or snapshot is None:
         return
+    # The hook is given the operation as it was when it still held the result, because that is the
+    # only form in which the `ref` it needs is present.
+    snapshot.progress = replace(snapshot.progress, result=released)
     try:
         hook(snapshot)
     except Exception:  # noqa: BLE001 - deliberately swallowed; see TW-RES-011

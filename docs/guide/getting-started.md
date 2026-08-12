@@ -97,4 +97,6 @@ which is the point: a user who starts an import in one tab and switches to anoth
 - [Progress and nesting](./progress.md) — subtasks, `split()`, and why percentages compose.
 - [Dialogs](./dialogs.md) — asking the user a question from inside a worker.
 - [Cancellation](./cancellation.md) — and why it raises by default.
+- [Collectable results](./results.md) — parking something for the user to take.
+- [Several operations](./several-operations.md) — the register, the aggregate, the footer.
 - [Transports](./transports.md) — one protocol, three implementations.
