@@ -725,15 +725,45 @@ describe('cancellation', () => {
   });
 
   it('refreshes the cached answer on every commit (TW-CANCEL-004)', async () => {
+    // `raiseOnCancel: false` so the commit can be observed at all: once M6 landed, the default is
+    // that the very next progress call THROWS (TW-CANCEL-002), which is a different rule and has its
+    // own test. An operation that opts out is choosing to poll `cancelled` itself - and this asserts
+    // that polling it is free and still correct.
     const store = new RecordingStore();
     const token = new_token();
 
-    await operation(options(store, token), async (reporter) => {
+    await operation({ ...options(store, token), raiseOnCancel: false }, async (reporter) => {
       store.requestCancel(key(token));
       expect(reporter.cancelled).toBe(false);
       await reporter.flush();
       expect(reporter.cancelled).toBe(true);
     });
+  });
+
+  it('throws from the next progress call when nothing opted out (TW-CANCEL-002)', async () => {
+    // The loop below contains no cancellation handling of any kind. It still stops, and the
+    // operation still ends `cancelled` - which is what a polling API cannot give you, because
+    // somebody always forgets the poll in one of forty loops.
+    const store = new RecordingStore();
+    const token = new_token();
+    let rowsProcessed = 0;
+
+    // Commit on every set(), so the cancel is noticed at the next call rather than at the next
+    // throttle window - the throttle has its own tests, and this one is about the raise.
+    const eagerly = { ...options(store, token), settings: { ...DEFAULT_SETTINGS, progressInterval: 0 } };
+
+    await expect(
+      operation(eagerly, async (reporter) => {
+        for (let row = 0; row < 1000; row += 1) {
+          if (row === 5) store.requestCancel(key(token));
+          await reporter.set({ percent: row / 10 });
+          rowsProcessed = row;
+        }
+      }),
+    ).rejects.toBeInstanceOf(OperationCancelled);
+
+    expect(rowsProcessed).toBeLessThan(20);
+    expect(store.commits.at(-1)?.state).toBe('cancelled');
   });
 
   it('is its own error type, not something a generic catch already swallows (TW-CANCEL-005)', () => {

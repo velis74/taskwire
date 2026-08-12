@@ -654,6 +654,24 @@ export class Reporter {
    * entitled to current state only (TW-CORE-005), and current state just disagreed with what it was
    * told.
    */
+  /**
+   * TW-CANCEL-002: by default the NEXT progress-reporting call throws.
+   *
+   * This single behaviour is the whole argument for the throwing default. A loop containing no
+   * cancellation handling at all still stops, and still ends `cancelled` rather than running to
+   * completion after the user pressed the button - which is what a polling API gives you when
+   * somebody forgets the poll, and somebody always forgets the poll.
+   *
+   * Not while writing a terminal state: `operation()`'s exit is what turns the throw into the
+   * `cancelled` state, and throwing there would leave the operation with no terminal write at all.
+   */
+  private raiseIfCancelled(writingState?: ProgressState): void {
+    if (!this.cancelledValue) return;
+    if (writingState !== undefined) return;
+    if (!this.raiseOnCancelValue) return;
+    throw new OperationCancelled(`taskwire: operation ${this.token} was cancelled`);
+  }
+
   private async commit(state?: ProgressState): Promise<number> {
     if (state !== undefined) this.progress.state = state;
     this.progress.updatedAt = nowIso();
@@ -674,6 +692,7 @@ export class Reporter {
       body: serializeProgress(this.progress) as WireObject,
     };
     await this.store.publish(this.ns, envelope);
+    this.raiseIfCancelled(state);
     return this.revValue;
   }
 }

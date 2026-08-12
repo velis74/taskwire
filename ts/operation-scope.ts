@@ -216,6 +216,12 @@ export async function operation<T>(opts: OperationOptions, body: (reporter: Repo
 
   const outcome: { state: TerminalState; error?: TaskwireError } = ran.ok ? { state: 'done' } : terminalFor(ran.raised);
 
+  // TW-CANCEL-011: withdraw before the terminal write, so a dialog can never outlive the operation
+  // that asked it - and so anyone blocked in `ask()` is woken rather than left on a question whose
+  // operation has already ended. `withdrawDialogs` is optional on the reporter's store subset, so
+  // this is guarded: a purpose-built store need not implement what it never uses.
+  await (store as { withdrawDialogs?: (k: string) => Promise<string[]> }).withdrawDialogs?.(k);
+
   // Write, publish, then drop - in that order (TW-REG-007). The terminal envelope is what a client
   // sees; a poll arriving afterwards finds nothing, and that is correct.
   await reporter.writeTerminal(outcome.state, outcome.error);

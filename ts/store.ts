@@ -406,6 +406,16 @@ export class MemoryStore implements TaskwireStore {
     if (entry === undefined) return 0;
     entry.cancelRequested = true;
     entry.rev = Math.max(this.nowMs(), entry.rev + 1);
+
+    // TW-CANCEL-007: a worker blocked in `ask()` must wake IMMEDIATELY. With dialog timeouts gone
+    // (TW-DLG-005) a sentinel on the reply channel is the only thing that can wake it - otherwise a
+    // cancelled operation sits on its question until something outside kills it.
+    for (const [did, dialog] of entry.dialogs) {
+      if (dialog.state !== 'open') continue;
+      dialog.state = 'cancelled';
+      this.wake(entry, did, CANCELLED_SENTINEL);
+    }
+    this.releaseAskingIfQuiet(key, entry);
     return entry.rev;
   }
 
