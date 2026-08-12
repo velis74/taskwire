@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..delivery import Client
-from ..rest import get_operations, get_snapshot, reply_to_dialog
+from ..rest import get_operations, get_snapshot, reply_to_dialog, request_cancel
 from ..settings import configured, settings
 
 CONNECTION_HEADER = b"x-taskwire-connection"
@@ -57,6 +57,8 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
             rest = path[len(mount) :].strip("/").split("/")
             if len(rest) == 3 and rest[1] == "dialogs":
                 status, payload = await reply_to_dialog(client, rest[0], rest[2], await _body(receive))
+            elif len(rest) == 2 and rest[1] == "cancel":
+                status, payload = await request_cancel(client, rest[0])
             else:
                 status, payload = 404, {"detail": "not_found"}
         elif scope["method"] != "GET":

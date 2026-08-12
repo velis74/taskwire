@@ -16,7 +16,7 @@ import uuid
 from typing import Any
 
 from .delivery import Client
-from .models import DialogReply, DialogState, INPUT_TYPES, now_iso
+from .models import DialogReply, DialogState, Envelope, EnvelopeKind, INPUT_TYPES, now_iso
 from .register import build_register, CEILING_POLL_MS, poll_after_ms
 from .settings import configured
 from .store import DialogResolution, key as make_key
@@ -184,3 +184,40 @@ async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, 
     ):
         return 410, payload
     return 409, payload
+
+
+async def request_cancel(client: Client, token: str) -> Response:
+    """`POST {prefix}/{token}/cancel` - **202, not 200** (TW-REST-009).
+
+    The cancel was *requested*. Only the terminal `cancelled` state confirms it happened, and it may
+    never happen at all: cancellation is cooperative (TW-CANCEL-009), so taskwire does not revoke a
+    Celery task, send a signal or kill a thread. It writes a sticky flag and the operation notices at
+    its next progress call.
+
+    The flag is never cleared (TW-CANCEL-001). An operation holding an uncollected result refuses
+    with 409 (TW-CANCEL-010): its work is over and there is nothing left to interrupt, so the
+    affordance on such an entry is dismiss rather than cancel.
+    """
+    if client.session is None or not _is_uuid(token):
+        return _not_found()
+    store = configured.store
+    if store is None:
+        return _not_found()
+
+    key = make_key(client.session, token)
+    snapshot = await store.snapshot(key)
+    if snapshot is None:
+        return _not_found()
+
+    progress = snapshot.progress
+    if progress.is_terminal:
+        return 409, {"detail": "already_terminal"}
+    if progress.result is not None:
+        return 409, {"detail": "holds_an_uncollected_result"}
+
+    rev = await store.request_cancel(key)
+    await store.publish(
+        client.session,
+        Envelope(token=token, rev=rev, kind=EnvelopeKind.CANCEL, body={}),
+    )
+    return 202, {"detail": "requested"}

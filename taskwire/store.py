@@ -338,6 +338,16 @@ class MemoryStore(TaskwireStore):
                 return 0
             entry.cancel_requested = True
             entry.rev = max(self._now_ms(), entry.rev + 1)
+
+            # TW-CANCEL-007: a worker blocked in `ask()` must wake IMMEDIATELY. With dialog timeouts
+            # gone (TW-DLG-005) a sentinel on the reply channel is the only thing that can wake it -
+            # otherwise a cancelled operation would sit on a question until Celery's execution
+            # timeout killed the task, which is minutes of a pinned worker for a click.
+            for did, dialog in entry.dialogs.items():
+                if DialogState(dialog.state) is DialogState.OPEN:
+                    dialog.state = DialogState.CANCELLED
+                    self._wake(entry, did, _CANCELLED_SENTINEL)
+            self._release_asking_if_quiet(key, entry)
             return entry.rev
 
     async def drop(self, key: str) -> None:  # noqa: A002

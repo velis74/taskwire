@@ -396,6 +396,7 @@ class Reporter:
         self._rev = await self._store.commit(self._key, self._progress, settings.active_ttl)
         self._last_commit = self._clock()
         self._cancelled = bool(await self._store.is_cancelled(self._key))
+        self._raise_if_cancelled(state)
 
         await self._store.publish(
             self._ns,
@@ -525,6 +526,27 @@ class Reporter:
         # themselves, which is what TW-PROG-010 requires and what makes the two ends agree.
         await self.flush()
         return DialogAnswer(button=reply.button, values=reply.values)
+
+    def _raise_if_cancelled(self, writing_state: ProgressState | None) -> None:
+        """TW-CANCEL-002: by default the NEXT progress-reporting call raises.
+
+        This single behaviour is the whole argument for the raising default. A loop containing no
+        cancellation-handling code at all still stops, and still ends `cancelled` rather than
+        running to completion after the user pressed the button - which is what a polling API gives
+        you when somebody forgets the poll, and somebody always forgets the poll.
+
+        Not while writing a terminal state: `operation()`'s exit is what turns the raise into the
+        `cancelled` state, and raising there would leave the operation with no terminal write at all.
+        """
+        if not self._cancelled:
+            return
+        if writing_state is not None:
+            return
+        resolved = self._raise_on_cancel
+        if resolved is None:
+            resolved = settings.raise_on_cancel
+        if resolved:
+            raise OperationCancelled(f"taskwire: operation {self._token} was cancelled")
 
     async def flush(self) -> None:
         """A subtask has nothing of its own to flush; it forces the root's (TW-THR-004)."""
@@ -800,6 +822,10 @@ class OperationScope:
 
         # Write, publish, then drop - in that order (TW-REG-007). The terminal envelope is what a
         # client sees; a poll arriving afterwards finds nothing, and that is correct.
+        # TW-CANCEL-011: withdraw before the drop, so a dialog can never outlive the operation that
+        # asked it - and so anyone blocked in `ask()` is woken rather than left on a question whose
+        # operation has already ended.
+        await reporter._store.withdraw_dialogs(reporter._key)
         await reporter._commit(state=state)
         await reporter._store.drop(reporter._key)
 

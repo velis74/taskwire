@@ -728,7 +728,7 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
     handlers = {
         name for name in dir(rest) if not name.startswith("_") and inspect.iscoroutinefunction(getattr(rest, name))
     }
-    assert handlers == {"get_operations", "get_snapshot", "reply_to_dialog"}, handlers
+    assert handlers == {"get_operations", "get_snapshot", "reply_to_dialog", "request_cancel"}, handlers
 
 
 # --------------------------------------------------------------------- surfaces the brief declares

@@ -187,6 +187,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         "/taskwire/operations",
         "/taskwire/{token}",
         "/taskwire/{token}/dialogs/{did}",
+        "/taskwire/{token}/cancel",
     }
 
     with TestClient(_make_app(store)) as http:
@@ -221,23 +222,25 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         "/tw/operations",
         "/tw/{token}",
         "/tw/{token}/dialogs/{did}",
+        "/tw/{token}/cancel",
     }
 
 
 def test_router_does_not_register_the_endpoints_that_arrive_later() -> None:
-    """TW-REST-004: cancel, collect and dismiss are M6/M7 and MUST NOT be routed yet.
+    """TW-REST-004: collect and dismiss are M7's and MUST NOT be routed yet.
 
     A route that answers 404 because its handler does not exist is worse than no route at all: a
     client cannot tell it from an expired token (TW-SEC-002 makes an expired token a 404 too).
 
-    `dialogs` left this list when M3 landed and is asserted present below instead.
+    `dialogs` left this list when M3 landed and `cancel` when M6 did; both are asserted present.
     """
     api = router()
     paths = [route.path for route in api.routes]
-    for later in ("cancel", "collect", "dismiss"):
+    for later in ("collect", "dismiss"):
         assert not any(later in path for path in paths), f"{later} belongs to a later milestone"
 
     assert any("/dialogs/" in path for path in paths), "the reply path is M3's, and M3 has landed"
+    assert any(path.endswith("/cancel") for path in paths), "the cancel path is M6's, and M6 has landed"
 
 
 def test_the_dialog_reply_path_is_declared_before_the_token_path() -> None:
