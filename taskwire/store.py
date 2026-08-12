@@ -250,8 +250,13 @@ class MemoryStore(TaskwireStore):
         with nothing to release it (TW-INV-006).
         """
         progress = entry.progress
+        if progress.is_terminal:
+            return progress
+        # TW-PROG-013: an open dialog holds a worker; an uncollected result holds nothing at all.
+        # Both derive the same state and neither is written by a caller, and any code that reasons
+        # "waiting_input implies a pinned worker" is wrong about the second one.
         has_open_dialog = any(DialogState(d.state) is DialogState.OPEN for d in entry.dialogs.values())
-        if not has_open_dialog or progress.is_terminal:
+        if not has_open_dialog and progress.result is None:
             return progress
         return replace(progress, state=ProgressState.WAITING_INPUT)
 
@@ -574,7 +579,35 @@ class MemoryStore(TaskwireStore):
             self._asking[ns].discard(token)
 
     async def release_result(self, key: str) -> Result | None:  # noqa: A002
-        raise NotImplementedError("collectable results arrive in M7")
+        """**The single arbiter of the three release paths** (TW-STORE-016, TW-RES-010).
+
+        Collection, dismissal and the `result_ttl` backstop all come through here, so a collect
+        racing a dismiss releases exactly once. That matters more than it looks: each release fires
+        `result_released`, and an application that deletes its own artefact in that hook would
+        otherwise delete it twice.
+
+        Atomically: verify the operation is in `waiting_input` holding an uncollected result, write
+        the terminal `done`, bump `rev`, and return the released `Result`. Otherwise change nothing
+        and return `None`.
+        """
+        async with self._lock:
+            entry = self._live(key)
+            if entry is None:
+                return None
+            progress = entry.progress
+            if progress.result is None or progress.is_terminal:
+                return None
+            if any(DialogState(d.state) is DialogState.OPEN for d in entry.dialogs.values()):
+                # A blocked worker is not a collectable result (TW-REST-008). The operation is in
+                # `waiting_input` for the other reason, and releasing here would end a job that is
+                # still running.
+                return None
+
+            released = progress.result
+            progress.result = None
+            progress.state = ProgressState.DONE
+            entry.rev = max(self._now_ms(), entry.rev + 1)
+            return released
 
 
 __all__ = [

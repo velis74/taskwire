@@ -728,7 +728,14 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
     handlers = {
         name for name in dir(rest) if not name.startswith("_") and inspect.iscoroutinefunction(getattr(rest, name))
     }
-    assert handlers == {"get_operations", "get_snapshot", "reply_to_dialog", "request_cancel"}, handlers
+    assert handlers == {
+        "get_operations",
+        "get_snapshot",
+        "reply_to_dialog",
+        "request_cancel",
+        "collect_result",
+        "dismiss_result",
+    }, handlers
 
 
 # --------------------------------------------------------------------- surfaces the brief declares
@@ -783,7 +790,7 @@ async def test_set_writes_icon_and_takes_a_per_call_raise_on_cancel():
         assert reporter._raise_on_cancel is False
 
 
-async def test_later_milestone_surfaces_raise_rather_than_silently_doing_nothing():
+async def test_a_misused_surface_raises_rather_than_silently_doing_nothing():
     """A stub must be loud. TW-STORE-001 requires the methods to *exist*; nothing requires them to lie.
 
     A `set_result()` that quietly did nothing would let an application ship a result nobody can
@@ -792,10 +799,11 @@ async def test_later_milestone_surfaces_raise_rather_than_silently_doing_nothing
     """
     store = MemoryStore()
     async with operation(new_token(), session="ns", result_kind="k", store=store) as reporter:
-        with pytest.raises(NotImplementedError, match="M7"):
-            await reporter.set_result(taskwire.Result(kind="k"))
-        # `subtask`, `split` and `ask` were stubs here until M2 and M3 landed. Their assertions
-        # moved to the nesting section below and to dialogs_test.py rather than being deleted.
+        # Every surface this test used to guard is now implemented; their assertions moved to the
+        # nesting section below, to dialogs_test.py, to cancel_test.py and to results_test.py rather
+        # than being deleted. What remains worth asserting is that a *misuse* is still loud.
+        with pytest.raises(ValueError, match="root reporter's"):
+            await reporter.subtask(0, 50).set_result(taskwire.Result(kind="k"))
 
 
 async def test_reporter_fail_writes_an_error_without_a_stack_trace():

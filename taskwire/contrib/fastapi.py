@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request, Response
 
 from ..delivery import Client
-from ..rest import get_operations, get_snapshot, reply_to_dialog, request_cancel
+from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
 from ..settings import configured, settings
 
 CONNECTION_HEADER = "X-Taskwire-Connection"
@@ -69,6 +69,18 @@ def router(prefix: str | None = None) -> APIRouter:
     @api.post("/{token}/cancel")
     async def cancel(token: str, request: Request, response: Response) -> Any:
         status, payload = await request_cancel(build_client(request), token)
+        response.status_code = status
+        return payload
+
+    @api.post("/{token}/collect")
+    async def collect(token: str, request: Request, response: Response) -> Any:
+        status, payload = await collect_result(build_client(request), token)
+        response.status_code = status
+        return payload
+
+    @api.post("/{token}/dismiss")
+    async def dismiss(token: str, request: Request, response: Response) -> Any:
+        status, payload = await dismiss_result(build_client(request), token)
         response.status_code = status
         return payload
 

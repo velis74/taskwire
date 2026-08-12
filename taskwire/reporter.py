@@ -162,6 +162,9 @@ class Reporter:
         # siblings produces the same sum.
         self._children_lock = asyncio.Lock()
         self._ambient_token: Any = None
+        # TW-RES-004: a clean exit with a result already written lands in `waiting_input`
+        # rather than `done`, and `operation()`'s exit reads this to know which.
+        self._result_parked = False
 
     # ---------------------------------------------------------------- properties
 
@@ -433,8 +436,39 @@ class Reporter:
         await self._commit(state=ProgressState.FAILED)
 
     async def set_result(self, result: Result) -> None:
-        """TW-RES-001/003. The mechanism is M7's; the guard that makes it write-once is here."""
-        raise NotImplementedError("collectable results arrive in M7")
+        """Park a result for later collection. Root reporter only, and at most once.
+
+        **This is emphatically not an `ask()`** (TW-RES-005). The task has finished; only the
+        *record* waits. The reporter writes the result and the state, and the worker exits. An
+        implementation that waited for collection the way `ask()` waits for a reply would pin a
+        worker overnight on a download nobody clicked.
+
+        The operation does not go to `done` when its work finishes (TW-RES-004): it lands in
+        `waiting_input` holding the result and stays there until one of the three release paths
+        takes it (TW-RES-010). The awaiting caller's promise still resolves when the *work* finishes,
+        not when the result is collected (TW-RES-006).
+        """
+        if self._notify_parent is not None:
+            raise ValueError(
+                "taskwire: set_result() is a root reporter's, not a subtask's (TW-RES-003). One "
+                "token carries one result, however deep the tree."
+            )
+        if self._progress.result_kind is None:
+            raise ValueError(
+                "taskwire: this operation declared no `result_kind`, so it is private from start to "
+                "finish and has nothing to collect (TW-RES-001, TW-PRIV-001). There is no promotion "
+                "path - declare `result_kind` when the operation starts."
+            )
+        if self._progress.result is not None:
+            raise ValueError("taskwire: a Result is written at most once (TW-RES-001)")
+        _check_size("result", result.to_dict())
+
+        self._progress.result = result
+        # TW-RET-003: the key's TTL becomes `result_ttl` and no keepalive runs against it - nobody is
+        # running, which is the point. Set `result_ttl` no longer than your own artefact retention.
+        self._result_parked = True
+        await self._commit()
+        await self._store.touch(self._key, settings.result_ttl)
 
     async def ask(
         self,
@@ -819,6 +853,15 @@ class OperationScope:
         state, error = _terminal_for(exc_type, exc)
         if error is not None:
             reporter._progress.error = error
+
+        if state is ProgressState.DONE and reporter._result_parked:
+            # TW-RES-004: the work is over, the record is not. The operation parks in
+            # `waiting_input` and the block returns immediately - it does not wait for collection
+            # (TW-RES-005), and neither does the caller awaiting it (TW-RES-006).
+            await reporter._store.withdraw_dialogs(reporter._key)
+            await reporter._commit()
+            await reporter._store.touch(reporter._key, settings.result_ttl)
+            return False
 
         # Write, publish, then drop - in that order (TW-REG-007). The terminal envelope is what a
         # client sees; a poll arriving afterwards finds nothing, and that is correct.

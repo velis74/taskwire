@@ -11,6 +11,7 @@ twenty lines.
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from typing import Any
@@ -20,6 +21,8 @@ from .models import DialogReply, DialogState, Envelope, EnvelopeKind, INPUT_TYPE
 from .register import build_register, CEILING_POLL_MS, poll_after_ms
 from .settings import configured
 from .store import DialogResolution, key as make_key
+
+logger = logging.getLogger("taskwire.rest")
 
 Response = tuple[int, dict[str, Any] | None]
 
@@ -221,3 +224,72 @@ async def request_cancel(client: Client, token: str) -> Response:
         Envelope(token=token, rev=rev, kind=EnvelopeKind.CANCEL, body={}),
     )
     return 202, {"detail": "requested"}
+
+
+async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
+    """The shared body of collect and dismiss (TW-REST-008).
+
+    **They are the same act with two names.** Collect is "I have taken it", dismiss is "I do not
+    want it"; both release the result, both fire `result_released`, and both remove the entry for
+    every tab at once. Only their idempotence differs, and for a concrete reason: dismissing twice is
+    harmless, but an application that fires `result_released` twice deletes its artefact twice.
+    """
+    if client.session is None or not _is_uuid(token):
+        return _not_found()
+    store = configured.store
+    if store is None:
+        return _not_found()
+
+    key = make_key(client.session, token)
+    snapshot = await store.snapshot(key)
+    if snapshot is None:
+        # Dismiss is idempotent: an entry already released and dropped is exactly the state the
+        # caller asked for. Collect is not - there is nothing to hand back.
+        return (204, None) if idempotent else _not_found()
+
+    if snapshot.progress.result is None:
+        # Queued, running, or holding an open dialog. Releasing is not cancelling, and a blocked
+        # worker is not a collectable result (TW-REST-008).
+        return 409, {"detail": "no_uncollected_result"}
+
+    released = await store.release_result(key)
+    if released is None:
+        return (204, None) if idempotent else (409, {"detail": "no_uncollected_result"})
+
+    after = await store.snapshot(key)
+    if after is not None:
+        await store.publish(
+            client.session,
+            Envelope(token=token, rev=after.rev, kind=EnvelopeKind.PROGRESS, body=after.progress.to_dict()),
+        )
+    # TW-REG-007: `done` with nothing left to collect leaves the register in the same step.
+    await store.drop(key)
+    _fire_result_released(after)
+    return 204, None
+
+
+def _fire_result_released(snapshot: Any) -> None:
+    """TW-RES-011: the application's hook, and it may not prevent the release.
+
+    taskwire deletes nothing on an application's behalf - it stores a pointer, never a file
+    (TW-RES-007) - so this is where an application deletes its own artefact. An exception out of it
+    is swallowed and logged: the result is already released, and raising here would leave the caller
+    believing a release failed that in fact happened.
+    """
+    hook = configured.result_released
+    if hook is None or snapshot is None:
+        return
+    try:
+        hook(snapshot)
+    except Exception:  # noqa: BLE001 - deliberately swallowed; see TW-RES-011
+        logger.warning("taskwire: result_released hook raised; the result is released regardless", exc_info=True)
+
+
+async def collect_result(client: Client, token: str) -> Response:
+    """`POST {prefix}/{token}/collect` - "I have taken it". Not idempotent (TW-REST-008)."""
+    return await _release(client, token, idempotent=False)
+
+
+async def dismiss_result(client: Client, token: str) -> Response:
+    """`POST {prefix}/{token}/dismiss` - "I do not want it". Idempotent (TW-REST-008)."""
+    return await _release(client, token, idempotent=True)

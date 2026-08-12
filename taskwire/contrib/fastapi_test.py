@@ -188,6 +188,8 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         "/taskwire/{token}",
         "/taskwire/{token}/dialogs/{did}",
         "/taskwire/{token}/cancel",
+        "/taskwire/{token}/collect",
+        "/taskwire/{token}/dismiss",
     }
 
     with TestClient(_make_app(store)) as http:
@@ -223,24 +225,27 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         "/tw/{token}",
         "/tw/{token}/dialogs/{did}",
         "/tw/{token}/cancel",
+        "/tw/{token}/collect",
+        "/tw/{token}/dismiss",
     }
 
 
-def test_router_does_not_register_the_endpoints_that_arrive_later() -> None:
-    """TW-REST-004: collect and dismiss are M7's and MUST NOT be routed yet.
+def test_the_router_mounts_exactly_the_specified_endpoints() -> None:
+    """TW-REST-004: the table has six rows and the router has six routes, no more and no fewer.
 
-    A route that answers 404 because its handler does not exist is worse than no route at all: a
-    client cannot tell it from an expired token (TW-SEC-002 makes an expired token a 404 too).
-
-    `dialogs` left this list when M3 landed and `cancel` when M6 did; both are asserted present.
+    A route with no handler behind it is worse than no route: a client cannot tell its 404 from an
+    expired token's (TW-SEC-002 makes both 404). Now that every milestone has landed, the check is
+    that nothing EXTRA appears - a seventh path would be a wire change nobody agreed to.
     """
-    api = router()
-    paths = [route.path for route in api.routes]
-    for later in ("collect", "dismiss"):
-        assert not any(later in path for path in paths), f"{later} belongs to a later milestone"
-
-    assert any("/dialogs/" in path for path in paths), "the reply path is M3's, and M3 has landed"
-    assert any(path.endswith("/cancel") for path in paths), "the cancel path is M6's, and M6 has landed"
+    paths = {route.path for route in router().routes}
+    assert paths == {
+        "/taskwire/operations",
+        "/taskwire/{token}",
+        "/taskwire/{token}/dialogs/{did}",
+        "/taskwire/{token}/cancel",
+        "/taskwire/{token}/collect",
+        "/taskwire/{token}/dismiss",
+    }
 
 
 def test_the_dialog_reply_path_is_declared_before_the_token_path() -> None:
