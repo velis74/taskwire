@@ -105,6 +105,14 @@ def test_only_reader_calls_notify():
     sources = _package_sources()
     assert len(sources) > 5, f"the scan found only {len(sources)} source files; the glob is wrong"
 
+    # A transport IMPLEMENTATION is allowed to call its own downstream: `MuxwsTransport.notify()`
+    # calls `peer.notify()`, and `LocalTransport.notify()` calls its subscribers. That is not the
+    # thing TW-CORE-003 forbids - what it forbids is anything other than the reader calling *a
+    # transport's* notify, because a reporter->transport shortcut delivers every envelope twice once
+    # Redis and a socket are both present, and duplicate dialog.open envelopes re-render answered
+    # dialogs (TW-INV-002). These two files define the method they call through.
+    transport_implementations = {"transport.py", "contrib/muxws.py"}
+
     ast_offenders: dict[str, list[int]] = {}
     text_offenders: dict[str, list[int]] = {}
     for path in sources:
@@ -127,12 +135,19 @@ def test_only_reader_calls_notify():
         if literal_lines:
             text_offenders[relative] = literal_lines
 
-    assert set(ast_offenders) == {"reader.py"}, (
+    assert set(ast_offenders) - transport_implementations == {"reader.py"}, (
         f"only reader.py may reach a transport's notify(); found {ast_offenders} (TW-CORE-003, TW-CORE-004)"
     )
-    assert set(text_offenders) == {"reader.py"}, (
-        f"`.notify(` must appear in reader.py alone; found {text_offenders} (TW-CORE-003, TW-CORE-004)"
+    assert set(text_offenders) - transport_implementations == {"reader.py"}, (
+        f"`.notify(` must appear in reader.py or a transport implementation alone; found "
+        f"{text_offenders} (TW-CORE-003, TW-CORE-004)"
     )
+
+    # ...and the allowance is narrow: each permitted file must actually BE a transport, defining the
+    # method rather than merely calling somebody else's. Otherwise the exemption becomes a hole.
+    for relative in transport_implementations & set(ast_offenders):
+        source = (PACKAGE_ROOT / relative).read_text(encoding="utf-8")
+        assert "async def notify(" in source, f"{relative} is exempt only because it IS a transport"
     assert ast_offenders["reader.py"], "reader.py must still be the one module that calls notify()"
 
 
