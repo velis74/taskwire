@@ -539,8 +539,11 @@ _PROGRESS_NO_SESSION = {k: v for k, v in _PROGRESS.items() if k != "origin_sessi
         ),
         pytest.param(
             DialogRequest,
-            {"id": "i", "dialog_id": "d"},
-            {"id": "i", "dialog_id": "d", "state": None},
+            # `created_at` is pinned on both sides. It defaults to *now*, so two parses either side
+            # of a millisecond boundary produce different documents and the comparison fails at
+            # random - which is a flake, and a flake in CI is worse than a red test.
+            {"id": "i", "dialog_id": "d", "created_at": "2026-01-01T00:00:00.000Z"},
+            {"id": "i", "dialog_id": "d", "created_at": "2026-01-01T00:00:00.000Z", "state": None},
             id="dialog_request-state",
         ),
         pytest.param(
