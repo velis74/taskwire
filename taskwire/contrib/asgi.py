@@ -13,10 +13,9 @@ from collections.abc import Callable
 from typing import Any
 
 from ..delivery import Client
+from ..headers import CONNECTION_HEADER_BYTES as CONNECTION_HEADER
 from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
 from ..settings import configured, settings
-
-CONNECTION_HEADER = b"x-taskwire-connection"
 
 
 def _header(scope: dict[str, Any], name: bytes) -> str | None:

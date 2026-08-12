@@ -59,16 +59,10 @@ from fastapi_viewsets.decorators.route_viewset import route_viewset
 from fastapi_viewsets.response_classes import NOT_FOUND_RESPONSE
 
 from ..delivery import Client
+from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported
 from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
 from ..settings import configured, settings
 from . import schema
-
-CONNECTION_HEADER = "X-Taskwire-Connection"
-"""TW-REST-002: one header serving two purposes, and there must not be a second.
-
-It names the connection for `progress_delivery` on a read, and it is where `origin_connection` comes
-from on the request that *starts* an operation (TW-PRIV-001).
-"""
 
 SESSION_KEY = "taskwire_session"
 CONNECTION_KEY = "taskwire_connection"

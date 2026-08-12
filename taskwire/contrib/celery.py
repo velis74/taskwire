@@ -51,23 +51,13 @@ from typing import Any
 from celery.exceptions import SoftTimeLimitExceeded
 
 from ..decorators import declared_result_kind
+from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported for callers
 from ..models import Error, Text
 from ..reporter import mark_failed, mark_queued, operation
 from ..settings import configured
 
 logger = logging.getLogger("taskwire.celery")
 
-TOKEN_HEADER = "X-Taskwire-Token"
-"""TW-CELERY-011: the command token travels as a **header**, never a query parameter.
-
-A query parameter lands in access logs, in browser history and in the Referer of every subsequent
-request. A token is an address rather than a grant (TW-SEC-003), so this is not a confidentiality
-disaster - but an address in a log is still an address somebody can poll.
-"""
-
-CONNECTION_HEADER = "X-Taskwire-Connection"
-"""Beside it, when the client has one. One header serving two purposes and there is no second
-(TW-REST-002)."""
 
 DISPATCH_FAILED = "dispatch_failed"
 DIALOG_TIMEOUT = "dialog_timeout"

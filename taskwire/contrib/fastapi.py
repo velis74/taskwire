@@ -13,15 +13,9 @@ from typing import Any
 from fastapi import APIRouter, Request, Response
 
 from ..delivery import Client
+from ..headers import CONNECTION_HEADER
 from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
 from ..settings import configured, settings
-
-CONNECTION_HEADER = "X-Taskwire-Connection"
-"""TW-REST-002: one header serving two purposes, and there must not be a second.
-
-It names the connection for `progress_delivery` on a read, and it is where `origin_connection` comes
-from on the request that *starts* an operation (TW-PRIV-001).
-"""
 
 
 def build_client(request: Request) -> Client:

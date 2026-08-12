@@ -32,6 +32,7 @@ celery = ["celery>=5.3", "nest_asyncio>=1.6"]
 fastapi = ["fastapi>=0.100"]
 viewsets = ["dynamicforms-fastapi-viewsets>=0.3.6"]
 muxws = ["muxws>=0.2"]
+demo = ["uvicorn>=0.27"]
 dev = ["coverage", "pytest", "pytest-asyncio", "pytest-cov", "hypothesis", "httpx", "ruff"]
 
 [project.urls]
@@ -57,7 +58,7 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.ruff]
 # `design` holds the normative specification and the design brief. They are prose that happens to
 # quote Python, and ruff would otherwise reformat the code inside their fenced blocks.
-exclude = ['docs', 'design', 'examples', 'ts', 'node_modules', 'dist', 'build', '.git', '.idea',
+exclude = ['docs', 'design', 'ts', 'node_modules', 'dist', 'build', '.git', '.idea',
     '.pytest_cache', '.ruff_cache']
 line-length = 120
 
@@ -90,4 +91,4 @@ combine-as-imports = true
 order-by-type = false
 
 [tool.coverage.run]
-omit = ["examples/*", "examples/**/*", "test_*.py", "*_test.py"]
+omit = ["demo/*", "demo/**/*", "test_*.py", "*_test.py"]

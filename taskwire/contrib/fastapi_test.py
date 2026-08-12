@@ -22,7 +22,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import taskwire  # noqa: E402
 
-from taskwire.contrib import fastapi as adapter  # noqa: E402
+from taskwire.contrib import (
+    asgi as asgi_adapter,  # noqa: E402
+    fastapi as adapter,  # noqa: E402
+    viewsets as viewset_adapter,  # noqa: E402
+)
 from taskwire.contrib.fastapi import build_client, CONNECTION_HEADER, router  # noqa: E402
 
 USER_HEADER = "X-Test-User"
@@ -169,12 +173,25 @@ def test_router_builds_client_from_request(store: object) -> None:
         assert anonymous.json()["origin_session"] == "ns:alice"
         assert anonymous.json()["origin_connection"] is None
 
-    # 4. There must not be a second header. The adapter names exactly one `X-Taskwire-*` header, and
-    #    `X-Taskwire-Tab` in particular does not exist (TW-PROG-007).
-    source = Path(adapter.__file__).read_text(encoding="utf-8")
+    # 4. There must not be a third header, and `X-Taskwire-Tab` in particular does not exist
+    #    (TW-PROG-007): the server never learns a tab id, because one that did would grow a per-tab
+    #    index nobody could bound.
+    #
+    #    Scanned in `taskwire/headers.py` rather than in this adapter, because that is now the only
+    #    module that spells a header name - every adapter imports from it. One place to add a third
+    #    one means one place to catch it, where before there were four modules and three of them
+    #    could have grown one unnoticed.
+    from taskwire import headers as header_names
+
+    source = Path(header_names.__file__).read_text(encoding="utf-8")
     named = {found.lower() for found in re.findall(r"X-Taskwire-[A-Za-z-]+", source, re.IGNORECASE)}
-    assert named == {"x-taskwire-connection"}
+    assert named == {"x-taskwire-connection", "x-taskwire-token"}
     assert CONNECTION_HEADER == "X-Taskwire-Connection"
+
+    # And no adapter re-spells one, which is how the four copies drifted apart in the first place.
+    for module in (adapter, asgi_adapter, viewset_adapter):
+        spelled = re.findall(r"X-Taskwire-[A-Za-z-]+", Path(module.__file__).read_text(encoding="utf-8"))
+        assert spelled == [], f"{module.__name__} spells a header name instead of importing it"
 
 
 def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) -> None:

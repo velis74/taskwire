@@ -24,6 +24,7 @@ from .decorators import (
     panel_result,
 )
 from .delivery import Client, OperationRef
+from .headers import CONNECTION_HEADER, TOKEN_HEADER
 from .models import (
     Aggregate,
     Button,
@@ -115,11 +116,13 @@ __all__ = [
     "declared_result_params",
     "configure",
     "configured",
+    "CONNECTION_HEADER",
     "key",
     "mark_failed",
     "mark_queued",
     "migrate_namespace",
     "new_token",
+    "TOKEN_HEADER",
     "operation",
     "reset_configuration",
     "run_conformance",

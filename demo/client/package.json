@@ -1,0 +1,22 @@
+{
+  "name": "taskwire-demo-client",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.13.6",
+    "vue": "^3.5.35"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6",
+    "@vue/tsconfig": "^0.7.0",
+    "typescript": "^5",
+    "vite": "^8",
+    "vue-tsc": "^2"
+  }
+}

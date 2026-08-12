@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Progress reporting and awaitable dialogs for long-running server-side operations.",
-  "author": "Jure Erznožnik",
+  "author": "Jure Erzno\u017enik",
   "license": "MIT",
   "files": [
     "dist/*"
@@ -32,7 +32,7 @@
   },
   "workspaces": [
     "docs",
-    "examples/several-operations"
+    "demo/client"
   ],
   "scripts": {
     "build": "vite build",
