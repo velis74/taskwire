@@ -167,9 +167,22 @@ describe('reconnecting (TW-REG-020)', () => {
       client.dispose();
     }
 
-    // And statically: nothing in the package hands `watch` anything but an empty declaration.
-    const offenders = [...sources()].filter(([, text]) => /watch\((?!\s*\{\s*\}\s*\))\s*[A-Za-z{]/.test(text));
+    // And statically. The rule is not "watch takes no arguments" - a user muting an operation
+    // declares a non-empty map, and that is TW-DEL-006's whole purpose. The rule is that nothing
+    // RE-DECLARES a map it had stored: `watch(this.overrides)` on a fresh socket is exactly the
+    // restoration TW-REG-020 forbids, while `watch(whatTheUserJustAskedFor)` is the feature.
+    //
+    // (This check used to read "no non-empty argument anywhere", which held vacuously while there
+    // was no socket. Once ts/muxws.ts existed it would have forbidden overrides outright.)
+    const restores = /\.watch\(\s*(this\.[A-Za-z]*[Oo]verrides|saved|stored|previous|restored)/;
+    const offenders = [...sources()].filter(([, text]) => restores.test(text));
     expect(offenders.map(([name]) => name)).toEqual([]);
+
+    // ...and the one place that reconnects really does declare nothing.
+    const socket = [...sources()].find(([name]) => name === 'muxws.ts');
+    if (socket !== undefined) {
+      expect(socket[1]).toMatch(/announce\(\)[\s\S]*?this\.watch\(\{\}\)/);
+    }
   });
 
   it('a reconnecting client reads the register and restores nothing', async () => {

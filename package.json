@@ -4,19 +4,36 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Progress reporting and awaitable dialogs for long-running server-side operations.",
-  "author": "Jure Erznožnik",
+  "author": "Jure Erzno\u017enik",
   "license": "MIT",
-  "files": ["dist/*"],
+  "files": [
+    "dist/*"
+  ],
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".":         { "require": "./dist/index.cjs",    "import": "./dist/index.js" },
-    "./vue":     { "require": "./dist/vue.cjs",      "import": "./dist/vue.js" },
-    "./muxws":   { "require": "./dist/muxws.cjs",    "import": "./dist/muxws.js" },
-    "./vuetify": { "require": "./dist/vuetify.cjs",  "import": "./dist/vuetify.js" }
+    ".": {
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.js"
+    },
+    "./vue": {
+      "require": "./dist/vue.cjs",
+      "import": "./dist/vue.js"
+    },
+    "./muxws": {
+      "require": "./dist/muxws.cjs",
+      "import": "./dist/muxws.js"
+    },
+    "./vuetify": {
+      "require": "./dist/vuetify.cjs",
+      "import": "./dist/vuetify.js"
+    }
   },
-  "workspaces": ["docs", "examples/several-operations"],
+  "workspaces": [
+    "docs",
+    "examples/several-operations"
+  ],
   "scripts": {
     "build": "vite build",
     "test": "vitest run --coverage",
@@ -25,8 +42,17 @@
     "docs:build": "npm run docs:build -w docs",
     "docs:preview": "npm run docs:preview -w docs"
   },
-  "keywords": ["progress", "dialogs", "dynamicforms", "velis", "vue"],
-  "repository": { "type": "git", "url": "git@github.com:velis74/taskwire.git" },
+  "keywords": [
+    "progress",
+    "dialogs",
+    "dynamicforms",
+    "velis",
+    "vue"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:velis74/taskwire.git"
+  },
   "peerDependencies": {
     "@dynamicforms/vuetify-modal-form-kit": "^0.1.0",
     "muxws": "^0.2.0",
@@ -35,10 +61,18 @@
     "vuetify": "^3.9"
   },
   "peerDependenciesMeta": {
-    "@dynamicforms/vuetify-modal-form-kit": { "optional": true },
-    "muxws": { "optional": true },
-    "vue": { "optional": true },
-    "vuetify": { "optional": true }
+    "@dynamicforms/vuetify-modal-form-kit": {
+      "optional": true
+    },
+    "muxws": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    },
+    "vuetify": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^24",
@@ -53,6 +87,7 @@
     "vite": "^8",
     "vite-plugin-dts": "^5",
     "vitest": "^3",
-    "vue-tsc": "^2"
+    "vue-tsc": "^2",
+    "muxws": "^0.2.0"
   }
 }
