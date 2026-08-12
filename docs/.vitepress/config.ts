@@ -13,8 +13,27 @@ export default defineConfig({
       { text: 'API Reference', link: '/api/python' },
     ],
     sidebar: {
-      '/guide/': [{ text: 'Guide', items: [{ text: 'Getting Started', link: '/guide/getting-started' }] }],
-      '/api/': [{ text: 'API Reference', items: [{ text: 'Python', link: '/api/python' }] }],
+      '/guide/': [
+        {
+          text: 'Guide',
+          items: [
+            { text: 'Getting started', link: '/guide/getting-started' },
+            { text: 'Progress and nesting', link: '/guide/progress' },
+            { text: 'Dialogs', link: '/guide/dialogs' },
+            { text: 'Cancellation', link: '/guide/cancellation' },
+            { text: 'Transports', link: '/guide/transports' },
+          ],
+        },
+      ],
+      '/api/': [
+        {
+          text: 'API reference',
+          items: [
+            { text: 'Python', link: '/api/python' },
+            { text: 'TypeScript', link: '/api/typescript' },
+          ],
+        },
+      ],
     },
     socialLinks: [{ icon: 'github', link: 'https://github.com/velis74/taskwire' }],
     footer: { message: 'Released under the MIT License.' },
