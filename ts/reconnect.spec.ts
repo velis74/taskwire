@@ -18,11 +18,14 @@ import { fileURLToPath } from 'node:url';
 import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { REGISTER_PATH } from './register';
 import { type ClientTransport, DEFAULT_BASE_PATH, new_token, Taskwire } from './taskwire';
 import type { Envelope, WireObject } from './wire';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REGISTER_URL = `${DEFAULT_BASE_PATH}/operations`;
+// The register is the collection, so it lives at the collection URL and carries no extra
+// segment. Derived from the constant rather than spelled out, so a move cannot pass here.
+const REGISTER_URL = REGISTER_PATH === '' ? DEFAULT_BASE_PATH : `${DEFAULT_BASE_PATH}/${REGISTER_PATH}`;
 
 function sources(): Map<string, string> {
   const files = readdirSync(HERE).filter((name) => name.endsWith('.ts') && !name.endsWith('.spec.ts'));

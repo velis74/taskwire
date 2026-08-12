@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { aggregate } from './aggregate';
 import type { Operation } from './operation';
-import { mergePrivate, sortEntries } from './register';
+import { mergePrivate, REGISTER_PATH, sortEntries } from './register';
 import {
   configure_taskwire,
   DEFAULT_BASE_PATH,
@@ -20,7 +20,9 @@ import { parseSnapshot, type ProgressState, type WireObject } from './wire';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-const REGISTER_URL = `${DEFAULT_BASE_PATH}/operations`;
+// The register is the collection, so it lives at the collection URL and carries no extra
+// segment. Derived from the constant rather than spelled out, so a move cannot pass here.
+const REGISTER_URL = REGISTER_PATH === '' ? DEFAULT_BASE_PATH : `${DEFAULT_BASE_PATH}/${REGISTER_PATH}`;
 
 /** Sources with comments stripped, so a static assertion never fires on its own explanation. */
 function sources(): Map<string, string> {

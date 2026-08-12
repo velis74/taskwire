@@ -7,12 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { effectScope, isRef } from 'vue';
 
 import { DEFAULT_BASE_PATH, new_token, type Taskwire, use_taskwire } from './taskwire';
+import { REGISTER_PATH } from './register';
 import { use_operation, use_operations, use_register } from './vue';
 import type { WireObject } from './wire';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..');
-const REGISTER_URL = `${DEFAULT_BASE_PATH}/operations`;
+// The register is the collection, so it lives at the collection URL and carries no extra
+// segment. Derived from the constant rather than spelled out, so a move cannot pass here.
+const REGISTER_URL = REGISTER_PATH === '' ? DEFAULT_BASE_PATH : `${DEFAULT_BASE_PATH}/${REGISTER_PATH}`;
 
 function progressWire(over: WireObject = {}): WireObject {
   return {

@@ -73,8 +73,15 @@ export interface RegisterClient {
 
 export type OperationsListener = (operations: Operation<unknown>[]) => void;
 
-/** The path of the one endpoint an ordinary client polls (TW-REG-001). */
-export const REGISTER_PATH = 'operations';
+/**
+ * The one endpoint an ordinary client polls (TW-REG-001): **the base path itself**.
+ *
+ * The register is the collection, so it lives at the collection's URL and carries no extra segment.
+ * That is what removes TW-REST-006's hazard by construction: with nothing literal after the prefix
+ * there is no path a token could ever be mistaken for, and the ordering of route declarations stops
+ * being load-bearing.
+ */
+export const REGISTER_PATH = '';
 
 /**
  * TW-REG-005: `needsAttention` first, then `createdAt` ascending. There is no third key.
@@ -268,7 +275,9 @@ export class RegisterState {
     if (this.stopped) return;
     let payload: Register | null = null;
     try {
-      const response = await this.client.http.get(`${this.client.basePath}/${REGISTER_PATH}`);
+      const response = await this.client.http.get(
+        REGISTER_PATH === '' ? this.client.basePath : `${this.client.basePath}/${REGISTER_PATH}`,
+      );
       payload = parseRegister(response.data);
     } catch {
       // Read again on the next rung. There is nothing here a client could usefully be told.
