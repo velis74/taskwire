@@ -479,35 +479,34 @@ event loop (TW-CELERY-001/008), and for what an unanswered dialog looks like fro
 The docstring states the blocked-worker hazard in the words TW-CELERY-010 requires, with the
 `task_routes` snippet, and presents none of the mitigations as a solution.
 
-## M7b — the tab hints are BUILT; the Vuetify components are NOT
+## M7b — BUILT
 
-`ts/tab-hints.ts` implements every TW-TAB-* rule and exports it from the package root, deliberately
-**framework-free**: `DialogAdoption` (TW-TAB-003/004/005) and `VisibilityDelay` (TW-TAB-002,
-TW-REG-021, `failureLinger`). These are the rules a Vuetify footer or a React modal would *obey*, and
-putting them in a UI layer would mean writing them again for every UI, each time with the timing
-re-derived. `adopt.spec.ts::two tabs, injected clock` — the test the specification names — asserts
-all four of its cases.
+`ts/tab-hints.ts` implements every TW-TAB-* rule, framework-free and exported from the package root:
+`DialogAdoption` (TW-TAB-003/004/005) and `VisibilityDelay` (TW-TAB-002, TW-REG-021,
+`failureLinger`). These are the rules a Vuetify footer or a React modal would *obey*, and putting
+them in a UI layer would mean writing them again for every UI, each time with the timing re-derived.
+`adopt.spec.ts::two tabs, injected clock` — the test the specification names — asserts all four cases.
 
-**Not built:** `ts/vuetify.ts` is still `export {}`. The `/vuetify` subpath's rendering pieces — the
-dialog adapter over `@dynamicforms/vuetify-modal-form-kit`, and `TaskwireFooter` — need Vuetify and
-the modal kit as installed peers, and neither is present in this checkout. Everything they would
-bind to is finished: `tw.register`, `tw.selected`, `Operation.dialog`, `startedHere`, and now the
-tab hints.
+`ts/vuetify.ts` ships `useTaskwireDialogs` (the modal-kit adapter, running the adoption rule) and
+`TaskwireFooter`. A test asserts by source inspection that the footer reads a percentage only from
+the *selected* operation and never from the aggregate (TW-REG-013), and `wire.ts` backs that at the
+type level with `percent?: never` on `Aggregate` — so reintroducing one fails the typecheck.
 
-The rule most easily lost when they are written: `TaskwireFooter` draws **one selected operation's
-own percentage** and never an aggregate one (TW-REG-013), because there is no unit in which two
-operations' percentages are commensurable.
+### One thing found while writing it
 
-## `ts/muxws.ts` and the TypeScript half of M8 — BUILT
+`Operation.dialog` was still the M1b stub returning `null`, and `answer()` was inert. M3's commit
+message claimed the milestone was complete; that was true of the store, the reporter and the REST
+endpoint in both languages, and **not** of M3b's client half. Both are now implemented, with
+`answer()` resolving quietly on 409/404/410 and rejecting only on 422 (TW-DLG-011), dialogs applied
+by id regardless of `rev` (TW-REV-006), and a dialog that has left `open` never returning to it
+(TW-REV-007).
 
-`MuxwsClientTransport` receives pushed envelopes and carries `watch` — and, optionally and off by
-default, a dialog reply (TW-WS-008) — back up the same connection. A test walks `index.ts`'s
-transitive imports to keep the core from reaching it (TW-CORE-006).
+### `ts/vuetify-modal-form-kit.d.ts`
 
-Landing it corrected an older test rather than working around it. `reconnect.spec.ts` asserted
-statically that nothing hands `watch` a non-empty argument, which held vacuously while there was no
-socket and would have forbidden overrides outright. The rule is that nothing **re-declares a stored
-map** on a fresh socket (TW-REG-020), not that `watch` takes no arguments.
+`@dynamicforms/vuetify-modal-form-kit` ships `dist/index.d.ts` but its `package.json` `exports` map
+does not point at it, so TypeScript cannot resolve its types while respecting `exports`. That is a
+packaging bug in that library. taskwire declares the two members it calls locally rather than
+deep-importing the file, which would break the moment they fix it. Worth reporting upstream.
 
 ## Coverage of the two languages
 

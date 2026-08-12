@@ -576,6 +576,19 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /** M8. Recorded in the override map this connection last declared; nothing sends it yet. */
+  /**
+   * POST a dialog reply. REST is the recommended reply path (TW-WS-008): it is the one that works
+   * with no socket at all, and the reply path is the one place where "works everywhere" beats
+   * "arrives sooner".
+   *
+   * This throws on any non-2xx. `Operation.answer()` is what decides that a 409, a 404 and a 410 are
+   * normal outcomes of a namespace-wide question rather than faults (TW-DLG-011) - keeping that
+   * judgement in one place, on the handle, rather than in every call site.
+   */
+  async replyToDialog(token: string, did: string, button: string, values: Record<string, unknown> = {}): Promise<void> {
+    await this.http.post(`${this.basePath}/${token}/dialogs/${did}`, { button, values });
+  }
+
   mute(token: string): void {
     this.overrides.set(token, false);
   }

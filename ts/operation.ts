@@ -27,7 +27,7 @@
  * because there is no global dialog slot and no dialog queue anywhere in this client (TW-TS-006).
  */
 
-import { isTerminal, type Progress, type Result, type Text } from './wire';
+import { type DialogRequest, isTerminal, type Progress, type Result, type Text } from './wire';
 
 /**
  * The disappearance of a document that was there a moment ago.
@@ -80,6 +80,11 @@ export interface OperationHost {
   mute(token: string): void;
   unmute(token: string): void;
   clearOverride(token: string): void;
+  /**
+   * POST the reply. The host owns the HTTP call so the handle stays framework-free; it may
+   * reject, and `answer()` is the one that decides which rejections are normal (TW-DLG-011).
+   */
+  replyToDialog(token: string, did: string, button: string, values: Record<string, unknown>): Promise<void>;
 }
 
 export interface OperationInit<T> {
@@ -122,6 +127,8 @@ export class Operation<T> implements PromiseLike<T> {
   #title: Text | null;
 
   #progress: Progress | null = null;
+
+  #dialogs: DialogRequest[] = [];
 
   #resultKind: string | null;
 
@@ -195,11 +202,26 @@ export class Operation<T> implements PromiseLike<T> {
   }
 
   /**
-   * M3b. Always `null` here, and always *here* rather than on the client: the pending dialog hangs on
-   * its own entry, there is no `tw.dialog`, no queue and no policy for a second question (TW-TS-006).
+   * The oldest **open** question on this operation, or `null`.
+   *
+   * It hangs here, on its own entry, and never on the client: there is no `tw.dialog`, no queue and
+   * no policy for a second question (TW-TS-006). An application surfaces a pending dialog on ANY
+   * `tw.register` entry, including one that is not in `tw.operations` (TW-TS-009) - a question
+   * nobody can see is a worker nobody can free.
+   *
+   * "Open" is decided by the dialog's own STATE, never by which envelope happened to arrive
+   * (TW-DLG-016): a dialog leaving `open` closes it, whether that was seen in a push or a poll and
+   * whether it left for `answered` or `cancelled`.
    */
-  get dialog(): null {
-    return null;
+  get dialog(): DialogRequest | null {
+    const open = this.#dialogs.filter((candidate) => candidate.state === 'open');
+    if (open.length === 0) return null;
+    return open.reduce((oldest, candidate) => (candidate.createdAt < oldest.createdAt ? candidate : oldest));
+  }
+
+  /** Every dialog the document carries, answered ones included (TW-DLG-013). */
+  get dialogs(): readonly DialogRequest[] {
+    return this.#dialogs;
   }
 
   /** `null` = private to the connection that started it, from start to finish (TW-PRIV-001). */
@@ -247,10 +269,43 @@ export class Operation<T> implements PromiseLike<T> {
   // Later milestones, inert with their final signatures
   // -------------------------------------------------------------------------------------------
 
-  /** M3b. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the signature is specified (§5.5)
+  /**
+   * Answer this operation's open question.
+   *
+   * **Resolves quietly on 409, 404 and 410; only 422 rejects** (TW-DLG-011). A second tab answering
+   * first is a normal outcome of a namespace-wide question, not a fault - so no application error
+   * handler ever sees it, nothing is logged and nothing is toasted. The losing tab simply closes its
+   * dialog. 422 is a malformed reply, which is a programming error and worth seeing.
+   */
   async answer(button: string, values?: Record<string, unknown>): Promise<void> {
-    return undefined;
+    const dialog = this.dialog;
+    if (dialog === null) return;
+    try {
+      await this.#host?.replyToDialog(this.token, dialog.id, button, values ?? {});
+    } catch (raised) {
+      const status = (raised as { response?: { status?: number } })?.response?.status;
+      if (status === 409 || status === 404 || status === 410) {
+        // Somebody else got there first, or the question is gone. Close and say nothing.
+        this.#markDialogSettled(dialog.id);
+        return;
+      }
+      throw raised;
+    }
+    this.#markDialogSettled(dialog.id);
+  }
+
+  /**
+   * Move a dialog out of `open` locally, without waiting for the next read.
+   *
+   * A client must never move a dialog BACKWARDS out of a terminal state (TW-REV-007), so this only
+   * ever settles one - the next snapshot may correct which terminal state it settled into, and that
+   * is fine.
+   */
+  #markDialogSettled(id: string): void {
+    this.#dialogs = this.#dialogs.map((dialog) =>
+      dialog.id === id && dialog.state === 'open' ? { ...dialog, state: 'answered' as const } : dialog,
+    );
+    this.#notify();
   }
 
   /** M6. */
@@ -316,14 +371,32 @@ export class Operation<T> implements PromiseLike<T> {
    * The `rev` comparison is the whole of TW-REV-006's gate. A stale document is dropped rather than
    * merged, because a merge of two revisions is a third revision that never existed on the server.
    */
-  applySnapshot(snapshot: { rev: number; progress: Progress }): boolean {
+  applySnapshot(snapshot: { rev: number; progress: Progress; dialogs?: readonly DialogRequest[] }): boolean {
     if (this.#closed) return false;
     this.#seen = true;
     if (snapshot.rev < this.#rev) return false;
     this.#rev = snapshot.rev;
     this.#progress = snapshot.progress;
+    // Dialogs are applied by ID and are NOT gated by `rev` (TW-REV-006): a stale rev on a dialog
+    // means only "do not touch progress". A `dialog.open` overtaken by a later progress commit must
+    // still be applied, or the question never appears (TW-INV-004).
+    if (snapshot.dialogs !== undefined) this.#dialogs = [...snapshot.dialogs];
     this.#notify();
     return true;
+  }
+
+  /**
+   * Apply one dialog by id, regardless of `rev` (TW-REV-006).
+   *
+   * Monotonic: a dialog that has left `open` never returns to it (TW-REV-007), so a late-arriving
+   * `dialog.open` for a question already answered is dropped rather than reopening it.
+   */
+  applyDialog(dialog: DialogRequest): void {
+    if (this.#closed) return;
+    const existing = this.#dialogs.find((candidate) => candidate.id === dialog.id);
+    if (existing !== undefined && existing.state !== 'open' && dialog.state === 'open') return;
+    this.#dialogs = [...this.#dialogs.filter((candidate) => candidate.id !== dialog.id), dialog];
+    this.#notify();
   }
 
   /** @internal TW-DEL-014: effective delivery for *this reading client*, decided in M8. */
