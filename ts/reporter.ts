@@ -53,6 +53,14 @@ import {
 export interface ReporterSettings {
   /** Document TTL while the operation is `queued`, `running` or asking. Seconds. */
   activeTtl: number;
+
+  /**
+   * Backstop on an uncollected result. Seconds; 7 days.
+   *
+   * Must be aligned with the application's own artefact retention (TW-RET-003) - taskwire
+   * stores a pointer and deletes nothing, so a result outliving its file is a dead download.
+   */
+  resultTtl: number;
   /** Latest-wins coalescing window for commits (TW-THR-001). Seconds. */
   progressInterval: number;
   /** Encoded cap on `data` (TW-PROG-008). Bytes. Enforced by throwing, never by truncating. */
@@ -63,6 +71,7 @@ export interface ReporterSettings {
 
 export const DEFAULT_SETTINGS: ReporterSettings = {
   activeTtl: 3600,
+  resultTtl: 604800,
   progressInterval: 0.25,
   maxDataBytes: 16384,
   raiseOnCancel: true,
@@ -301,6 +310,8 @@ export class Reporter {
 
   private highWater: number | null = null;
 
+  private resultParked = false;
+
   constructor(options: {
     key: string;
     ns: string;
@@ -439,8 +450,46 @@ export class Reporter {
    * application ship a result nobody can collect, and the failure would surface as a missing
    * download weeks later rather than as an error at the call site.
    */
+  /**
+   * Park a result for later collection. Root reporter only, and at most once.
+   *
+   * **This is emphatically not an `ask()`** (TW-RES-005). The task has finished; only the *record*
+   * waits. The reporter writes the result and the state and the caller returns - an implementation
+   * that waited for collection the way `ask()` waits for a reply would pin a worker overnight on a
+   * download nobody clicked.
+   *
+   * The operation does not go to `done` when its work finishes (TW-RES-004): it lands in
+   * `waiting_input` holding the result until one of the three release paths takes it.
+   */
   async setResult(result: Result): Promise<void> {
-    throw new Error(`taskwire: collectable results arrive in M7 (asked for kind '${result.kind}')`);
+    if (this.notifyParent !== null) {
+      throw new TypeError(
+        "taskwire: setResult() is a root reporter's, not a subtask's (TW-RES-003). One token " +
+          'carries one result, however deep the tree.',
+      );
+    }
+    if (this.progress.resultKind == null) {
+      throw new TypeError(
+        'taskwire: this operation declared no resultKind, so it is private from start to finish ' +
+          'and has nothing to collect (TW-RES-001, TW-PRIV-001). There is no promotion path.',
+      );
+    }
+    if (this.progress.result != null) {
+      throw new TypeError('taskwire: a Result is written at most once (TW-RES-001)');
+    }
+    checkSize('result', result as unknown as Record<string, unknown>, this.settings.maxDataBytes);
+
+    this.progress.result = result;
+    this.resultParked = true;
+    await this.commit();
+    // TW-RET-003: the key's TTL becomes `resultTtl` and no keepalive runs against it - nobody is
+    // running, which is the point. Set it no longer than your own artefact retention.
+    await this.store?.touch(this.key, this.settings.resultTtl);
+  }
+
+  /** TW-RES-004: `operation()`'s exit reads this to know that a clean finish is not `done`. */
+  get hasParkedResult(): boolean {
+    return this.resultParked;
   }
 
   /** TW-DLG-*: no timeout, no default answer. M3. */

@@ -775,14 +775,15 @@ describe('cancellation', () => {
 });
 
 describe('the surfaces later milestones fill in', () => {
-  it('throws rather than silently doing nothing (M7)', async () => {
-    // A stub must be loud. A `setResult()` that quietly did nothing would let an application ship a
-    // result nobody can collect, and the failure would surface as a missing download weeks later.
-    // `subtask`, `split` and `ask` were here until M2 and M3 landed; their assertions moved to the
-    // nesting and dialog sections rather than being deleted.
+  it('rejects a misused surface rather than silently doing nothing', async () => {
+    // Every surface this test used to guard is now implemented; the assertions moved to the nesting
+    // section, to dialog.spec.ts and to results.spec.ts rather than being deleted. What remains
+    // worth asserting is that a *misuse* is still loud - a setResult() that quietly did nothing
+    // would let an application ship a result nobody can collect, and the failure would surface as a
+    // missing download weeks later.
     const store = new RecordingStore();
     await operation(options(store, new_token()), async (reporter) => {
-      await expect(reporter.setResult({ kind: 'taskwire.download' })).rejects.toThrow(/M7/);
+      await expect(reporter.subtask(0, 50).setResult({ kind: 'report' })).rejects.toThrow(/root reporter/);
     });
   });
 

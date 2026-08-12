@@ -216,6 +216,16 @@ export async function operation<T>(opts: OperationOptions, body: (reporter: Repo
 
   const outcome: { state: TerminalState; error?: TaskwireError } = ran.ok ? { state: 'done' } : terminalFor(ran.raised);
 
+  if (ran.ok && reporter.hasParkedResult) {
+    // TW-RES-004: the work is over, the record is not. The operation parks in `waiting_input` and
+    // this returns immediately - it does not wait for collection (TW-RES-005), and neither does the
+    // caller awaiting it (TW-RES-006). Collection is a separate act so calling code can decide how
+    // to perform it.
+    await (store as { withdrawDialogs?: (k: string) => Promise<string[]> }).withdrawDialogs?.(k);
+    await reporter.flush();
+    return ran.value;
+  }
+
   // TW-CANCEL-011: withdraw before the terminal write, so a dialog can never outlive the operation
   // that asked it - and so anyone blocked in `ask()` is woken rather than left on a question whose
   // operation has already ended. `withdrawDialogs` is optional on the reporter's store subset, so

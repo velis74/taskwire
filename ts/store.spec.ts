@@ -425,7 +425,7 @@ describe('MemoryStore publish (TW-STORE-008)', () => {
 });
 
 describe('the milestone boundary', () => {
-  it('collectable results announce their milestone rather than lying', async () => {
+  it('answers rather than throwing when the operation is not there', async () => {
     const store = new MemoryStore();
     const k = key('ns', 'tok');
     const reply = { button: 'ok', values: {} };
@@ -438,9 +438,10 @@ describe('the milestone boundary', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
 
-    // The four dialog methods left this list when M3 landed; their behaviour is asserted in the
-    // dialog section below and in the exported conformance suite. `releaseResult` is still M7's.
-    await expect(store.releaseResult(k)).rejects.toThrow(/M7/);
+    // The four dialog methods left this list when M3 landed and `releaseResult` when M7 did; their
+    // behaviour is asserted in the dialog section below, in results.spec.ts and in the exported
+    // conformance suite. A store with no such operation answers rather than throwing.
+    expect(await store.releaseResult(k)).toBeNull();
 
     // A store with no such operation answers rather than throwing: `putDialog` on a key that is not
     // there is a lost race with expiry, not a programming error.

@@ -212,8 +212,11 @@ export interface MemoryStoreOptions {
  * release it (TW-INV-006).
  */
 function derivedProgress(entry: Entry): Progress {
+  if (isTerminal(entry.progress)) return entry.progress;
   const hasOpen = Array.from(entry.dialogs.values()).some((dialog) => dialog.state === 'open');
-  if (!hasOpen || isTerminal(entry.progress)) return entry.progress;
+  // TW-PROG-013: an open dialog holds a worker; an uncollected result holds nothing at all.
+  // Both derive the same state and neither is written by a caller.
+  if (!hasOpen && entry.progress.result == null) return entry.progress;
   return { ...entry.progress, state: 'waiting_input' };
 }
 
@@ -540,7 +543,6 @@ export class MemoryStore implements TaskwireStore {
    * change under the milestone that fills them in. The parameters are therefore deliberately
    * present and deliberately unused.
    */
-  /* eslint-disable @typescript-eslint/no-unused-vars */
 
   /**
    * Write a dialog and bump `rev` atomically (TW-STORE-002).
@@ -676,9 +678,30 @@ export class MemoryStore implements TaskwireStore {
     this.asking.get(ns)?.delete(token);
   }
 
+  /**
+   * **The single arbiter of the three release paths** (TW-STORE-016, TW-RES-010).
+   *
+   * Collection, dismissal and the `resultTtl` backstop all come through here, so a collect racing a
+   * dismiss releases exactly once. That matters more than it looks: each release fires
+   * `resultReleased`, and an application deleting its own artefact in that hook would otherwise
+   * delete it twice.
+   */
   async releaseResult(key: string): Promise<Result | null> {
-    throw new Error('taskwire: collectable results arrive in M7');
-  }
+    const entry = this.live(key);
+    if (entry === undefined) return null;
+    const { progress } = entry;
+    if (progress.result == null || isTerminal(progress)) return null;
 
-  /* eslint-enable @typescript-eslint/no-unused-vars */
+    // A blocked worker is not a collectable result (TW-REST-008). The operation is in
+    // `waiting_input` for the other reason, and releasing here would end a job still running.
+    for (const dialog of entry.dialogs.values()) {
+      if (dialog.state === 'open') return null;
+    }
+
+    const released = progress.result;
+    progress.result = null;
+    progress.state = 'done';
+    entry.rev = Math.max(this.nowMs(), entry.rev + 1);
+    return released;
+  }
 }
