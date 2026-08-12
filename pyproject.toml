@@ -30,6 +30,7 @@ dependencies = []   # DELIBERATE: core has no runtime dependency of any kind (TW
 redis = ["redis>=5.0"]
 celery = ["celery>=5.3", "nest_asyncio>=1.6"]
 fastapi = ["fastapi>=0.100"]
+viewsets = ["dynamicforms-fastapi-viewsets>=0.3.6"]
 muxws = ["muxws>=0.2"]
 dev = ["coverage", "pytest", "pytest-asyncio", "pytest-cov", "hypothesis", "httpx", "ruff"]
 
