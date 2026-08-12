@@ -468,17 +468,16 @@ item was reaching for. The checklist should name the arithmetic, not the word.
 
 Recorded plainly, because a report that rounds up is worse than one that admits a hole.
 
-## `taskwire/contrib/celery.py` — the worker entry — NOT BUILT
+## `taskwire/contrib/celery.py` — BUILT
 
-M4 delivered `RedisStore`, the `twx:{ns}` backplane and the reader lifecycle, all verified against a
-real Redis. It did **not** deliver the Celery worker entry that owns the terminal write, including
-the `dispatch_failed` and `dialog_timeout` error codes (TW-CELERY-*).
+`taskwire_task`, `dispatch` and `configure_worker`, with tests for the division of labour
+(TW-CELERY-004: the worker owns the terminal write, the web side owns `queued` and a
+`dispatch_failed` that is `retryable: true`), for the synchronous form running from a thread with no
+event loop (TW-CELERY-001/008), and for what an unanswered dialog looks like from the outside -
+`dialog_timeout`, `retryable: true` (TW-DLG-006).
 
-Everything it would sit on exists: `operation()` already works as a synchronous context manager on a
-private event loop it owns for that thread (TW-API-002), `mark_queued` / `mark_failed` are the web
-side's writes, and `Error` already reserves both codes. What is missing is the decorator that binds
-them to a Celery task and the test that a worker killed by its own execution timeout lands as
-`failed` with `dialog_timeout` and `retryable: true` (TW-DLG-006).
+The docstring states the blocked-worker hazard in the words TW-CELERY-010 requires, with the
+`task_routes` snippet, and presents none of the mitigations as a solution.
 
 ## `ts/vuetify.ts` — the Vuetify deliverables (M7b) — NOT BUILT
 
@@ -491,19 +490,16 @@ Note the one rule most easily lost here: `TaskwireFooter` draws **one selected o
 percentage** and never an aggregate one (TW-REG-013), because there is no unit in which two
 operations' percentages are commensurable.
 
-## `ts/muxws.ts` — the TypeScript socket client (M5's client half) — NOT BUILT
+## `ts/muxws.ts` and the TypeScript half of M8 — BUILT
 
-Still `export {}`. The Python server side of the transport is done and tested; the browser side that
-would attach it via `tw.attachTransport()` is not. `attachTransport` exists and stores what it is
-given, so nothing needs redesigning — but no envelope reaches a client over a socket today, and the
-polling path is doing all the work.
+`MuxwsClientTransport` receives pushed envelopes and carries `watch` — and, optionally and off by
+default, a dialog reply (TW-WS-008) — back up the same connection. A test walks `index.ts`'s
+transitive imports to keep the core from reaching it (TW-CORE-006).
 
-## The TypeScript half of M8 — PARTIAL
-
-`mute()` / `unmute()` / `clearOverride()` exist on the client and are no-ops with no transport
-attached, which is what TW-DEL-018 requires. What is missing is the part that only matters once
-`ts/muxws.ts` exists: actually sending the `watch` message and reading the `{v, status, connection}`
-reply. The server half is complete and tested.
+Landing it corrected an older test rather than working around it. `reconnect.spec.ts` asserted
+statically that nothing hands `watch` a non-empty argument, which held vacuously while there was no
+socket and would have forbidden overrides outright. The rule is that nothing **re-declares a stored
+map** on a fresh socket (TW-REG-020), not that `watch` takes no arguments.
 
 ## Coverage of the two languages
 
