@@ -30,7 +30,8 @@ from typing import Any
 from muxws import PeerRegistry
 from muxws.errors import ConnectionLost
 
-from ..models import Envelope
+from ..delivery import Client, effective_delivery, may_be_suppressed, OperationRef, OVERRIDES_TAG
+from ..models import Envelope, EnvelopeKind, Progress
 from ..settings import settings
 from ..transport import TaskwireTransport
 
@@ -76,7 +77,37 @@ class MuxwsTransport(TaskwireTransport):
             logger.debug("taskwire: could not enumerate peers for %s", session, exc_info=True)
             return
 
+        # A body that will not parse means the decision cannot be made, and the decision is a
+        # DISPLAY optimisation - so it fails open, toward delivering. Failing closed would let a
+        # malformed envelope silence a bar, which is the one outcome nobody could diagnose.
+        progress: Progress | None = None
+        if envelope.kind is EnvelopeKind.PROGRESS:
+            try:
+                progress = Progress.from_dict(envelope.body)
+            except (KeyError, ValueError, TypeError):
+                logger.debug("taskwire: unparseable progress body for %s; delivering it", envelope.token)
+        suppressible = progress is not None and may_be_suppressed(envelope.kind, progress)
+        reference = OperationRef(envelope.token, progress) if progress is not None else None
+
         for peer in peers:
+            # TW-DEL-011: the decision is applied at the LAST HOP only. The channel, the publish, the
+            # subscribe, the store and the reader are all unchanged by it - which is what lets two
+            # sockets of one namespace hold opposite opinions about the same token (TW-DEL-017)
+            # without anything having to arbitrate between them.
+            if suppressible and reference is not None:
+                client = Client(session=session, connection=connection_id(peer), peer=peer)
+                if not effective_delivery(client, reference):
+                    continue
+
+            # TW-PRIV-003: a private operation's progress is written only to the connection whose id
+            # equals `origin_connection`, terminal states included. With `origin_connection` null -
+            # every caller in a deployment with no socket - no socket receives it and the
+            # originating client learns from its own per-token poll. A latency degradation, never a
+            # functional one, and the same one the design already accepts for a dropped push.
+            if progress is not None and not progress.is_shared:
+                if progress.origin_connection is None or connection_id(peer) != progress.origin_connection:
+                    continue
+
             try:
                 # One notify per peer: one stream opened and ended in one frame (TW-WS-003). muxws
                 # allocates the stream id and taskwire never sees or stores one (TW-WS-005).
@@ -85,6 +116,9 @@ class MuxwsTransport(TaskwireTransport):
                 logger.debug("taskwire: peer of %s went away mid-fan-out", session)
             except Exception:  # noqa: BLE001 - TW-TR-002: every failure is a dropped push
                 logger.debug("taskwire: dropped a push to a peer of %s", session, exc_info=True)
+
+        if progress is not None and progress.is_terminal:
+            prune_override(peers, envelope.token)
 
     async def is_online(self, session: str) -> bool:
         """A hint, and never load-bearing (TW-TR-001).
@@ -108,3 +142,79 @@ def tag_peer(peer: Any, session: str) -> None:
     would leave a socket authorised for a namespace nobody re-checked.
     """
     peer.tags[SESSION_TAG] = session
+
+
+# --------------------------------------------------------------------------- the watch handler
+
+
+CONNECTION_TAG = "taskwire_connection"
+"""The opaque, server-issued id naming one live socket (TW-DEL-016).
+
+It is minted here and handed back only in the `watch` reply, over a socket the caller already
+established. It is NOT stable across a reconnect and decides exactly two things: the
+`progress_delivery` display flag, and which socket a private operation's progress is written to. It
+reaches one store field, `origin_connection`, which is inert data recorded at start and never used
+for authorization (TW-SEC-003).
+"""
+
+
+def connection_id(peer: Any) -> str | None:
+    """This socket's id, minting one on first use."""
+    tags = getattr(peer, "tags", None)
+    if not isinstance(tags, dict):
+        return None
+    existing = tags.get(CONNECTION_TAG)
+    if isinstance(existing, str):
+        return existing
+    import uuid
+
+    minted = str(uuid.uuid4())
+    tags[CONNECTION_TAG] = minted
+    return minted
+
+
+def handle_watch(peer: Any, message: dict[str, Any]) -> dict[str, Any]:
+    """The `watch` handler. Declares the **whole** override map, never a delta (TW-DEL-006).
+
+    `false` suppresses, `true` revives, absent defers to `push_filter`, and `{}` returns everything
+    to the predicate. Idempotent and last-writer-wins **per connection**.
+
+    Answers `{"v": 1, "status": int, "connection": str}` (TW-DEL-022): status `0` accepted, `1`
+    rejected for exceeding `max_overrides`, `2` malformed. A rejected declaration still carries the
+    connection id, since the socket is unchanged - and a client may send `{"overrides": {}}` purely
+    to obtain that id, which is what a reconnecting client does (TW-REG-020). An empty declaration is
+    not a restoration: it asserts exactly the state the new socket already has.
+
+    **This handler reads no store, in either direction** (TW-DEL-007). A `true` or `false` for a
+    token that does not exist is accepted and inert. Reading the store here would put a per-tab
+    display preference on the path of every socket's first message.
+    """
+    identity = connection_id(peer)
+    declared = message.get("overrides")
+
+    if not isinstance(declared, dict) or not all(
+        isinstance(token, str) and isinstance(value, bool) for token, value in declared.items()
+    ):
+        return {"v": 1, "status": 2, "connection": identity}
+
+    if len(declared) > settings.max_overrides:
+        # TW-DEL-008: rejected rather than truncated, leaving the previous map in force. A truncated
+        # map is one the user asked for and did not get, with no way to tell which half survived.
+        return {"v": 1, "status": 1, "connection": identity}
+
+    peer.tags[OVERRIDES_TAG] = dict(declared)
+    return {"v": 1, "status": 0, "connection": identity}
+
+
+def prune_override(peers: list[Any], token: str) -> None:
+    """TW-DEL-023: an operation's override is deleted from every connection's map when it ends.
+
+    **This is behaviour, not tidiness.** Without it a long-lived socket's map grows monotonically
+    toward `max_overrides` and eventually rejects a declaration the user meant - and the rejection
+    would be about tokens that finished days ago. Called at the last hop that fans a terminal
+    envelope out.
+    """
+    for peer in peers:
+        tags = getattr(peer, "tags", None)
+        if isinstance(tags, dict) and isinstance(tags.get(OVERRIDES_TAG), dict):
+            tags[OVERRIDES_TAG].pop(token, None)

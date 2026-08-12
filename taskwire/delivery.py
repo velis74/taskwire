@@ -60,11 +60,55 @@ def push_filter_allows(client: Client, operation: OperationRef) -> bool:
         return True
 
 
+OVERRIDES_TAG = "taskwire_overrides"
+"""Where a connection's override map lives (TW-DEL-009).
+
+Per-connection memory - `peer.tags` under muxws - and nowhere else. It dies with the socket and is
+persisted on neither side. A map that outlived its socket would be a preference nobody can see and
+nobody can clear, and TW-INV-016 is the client half of the same rule: the client persists nothing.
+"""
+
+
+def overrides_of(peer: Any) -> dict[str, bool]:
+    """The override map this connection last declared. Empty when it has declared none."""
+    if peer is None:
+        return {}
+    tags = getattr(peer, "tags", None)
+    if not isinstance(tags, dict):
+        return {}
+    declared = tags.get(OVERRIDES_TAG)
+    return declared if isinstance(declared, dict) else {}
+
+
 def effective_delivery(client: Client, operation: OperationRef) -> bool:
     """TW-DEL-001: `fe_override if present else push_filter(client, operation)`.
 
-    M1 has no override map and no socket, so this is the predicate's answer alone - and the shipped
-    predicate defaults to `True` (TW-DEL-002, TW-DEL-019: the default is "send" on both halves).
-    M8 replaces this body with the two-half combination and touches nothing else.
+    Two halves, and the front end's wins when it has spoken. `false` suppresses, `true` revives
+    something the predicate would have suppressed, and *absent* defers - which is why the map is
+    consulted by membership rather than by truthiness.
+
+    **Neither half may raise the ceiling** (TW-DEL-012). An override asserting `true` may only revive
+    an envelope on a channel the socket was already entitled to read; it cannot reach into another
+    namespace, because the namespace was decided before this function was called. This is not access
+    control and must never be pressed into service as any (TW-DEL-021, TW-INV-018).
     """
+    declared = overrides_of(client.peer)
+    if operation.token in declared:
+        return bool(declared[operation.token])
     return push_filter_allows(client, operation)
+
+
+def may_be_suppressed(kind: Any, progress: Progress) -> bool:
+    """TW-DEL-010: **only non-terminal `progress` may be suppressed, by either half.**
+
+    `dialog.open`, `dialog.close`, `cancel` and any `progress` carrying a terminal state go to every
+    socket of the namespace whatever the predicate and the overrides say. The reason is not symmetry:
+    a question nobody can see is a worker nobody can free, and a terminal state nobody hears about is
+    a bar frozen at 97 % (TW-INV-005). A display preference must never be able to wedge a worker
+    pool.
+    """
+    from .models import EnvelopeKind
+
+    if EnvelopeKind(kind) is not EnvelopeKind.PROGRESS:
+        return False
+    return not progress.is_terminal

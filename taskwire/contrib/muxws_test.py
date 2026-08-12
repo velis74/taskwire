@@ -53,8 +53,23 @@ class FakeRegistry:
         return [p for p in self._peers if all(p.tags.get(k) == v for k, v in tags.items())]
 
 
-def _envelope() -> Envelope:
-    return Envelope(token="tok", rev=42, kind=EnvelopeKind.PROGRESS, body={"percent": 50})
+def _progress(**overrides) -> dict:
+    """A real `Progress` document. The transport parses the body to make the delivery decision, so a
+    hand-waved dict would exercise the defensive path rather than the one under test."""
+    from taskwire.models import Progress, ProgressState
+
+    document = Progress(
+        state=overrides.pop("state", ProgressState.RUNNING),
+        percent=50.0,
+        result_kind=overrides.pop("result_kind", "report"),
+        origin_session="acct-42",
+        origin_connection=overrides.pop("origin_connection", None),
+    )
+    return document.to_dict()
+
+
+def _envelope(**overrides) -> Envelope:
+    return Envelope(token="tok", rev=42, kind=EnvelopeKind.PROGRESS, body=_progress(**overrides))
 
 
 async def test_one_envelope_becomes_one_notify_per_peer() -> None:
@@ -200,3 +215,211 @@ async def test_swapping_the_transport_changes_latency_and_nothing_else() -> None
     finally:
         taskwire.settings.progress_interval = previous_interval
         taskwire.reset_configuration()
+
+
+# ------------------------------------------------------------------ M8: the delivery decision
+
+
+async def test_an_override_suppresses_only_this_socket() -> None:
+    """TW-DEL-017: two sockets of one namespace may hold OPPOSITE overrides for one token.
+
+    Nothing arbitrates between them and each reads its own answer. An implementation keying the map
+    by account passes every single-socket test and fails exactly this one.
+    """
+    from taskwire.contrib.muxws import handle_watch
+
+    quiet, loud = FakePeer("quiet"), FakePeer("loud")
+    tag_peer(quiet, "acct-42")
+    tag_peer(loud, "acct-42")
+
+    assert handle_watch(quiet, {"overrides": {"tok": False}})["status"] == 0
+    assert handle_watch(loud, {"overrides": {"tok": True}})["status"] == 0
+
+    transport = MuxwsTransport(FakeRegistry([quiet, loud]))
+    await transport.notify("acct-42", _envelope())
+
+    assert quiet.notified == [], "the socket that said false gets nothing"
+    assert len(loud.notified) == 1, "and the one that said true still does"
+
+
+async def test_only_non_terminal_progress_can_be_suppressed() -> None:
+    """TW-DEL-010 / TW-INV-005, enumerated kind by kind.
+
+    A dialog nobody can see is a worker nobody can free, and a terminal state nobody hears about is a
+    bar frozen at 97 %. A display preference must never be able to wedge a worker pool, which is why
+    these four go out whatever the map says.
+    """
+    from taskwire.contrib.muxws import handle_watch
+    from taskwire.models import ProgressState
+
+    peer = FakePeer("silenced")
+    tag_peer(peer, "acct-42")
+    handle_watch(peer, {"overrides": {"tok": False}})
+    transport = MuxwsTransport(FakeRegistry([peer]))
+
+    await transport.notify("acct-42", _envelope())
+    assert peer.notified == [], "the one suppressible kind is suppressed"
+
+    unsuppressible = [
+        Envelope(token="tok", rev=1, kind=EnvelopeKind.DIALOG_OPEN, body={"id": "d1"}),
+        Envelope(token="tok", rev=2, kind=EnvelopeKind.DIALOG_CLOSE, body={"id": "d1"}),
+        Envelope(token="tok", rev=3, kind=EnvelopeKind.CANCEL, body={}),
+        _envelope(state=ProgressState.DONE),
+    ]
+    for envelope in unsuppressible:
+        await transport.notify("acct-42", envelope)
+
+    assert len(peer.notified) == len(unsuppressible), (
+        f"only {len(peer.notified)} of {len(unsuppressible)} unsuppressible envelopes arrived"
+    )
+
+
+async def test_a_terminal_envelope_prunes_its_override_everywhere() -> None:
+    """TW-DEL-023. **Behaviour, not tidiness.**
+
+    Without it a long-lived socket's map grows monotonically toward `max_overrides` and eventually
+    rejects a declaration the user meant - over tokens that finished days ago.
+    """
+    from taskwire.contrib.muxws import handle_watch
+    from taskwire.delivery import overrides_of
+    from taskwire.models import ProgressState
+
+    first, second = FakePeer("first"), FakePeer("second")
+    tag_peer(first, "acct-42")
+    tag_peer(second, "acct-42")
+    for peer in (first, second):
+        handle_watch(peer, {"overrides": {"tok": False, "other": False}})
+
+    await MuxwsTransport(FakeRegistry([first, second])).notify("acct-42", _envelope(state=ProgressState.DONE))
+
+    for peer in (first, second):
+        assert "tok" not in overrides_of(peer), "the ended operation's override must be gone"
+        assert "other" in overrides_of(peer), "and nothing else may be swept up with it"
+
+
+async def test_watch_reply_shape_for_all_three_statuses() -> None:
+    """TW-DEL-022, named in the specification: `{v, status, connection}`, status 0 / 1 / 2.
+
+    A rejected declaration still carries the connection id, since the socket is unchanged - and a
+    client may send `{"overrides": {}}` purely to obtain that id, which is what a reconnecting one
+    does (TW-REG-020).
+    """
+    from taskwire.contrib.muxws import handle_watch
+
+    peer = FakePeer("p")
+    tag_peer(peer, "acct-42")
+
+    accepted = handle_watch(peer, {"overrides": {"tok": False}})
+    assert accepted["v"] == 1
+    assert accepted["status"] == 0
+    assert isinstance(accepted["connection"], str)
+
+    # TW-DEL-008: rejected rather than truncated, and the previous map stays in force. A truncated
+    # map is one the user asked for and did not get, with no way to tell which half survived.
+    too_many = handle_watch(peer, {"overrides": {f"t{n}": False for n in range(taskwire.settings.max_overrides + 1)}})
+    assert too_many["status"] == 1
+    assert too_many["connection"] == accepted["connection"], "the socket is unchanged, so its id is too"
+    from taskwire.delivery import overrides_of
+
+    assert overrides_of(peer) == {"tok": False}, "the previous map must still be in force"
+
+    malformed = handle_watch(peer, {"overrides": {"tok": "yes please"}})
+    assert malformed["status"] == 2
+
+    # An empty declaration is not a restoration: it asserts exactly the state a new socket has.
+    emptied = handle_watch(peer, {"overrides": {}})
+    assert emptied["status"] == 0
+    assert overrides_of(peer) == {}
+
+
+async def test_watch_performs_no_store_reads() -> None:
+    """TW-DEL-007: no store reads, in either direction.
+
+    A `true` or `false` for a token that does not exist is accepted and inert. Reading the store here
+    would put a per-tab display preference on the path of every socket's first message.
+    """
+    from taskwire.contrib.muxws import handle_watch
+
+    reads: list[str] = []
+
+    class CountingStore(taskwire.MemoryStore):
+        async def snapshot(self, key: str):  # noqa: A002
+            reads.append(key)
+            return await super().snapshot(key)
+
+        async def list_operations(self, ns: str):
+            reads.append(ns)
+            return await super().list_operations(ns)
+
+    taskwire.configure(store=CountingStore())
+    try:
+        peer = FakePeer("p")
+        tag_peer(peer, "acct-42")
+        reply = handle_watch(peer, {"overrides": {"a-token-that-never-existed": True}})
+        assert reply["status"] == 0, "a token that does not exist is accepted and inert"
+        assert reads == [], f"the watch handler read the store: {reads}"
+    finally:
+        taskwire.reset_configuration()
+
+
+async def test_a_private_operations_progress_reaches_only_its_own_connection() -> None:
+    """TW-PRIV-003. Terminal states included.
+
+    With `origin_connection` null - every caller in a deployment with no socket - no socket receives
+    it at all and the originating client learns from its own per-token poll. That is a latency
+    degradation, never a functional one, and the same one already accepted for a dropped push.
+    """
+    from taskwire.contrib.muxws import connection_id
+
+    origin, bystander = FakePeer("origin"), FakePeer("bystander")
+    tag_peer(origin, "acct-42")
+    tag_peer(bystander, "acct-42")
+    origin_id = connection_id(origin)
+    connection_id(bystander)
+
+    transport = MuxwsTransport(FakeRegistry([origin, bystander]))
+    await transport.notify("acct-42", _envelope(result_kind=None, origin_connection=origin_id))
+
+    assert len(origin.notified) == 1
+    assert bystander.notified == [], "a private operation's progress is not a namespace-wide fact"
+
+    # Anchored to no connection: nobody gets the push, and polling covers it.
+    origin.notified.clear()
+    await transport.notify("acct-42", _envelope(result_kind=None, origin_connection=None))
+    assert origin.notified == []
+    assert bystander.notified == []
+
+
+async def test_a_suppressed_operation_stays_in_the_register_in_full() -> None:
+    """TW-DEL-013 / TW-INV-017: the predicate governs delivery, never existence.
+
+    An operation no user can ever ask to see would be worse than a noisy one, and a toggle that
+    removed the row it lives on would leave nothing to toggle back.
+    """
+    from taskwire.contrib.muxws import handle_watch
+    from taskwire.delivery import Client as DeliveryClient
+    from taskwire.register import build_register
+    from taskwire.reporter import new_token, operation
+    from taskwire.store import MemoryStore
+
+    previous = taskwire.settings.progress_interval
+    taskwire.settings.progress_interval = 0.0
+    try:
+        store = MemoryStore()
+        peer = FakePeer("silenced")
+        tag_peer(peer, "acct-42")
+        token = new_token()
+
+        async with operation(token, session="acct-42", result_kind="report", store=store) as reporter:
+            await reporter.set(percent=30)
+            handle_watch(peer, {"overrides": {token: False}})
+
+            snapshots = await store.list_operations("acct-42")
+            register = build_register(snapshots, DeliveryClient(session="acct-42", peer=peer))
+
+            assert len(register.operations) == 1, "still in the register, in full"
+            entry = register.operations[0]
+            assert entry.progress_delivery is False, "and honestly reporting that it is muted"
+            assert entry.snapshot.progress.percent == 30.0, "with its state, not a redacted stub"
+    finally:
+        taskwire.settings.progress_interval = previous
