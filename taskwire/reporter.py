@@ -31,6 +31,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from .ambient import bind as ambient_bind, unbind as ambient_unbind
 from .models import (
     encoded_size,
     Envelope,
@@ -105,6 +106,8 @@ class Reporter:
         progress: Progress,
         clock: Callable[[], float] | None = None,
         raise_on_cancel: bool | None = None,
+        parent: Reporter | None = None,
+        notify_parent: Callable[..., Any] | None = None,
     ) -> None:
         self._key = key
         self._ns = ns
@@ -118,6 +121,26 @@ class Reporter:
         self._rev = 0
         self._cancelled = False
         self._loop: asyncio.AbstractEventLoop | None = None
+
+        # --- nesting (M2) -------------------------------------------------
+        # `_parent` and `_notify_parent` are the whole of a subtask's relationship to its parent, and
+        # neither of them tells it its own range: TW-NEST-001 says the callee MUST NOT be able to
+        # learn it. A child reports a *local* 0-100 and the parent does the mapping, which is also
+        # what makes the composition in TW-NEST-002 fall out for free.
+        self._parent = parent
+        self._notify_parent = notify_parent
+        # TW-NEST-004 / TW-INV-010: one entry per child handed out, never a last-written percent.
+        # Each commit rewrites exactly the one entry. The bug this prevents passes a monotonicity
+        # property test - four equal siblings where the last to finish finishes first pin the bar at
+        # 100% for three quarters of the work.
+        self._contribution: dict[int, float] = {}
+        self._child_seq = 0
+        self._own_percent: float | None = None
+        self._high_water: float | None = None
+        # TW-NEST-007: the map is mutated under the parent's lock, so any interleaving of concurrent
+        # siblings produces the same sum.
+        self._children_lock = asyncio.Lock()
+        self._ambient_token: Any = None
 
     # ---------------------------------------------------------------- properties
 
@@ -182,7 +205,10 @@ class Reporter:
             _check_size("data", data)
 
         if percent is not _UNSET:
-            self._progress.percent = _clamp_percent(percent)
+            self._own_percent = _clamp_percent(percent)
+        # The display fields live on the ONE progress document a token has (TW-NEST-013). A subtask
+        # shares its root's `Progress` object, so `sub.set(label=...)` names the current step of the
+        # operation rather than of a sub-range no client can see.
         if title is not _UNSET:
             self._progress.title = title
         if label is not _UNSET:
@@ -194,7 +220,132 @@ class Reporter:
         if raise_on_cancel is not None:
             self._raise_on_cancel = raise_on_cancel
 
-        await self._tick()
+        await self._propagate()
+
+    # ---------------------------------------------------------------- nesting
+
+    def _local_percent(self) -> float | None:
+        """TW-NEST-005: own value when childless, the contribution sum when parented, the LARGER of
+        the two when both.
+
+        "Larger" rather than "sum" or "own": a reporter that both does work itself and hands ranges
+        out would otherwise go backwards the moment its first child reports, and a bar that goes
+        backwards reads as a bug to every user who sees it.
+        """
+        if not self._contribution:
+            return self._own_percent
+        total = sum(self._contribution.values())
+        if self._own_percent is None:
+            return total
+        return max(self._own_percent, total)
+
+    async def _propagate(self, *, force: bool = False) -> None:
+        """Push this reporter's local percent one level up, or commit it if this is the root.
+
+        `force` travels with the propagation rather than stopping at the reporter that was
+        asked: a subtask's `flush()` has to reach the store unthrottled (TW-THR-004), and the
+        store is several levels up.
+        """
+        local = self._local_percent()
+        if self._notify_parent is not None:
+            await self._notify_parent(local, force=force)
+            return
+
+        # The root, and only the root, writes to the document.
+        if local is None:
+            # TW-NEST-011: `null` reaches the committed document only when the ROOT's own local
+            # percent is None - a child reporting null freezes its contribution instead, which is
+            # handled where contributions are written.
+            self._progress.percent = None
+        else:
+            # TW-NEST-010: a monotonic clamp on the root's committed percent, as a final safety
+            # net only - it is emphatically not the correctness mechanism, the contribution map
+            # is. It nets the *nesting arithmetic*, so it applies only once ranges have been
+            # handed out: a childless root setting its own percent is not doing that arithmetic,
+            # and TW-PROG-002 entitles it to go backwards (-5 clamps to 0) when a phase restarts.
+            if self._contribution:
+                self._high_water = local if self._high_water is None else max(self._high_water, local)
+                self._progress.percent = self._high_water
+            else:
+                self._progress.percent = local
+        if force:
+            await self._commit()
+        else:
+            await self._tick()
+
+    def subtask(self, start: float, end: float) -> Reporter:
+        """A reporter covering `[start, end]` of this one's range (TW-NEST-001).
+
+        The child has the identical API and **cannot learn its range**: it reports a local 0-100 and
+        this reporter does the mapping. That is what makes TW-NEST-002's recursive composition fall
+        out rather than needing its own arithmetic - `r.subtask(10, 25).subtask(50, 100)` covers
+        17.5-25 of `r` because each level maps only its own child's local value.
+        """
+        self._child_seq += 1
+        child_key = self._child_seq
+        width = float(end) - float(start)
+        self._contribution[child_key] = 0.0
+
+        async def notify(local: float | None, *, force: bool = False) -> None:
+            if local is None:
+                # TW-NEST-011: freeze this child's contribution at its last known value rather than
+                # dropping it to zero. A child that goes indeterminate has not un-done its work.
+                await self._propagate(force=force)
+                return
+            async with self._children_lock:
+                # Exactly this one entry is rewritten (TW-NEST-004). TW-NEST-012 falls out: the value
+                # can never exceed `width`, so it cannot overflow into a sibling's range.
+                self._contribution[child_key] = width * max(0.0, min(100.0, local)) / 100.0
+            await self._propagate(force=force)
+
+        return Reporter(
+            key=self._key,
+            ns=self._ns,
+            token=self._token,
+            store=self._store,
+            progress=self._progress,
+            clock=self._clock,
+            raise_on_cancel=self._raise_on_cancel,
+            parent=self,
+            notify_parent=notify,
+        )
+
+    def split(self, *weights: float) -> tuple[Reporter, ...]:
+        """TW-NEST-003: one reporter per weight, partitioning this range in proportion.
+
+        Concurrent siblings MUST each be passed their own reporter explicitly (TW-NEST-014). The
+        ambient binding must not be shared across a `gather` - see the ambient module's docstring for
+        the wrong and the right form side by side.
+        """
+        total = float(sum(weights))
+        if total <= 0:
+            raise ValueError("taskwire: split() needs at least one positive weight")
+        children: list[Reporter] = []
+        cursor = 0.0
+        for weight in weights:
+            span = 100.0 * float(weight) / total
+            children.append(self.subtask(cursor, cursor + span))
+            cursor += span
+        return tuple(children)
+
+    def __enter__(self) -> Reporter:
+        """Bind the ambient reporter for the duration of the block (TW-AMB-004)."""
+        from .ambient import bind
+
+        self._ambient_token = bind(self)
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        """Unbind via the contextvars Token, and force an unthrottled flush (TW-THR-004).
+
+        The reset goes through the `Token` rather than overwriting the variable (TW-AMB-005): a
+        raising task that merely overwrote would leak its binding to the next task on the same pooled
+        thread, and operation A's progress would land on operation B's key.
+        """
+        from .ambient import unbind
+
+        unbind(self._ambient_token)
+        self._ambient_token = None
 
     async def _tick(self) -> None:
         """The inline throttle (TW-THR-002) and the once-per-interval yield (TW-THR-003)."""
@@ -236,20 +387,22 @@ class Reporter:
         )
         return self._rev
 
-    async def flush(self) -> None:
-        """Force an unthrottled commit (TW-THR-004)."""
-        await self._commit()
-
     # ---------------------------------------------------------------- terminal writes
 
     async def done(self) -> None:
         """On a root reporter this is the caller asking for a clean finish.
 
         Only the root reporter's terminal transition may put the operation into a terminal state
-        (TW-PROG-011); in practice `operation()`'s exit is the one that calls it. A subtask's
-        `done()` fills its contribution and does **not** touch the operation state (TW-NEST-008,
-        M2).
+        (TW-PROG-011); in practice `operation()`'s exit is the one that calls it.
+
+        **A subtask's `done()` fills its contribution to its full width and does NOT touch the
+        operation state** (TW-NEST-008). It reports a local 100 rather than writing a width it is not
+        allowed to know (TW-NEST-001), which comes to the same number by a route that keeps the range
+        in the parent where it belongs.
         """
+        if self._notify_parent is not None:
+            await self._notify_parent(100.0, force=True)
+            return
         await self._commit(state=ProgressState.DONE)
 
     async def fail(self, code: str, message: Text, retryable: bool = False) -> None:
@@ -265,13 +418,12 @@ class Reporter:
         """TW-DLG-*: no timeout, no default answer. M3."""
         raise NotImplementedError("dialogs arrive in M3")
 
-    def subtask(self, start: float, end: float) -> Reporter:
-        """M2."""
-        raise NotImplementedError("nesting arrives in M2")
-
-    def split(self, *weights: float) -> tuple[Reporter, ...]:
-        """M2."""
-        raise NotImplementedError("nesting arrives in M2")
+    async def flush(self) -> None:
+        """A subtask has nothing of its own to flush; it forces the root's (TW-THR-004)."""
+        if self._notify_parent is not None:
+            await self._propagate(force=True)
+            return
+        await self._commit()
 
 
 class InertReporter(Reporter):
@@ -299,6 +451,22 @@ class InertReporter(Reporter):
         return None
 
     async def _tick(self) -> None:
+        return None
+
+    async def _propagate(self, *, force: bool = False) -> None:  # noqa: ARG002
+        return None
+
+    def subtask(self, start: float, end: float) -> Reporter:  # noqa: ARG002
+        """An inert reporter's children are inert too, so `with progress.subtask(...)` still works."""
+        return InertReporter()
+
+    def split(self, *weights: float) -> tuple[Reporter, ...]:
+        return tuple(InertReporter() for _ in weights)
+
+    def __enter__(self) -> Reporter:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
         return None
 
     async def _commit(self, *, state: ProgressState | None = None) -> int:  # noqa: ARG002
@@ -413,6 +581,11 @@ class OperationScope:
         self._keepalive: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
+        self._ambient_token: Any = None
+        # True while the synchronous form is driving. The ambient binding then belongs to the
+        # CALLING thread's context, not the loop thread's: a contextvars Token may only be reset
+        # in the context that created it, and `run_coroutine_threadsafe` gives each call its own.
+        self._sync_form = False
 
     @property
     def _inert(self) -> bool:
@@ -466,6 +639,11 @@ class OperationScope:
             raise_on_cancel=self._raise_on_cancel,
         )
         self._reporter._loop = asyncio.get_running_loop()
+        # TW-API-001: bind the ambient reporter, so code six frames down can `await progress.set()`
+        # without every function between here and there growing a `reporter` parameter. The
+        # synchronous form binds in `__enter__` instead - see `_sync_form`.
+        if not self._sync_form:
+            self._ambient_token = ambient_bind(self._reporter)
         await self._reporter._commit()
         self._keepalive = asyncio.get_running_loop().create_task(self._keepalive_loop(store, k))
         return self._reporter
@@ -488,6 +666,14 @@ class OperationScope:
             logger.debug("taskwire: keepalive stopped for %s", k, exc_info=True)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        # First, and unconditionally. TW-AMB-005 wants the reset to go through the `Token` rather
+        # than an overwrite, and TW-INV-011 names the failure: a raising task that leaked its
+        # binding puts operation A's progress on operation B's key, on the next task to reuse the
+        # thread. Nothing below here may be able to skip it.
+        if not self._sync_form:
+            ambient_unbind(self._ambient_token)
+            self._ambient_token = None
+
         if self._keepalive is not None:
             self._keepalive.cancel()
             # The keepalive is being torn down deliberately; whatever it was doing is no longer
@@ -524,14 +710,19 @@ class OperationScope:
         calling thread is inside a CPU-bound phase - the synchronous form is the Celery form, and
         Celery workers are exactly where a 90-second silent phase happens.
         """
+        self._sync_form = True
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, name="taskwire-operation-loop", daemon=True)
         self._loop_thread.start()
         reporter = asyncio.run_coroutine_threadsafe(self.__aenter__(), self._loop).result()
         reporter._loop = self._loop
+        # Bind here, in the caller's context, which is where the body will run.
+        self._ambient_token = ambient_bind(reporter)
         return reporter
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        ambient_unbind(self._ambient_token)
+        self._ambient_token = None
         try:
             asyncio.run_coroutine_threadsafe(self.__aexit__(exc_type, exc, tb), self._loop).result()
         finally:

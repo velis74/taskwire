@@ -14,6 +14,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
+from .ambient import ask, current_reporter, progress
 from .conformance import run_conformance
 from .delivery import Client, OperationRef
 from .models import (
@@ -94,6 +95,9 @@ __all__ = [
     "TaskwireTransport",
     "Text",
     "__version__",
+    "ask",
+    "progress",
+    "current_reporter",
     "aggregate",
     "build_register",
     "check_taskwire_readers",

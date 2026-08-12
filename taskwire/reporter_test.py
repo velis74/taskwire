@@ -796,10 +796,8 @@ async def test_later_milestone_surfaces_raise_rather_than_silently_doing_nothing
             await reporter.set_result(taskwire.Result(kind="k"))
         with pytest.raises(NotImplementedError, match="M3"):
             await reporter.ask("confirm")
-        with pytest.raises(NotImplementedError, match="M2"):
-            reporter.subtask(0, 50)
-        with pytest.raises(NotImplementedError, match="M2"):
-            reporter.split(1, 1)
+        # `subtask` and `split` were stubs here until M2 landed and are now real; the assertion moved
+        # to reporter_test.py's nesting section rather than being deleted.
 
 
 async def test_reporter_fail_writes_an_error_without_a_stack_trace():
