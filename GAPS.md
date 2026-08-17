@@ -657,9 +657,59 @@ operation, and TW-PRIV-003 then pushes a private operation's progress to no sock
 
 ---
 
+## taskwire-m4-redis-and-celery.md note 19 / TW-CELERY-007 — `wrap_sync_runner`'s signature — OPEN
+
+**What the brief said:** "Provide instead a wrapper `wrap_sync_runner(fn)` that
+`celery_viewset_server.sync_wrapper` can apply around its `loop.run_until_complete(...)`, resetting
+the `contextvars.Token` in a `finally`."
+
+**What one argument cannot do:** `token` and `session` reach the worker as Celery kwargs, and
+`sync_wrapper` splats every remaining kwarg into the action through `_reconstruct_kwargs`, which
+passes through any key it has no type hint for. A hook that sees only the runner cannot remove them,
+so the action is called with two keywords it never declared. The signature is therefore
+`wrap_sync_runner(runner, kwargs) -> (runner, kwargs)`, and the keys are spelled `_taskwire_token` /
+`_taskwire_session` — an action is free to declare a parameter of its own called `token`, and
+reading that one as an operation address would write a namespace's progress wherever the application
+happened to mean.
+
+**Two things the brief's wording does settle, and they pull in opposite directions from the obvious
+implementation:**
+
+- The operation is entered and left **from the caller's frame**, not from inside the awaitable. A
+  worker's execution limit raises at whatever the thread is executing, and a thread waiting on an
+  action is inside the runner: an `async with operation(...)` in the awaitable is left suspended,
+  its `__aexit__` never runs, and the operation expires on its TTL with no terminal write at all —
+  which is exactly the case TW-DLG-006 exists for.
+- It is entered on the **caller's loop**, not through the synchronous form. `operation()`'s
+  synchronous form owns a second loop on a second thread (TW-API-002), which suits a synchronous
+  task body; an action is `async def`, so its own awaits would run on the caller's loop while the
+  operation ran on the other, and a `redis.asyncio` client cannot serve connections opened on a loop
+  that is not driving them.
+
+**What the author may prefer instead:** amending note 19 and TW-CELERY-007 to the signature that
+works, or a different spelling of the two kwargs.
+
+---
+
+## taskwire-spec.md §6.1 / TW-DLG-006 — `dialog_timeout` is written whether or not a dialog was open
+
+Both worker entries name `dialog_timeout` on `SoftTimeLimitExceeded` without checking whether the
+operation was holding an open question. A worker killed while grinding through rows therefore reports
+`code: "dialog_timeout"`, `retryable: true` — a code that tells the reader to answer a question
+nobody asked.
+
+TW-DLG-006 describes the death it diagnoses ("an unanswered dialog blocks its worker until Celery's
+own execution timeout kills the task") but states no test on the dialogs, and `waiting_input` is
+derived rather than stored (TW-PROG-010), so distinguishing the two costs a store read at the moment
+the worker is being killed. Left as it is, in both entries, rather than made inconsistent between
+them.
+
+---
+
 ## Coverage of the two languages
 
-Python 258 tests (10 skipped: they drive an injected clock, and Redis owns its own expiry).
+Python 271 tests (9 skipped: `redis` is not installed in the dev venv, and four schema tests describe
+a shape that never crosses the viewset boundary).
 TypeScript 386 tests. Both lint- and type-clean; the Python core still imports none of redis,
 fastapi, celery or muxws.
 

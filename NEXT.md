@@ -5,12 +5,26 @@ done, not when it is ticked.
 
 ---
 
-## 1. `wrap_sync_runner` (TW-CELERY-007)
+## 1. Adopt `wrap_sync_runner` in fastapi-viewsets
 
-The hook does not exist. `celery_viewset_server.sync_wrapper` is meant to apply it around its
-`loop.run_until_complete(...)`, resetting the `contextvars.Token` in a `finally`. Only
-`taskwire_task` (the plain-Celery form, TW-CELERY-008) was built. This is the one thing taskwire owes
-fastapi-viewsets that is still missing.
+taskwire's half is built. What is left is in *that* repository, and it is three edits:
+
+1. `celery_viewset_server.sync_wrapper` calls the hook, in this order — the reconstruction pass
+   passes through any key it has no type hint for, so a taskwire key surviving into it reaches the
+   action as an argument it never declared:
+
+   ```python
+   run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)
+   kwargs = _reconstruct_kwargs(original_endpoint, kwargs, cls)
+   result = run(lifecycle_runner(original_endpoint, instance, cls, lifecycle, *args, **kwargs))
+   ```
+
+   Behind `try: from taskwire.contrib.celery import wrap_sync_runner / except ImportError:` with a
+   two-line identity fallback, so fastapi-viewsets keeps working without taskwire installed.
+2. The dispatching client sends `_taskwire_token` and `_taskwire_session` beside `_correlation_id`,
+   and calls `mark_queued` before it sends. Until it does, the hook is inert on every call.
+3. The web-side middleware opens `operation()` around a **non**-Celery action (TW-CELERY-006) and
+   must not open one for a Celery-dispatching action (TW-CELERY-005).
 
 ## 2. TW-CELERY-005's split test
 

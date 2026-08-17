@@ -67,6 +67,7 @@ async def ask(dialog_id, *, buttons, inputs=None, params=None,
               title=None, text=None) -> DialogAnswer   # no timeout, no default
 async def done() -> None
 async def fail(code: str, message: Text, retryable: bool = False) -> None
+def name_error(code: str, message: Text, retryable: bool = False) -> None
 async def flush() -> None
 def subtask(start: float, end: float) -> Reporter
 def split(*weights: float) -> tuple[Reporter, ...]
@@ -74,6 +75,35 @@ def split(*weights: float) -> tuple[Reporter, ...]
 async def was_aborted() -> bool                  # forces a store read
 @property sync -> SyncReporter
 ```
+
+`fail()` writes; `name_error()` only decides what the one terminal write of `operation()` will say,
+for an exception already on its way out of the block.
+
+## The Celery worker entry
+
+`taskwire.contrib.celery`, installed with `pip install "taskwire[celery]"`. Two entries, because a
+worker either owns its loop or is handed one.
+
+```python
+@taskwire_task(result_kind="acme.import_report")     # a plain Celery task body
+def import_rows(self, reporter, *, rows): ...
+
+run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)   # a viewset action
+```
+
+`taskwire_task` decorates the body and receives the reporter as an argument; `token` and `session`
+arrive as task kwargs. `wrap_sync_runner` is for a caller that already drives a loop — the
+fastapi-viewsets Celery server — and it wraps that runner rather than the task: it consumes
+`_taskwire_token` and `_taskwire_session` from the kwargs, returns the kwargs without them, and runs
+whatever the runner is given inside an `operation()`. The action declares no reporter parameter and
+reports through the ambient one.
+
+Both close the operation **before** the caller publishes the task's result. That ordering is the
+whole reason Celery's `task_prerun` / `task_postrun` signals are unusable here: `postrun` fires after
+the result has been pushed, so a client could see the answer while the operation still read `running`.
+
+A call carrying no token runs unwrapped. Reporting is an accelerator, and an application that opted
+this caller out of taskwire did not opt out of the work.
 
 ## Ports
 

@@ -44,12 +44,14 @@ from __future__ import annotations
 
 import functools
 import logging
+import sys
 
 from collections.abc import Callable
 from typing import Any
 
 from celery.exceptions import SoftTimeLimitExceeded
 
+from ..ambient import bind as ambient_bind, unbind as ambient_unbind
 from ..decorators import declared_result_kind
 from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported for callers
 from ..models import Error, Text
@@ -62,6 +64,17 @@ logger = logging.getLogger("taskwire.celery")
 DISPATCH_FAILED = "dispatch_failed"
 DIALOG_TIMEOUT = "dialog_timeout"
 """The two reserved error codes, both `retryable: true` (TW-PROG-005, TW-CELERY-004, TW-DLG-006)."""
+
+TOKEN_KWARG = "_taskwire_token"
+SESSION_KWARG = "_taskwire_session"
+"""The two Celery kwargs that carry an operation into a viewset worker (TW-CELERY-003).
+
+Underscore-prefixed, and not `token` / `session`, because these travel beside an action's **own**
+arguments rather than a task body's: a viewset action is free to declare a parameter called `token`,
+and a caller that read that one as an operation address would write a namespace's progress to
+whatever the application happened to mean by the word. `wrap_sync_runner` consumes them, so no action
+ever sees them.
+"""
 
 
 def taskwire_task(
@@ -110,10 +123,12 @@ def taskwire_task(
                 except SoftTimeLimitExceeded:
                     # TW-DLG-006: this is what an unanswered dialog looks like from the outside.
                     # Retryable, because the question may well be answered on a second attempt.
-                    reporter.sync.fail(
+                    # Named rather than committed: the exception is on its way out of `operation()`,
+                    # whose exit makes the one terminal write this operation gets (TW-API-001).
+                    reporter.name_error(
                         DIALOG_TIMEOUT,
                         Text(key="taskwire.dialog_timeout"),
-                        True,  # noqa: FBT003 - positional to match `fail(code, message, retryable)`
+                        True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
                     )
                     raise
 
@@ -161,6 +176,118 @@ async def dispatch(
             error=Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True),
         )
         raise broker_failure
+
+
+def wrap_sync_runner(
+    runner: Callable[[Any], Any],
+    kwargs: dict[str, Any],
+) -> tuple[Callable[[Any], Any], dict[str, Any]]:
+    """Wrap a worker's `run_until_complete` so what it drives runs inside an `operation()`.
+
+    The worker-side entry for a **viewset action** dispatched to Celery (TW-CELERY-007), and the twin
+    of `taskwire_task` for a caller that owns a loop already:
+
+    ```python
+    run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)
+    kwargs = _reconstruct_kwargs(original_endpoint, kwargs, cls)
+    result = run(lifecycle_runner(original_endpoint, instance, cls, lifecycle, *args, **kwargs))
+    ```
+
+    Both arguments come back: `runner` wrapped, and `kwargs` without `_taskwire_token` /
+    `_taskwire_session`, so the action is called with its own arguments and nothing else. The order
+    of those two lines is load-bearing - a reconstruction pass that has already run hands the action
+    a keyword it never declared. A call carrying neither key gets both arguments back unchanged,
+    which is what lets one worker entry serve viewsets that never heard of taskwire (TW-AMB-009).
+
+    `token` and `session` cross as **plain strings** (TW-CELERY-003) and the namespace is not
+    re-resolved: `session_resolver` is the only thing that produces one (TW-AMB-008), there is no
+    request in a worker, and a namespace that crossed a process boundary is inert data. No
+    `result_kind` is passed either - the web process's `queued` write fixed it and the field is
+    write-once (TW-CELERY-009, TW-PROG-006, TW-INV-009).
+
+    Reporting closes before `run` returns, and therefore before the caller publishes the result. That
+    ordering is why TW-CELERY-007 bans `task_prerun` / `task_postrun`: a completion written after the
+    result has been pushed lets a client see the answer before `done`.
+    """
+    token = _plain_string(kwargs.get(TOKEN_KWARG), TOKEN_KWARG)
+    session = _plain_string(kwargs.get(SESSION_KWARG), SESSION_KWARG)
+    if token is None or session is None:
+        return runner, kwargs
+
+    remaining = {name: value for name, value in kwargs.items() if name not in (TOKEN_KWARG, SESSION_KWARG)}
+    return functools.partial(_drive, runner, token=token, session=session), remaining
+
+
+def _drive(runner: Callable[[Any], Any], awaitable: Any, *, token: str, session: str) -> Any:
+    """Enter, drive and leave one operation - all with the caller's runner, all from this frame.
+
+    Three turns of the caller's loop rather than an `async with` inside the awaitable, and both
+    halves of that decide something.
+
+    **One loop.** The opening write, the keepalive, every `await progress.set()` the action makes and
+    the terminal write all run on the loop the worker is already driving. `operation()`'s synchronous
+    form owns a second loop on a second thread (TW-API-002), which is right for a synchronous task
+    body and wrong here: an action is `async def`, so its own awaits would run on the caller's loop
+    while the operation ran on the other one, and a `redis.asyncio` client whose connections were
+    opened on one loop cannot serve the other.
+
+    **One frame.** A worker's execution limit is a signal raised at whatever the thread is executing,
+    and a thread waiting on an action is inside `runner`, not inside the action. An `async with
+    operation(...)` in the awaitable is left suspended by that, its `__aexit__` never runs, and the
+    operation expires on its TTL with no terminal write at all. This `finally` is in the frame the
+    signal unwinds, so the write happens (TW-CELERY-004, TW-DLG-006).
+
+    The ambient binding is made here for the same reason `__enter__` makes it in the calling thread:
+    a `contextvars.Token` may only be reset in the context that created it, and the task `runner`
+    creates for `__aenter__` discards its own (TW-AMB-005). Resetting in the `finally` is what leaves
+    the next task on a pooled worker thread unbound rather than writing to the previous operation's
+    key (TW-INV-011).
+
+    A store that cannot be reached at entry leaves the action to run **unreported** rather than
+    refusing to run it, and a failure at the terminal write is logged rather than raised: reporting is
+    an accelerator, and a broker or store outage must not replace the answer the action produced.
+    """
+    scope = operation(token, session=session)
+    scope.bind_ambient_in_caller()
+    try:
+        reporter = runner(scope.__aenter__())
+    except Exception:  # noqa: BLE001 - an unreachable store is not a reason to refuse the work
+        logger.warning("taskwire: no operation for %s; the action runs unreported", token, exc_info=True)
+        return runner(awaitable)
+
+    ambient = ambient_bind(reporter)
+    try:
+        try:
+            return runner(awaitable)
+        except SoftTimeLimitExceeded:
+            # TW-DLG-006, as `taskwire_task` names it: the class of the exception is whatever the
+            # worker's limit raises, and `dialog_timeout` is what a reader can act on.
+            reporter.name_error(
+                DIALOG_TIMEOUT,
+                Text(key="taskwire.dialog_timeout"),
+                True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
+            )
+            raise
+    finally:
+        ambient_unbind(ambient)
+        try:
+            runner(scope.__aexit__(*sys.exc_info()))
+        except Exception:  # noqa: BLE001 - logged here, never in place of the action's own outcome
+            logger.warning("taskwire: the terminal write failed for %s", token, exc_info=True)
+
+
+def _plain_string(value: Any, name: str) -> str | None:
+    """TW-CELERY-003: both cross as plain strings, and anything else addresses nothing.
+
+    A wrapper object stringified into a key writes an operation to an address no reader holds, and it
+    does it silently - so a value of the wrong shape is refused loudly and the action runs unreported.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        logger.warning("taskwire: %s arrived as %r, not a plain string (TW-CELERY-003)", name, value)
+        return None
+    return value
 
 
 def configure_worker(store: Any) -> None:

@@ -14,10 +14,10 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `docs/` | the user-facing VitePress site, and only that |
 | `demo/` + `demo.py` | the one demo. A consumer of taskwire, not part of it |
 | `conformance/wire/` | 28 JSON fixtures read in place by **both** pytest and vitest |
-| `GAPS.md` | decisions taken without the author; 9 still OPEN |
+| `GAPS.md` | decisions taken without the author; 10 still OPEN |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 258 pass, 10 skip
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 271 pass, 9 skip
 npx vitest run                                            # 386 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npx eslint ts --fix && npx vue-tsc --noEmit
@@ -25,7 +25,8 @@ python demo.py                                            # both halves, Ctrl-C 
 python demo/e2e/run_e2e.py                                # the two halves against each other, ~3 min
 ```
 
-Python venv is at `/home/jure/.venv/taskwire/bin/python` — not `.venv` in the repo.
+Python venv is at `/home/jure/.venv/taskwire/bin/python` — not `.venv` in the repo. It has the
+`celery` extra installed; without it `contrib/celery_test.py` skips whole and takes seven tests with it.
 
 ## The architecture, in one paragraph
 
@@ -57,9 +58,10 @@ wrong and has been corrected; see the amendment note in `design/taskwire-spec.md
 
 Separately, and later, fastapi-viewsets will gain an extension point that opens a taskwire
 `operation()` around **every viewset action automatically**, and will declare the same viewsets over
-muxws. That work happens in *that* repository. What taskwire owes it is only hooks: `operation()`,
+muxws. That work happens in *that* repository. **Every hook taskwire owes it is built**: `operation()`,
 the ambient reporter (`taskwire/ambient.py`), the header constants (`taskwire/headers.py`) and
-`wrap_sync_runner` — the last of which **does not exist yet** (TW-CELERY-007).
+`wrap_sync_runner` (TW-CELERY-007) — the worker-side entry its Celery server wraps its own
+`run_until_complete` with. `NEXT.md` item 1 is the three edits left on that side.
 
 Two traps found in it, worth remembering:
 
@@ -104,7 +106,9 @@ in one process tree.
 
 **Next, in order** — the detail is in `NEXT.md`:
 
-1. `wrap_sync_runner` (TW-CELERY-007) — the last hook fastapi-viewsets is owed.
+1. Adopting `wrap_sync_runner` in fastapi-viewsets — three edits, all in that repository.
 2. CI and publishing.
 
-**The seam that has never run**: the Vuetify components, which have never been mounted.
+**The seams that have never run**: the Vuetify components, which have never been mounted, and
+`wrap_sync_runner` against a real Celery worker — its tests drive the runner directly, because the
+caller that will apply it has not been changed yet.

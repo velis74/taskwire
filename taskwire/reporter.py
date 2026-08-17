@@ -435,6 +435,20 @@ class Reporter:
         self._progress.error = Error(code=code, message=message, retryable=retryable)
         await self._commit(state=ProgressState.FAILED)
 
+    def name_error(self, code: str, message: Text, retryable: bool = False) -> None:
+        """Decide what the terminal write will say, without making that write.
+
+        For an exception on its way out of `operation()`, where the code derived from the exception's
+        class would be less true than one the caller already knows: TW-DLG-006's `dialog_timeout` is
+        the case, and the class name there is whatever the worker's execution limit happens to raise.
+
+        `fail()` is the wrong tool for that: it commits, and the exit then commits a second terminal
+        state over it - two completions where TW-API-001 allows exactly one, and a terminal envelope
+        followed by another one. This names the error and leaves the single write to the exit, which
+        withdraws the dialogs and drops the entry in the same step (TW-CANCEL-011, TW-REG-007).
+        """
+        self._progress.error = Error(code=code, message=message, retryable=retryable)
+
     async def set_result(self, result: Result) -> None:
         """Park a result for later collection. Root reporter only, and at most once.
 
@@ -746,10 +760,12 @@ class OperationScope:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._ambient_token: Any = None
-        # True while the synchronous form is driving. The ambient binding then belongs to the
-        # CALLING thread's context, not the loop thread's: a contextvars Token may only be reset
-        # in the context that created it, and `run_coroutine_threadsafe` gives each call its own.
-        self._sync_form = False
+        # True when the binding belongs to the CALLER's context rather than to `__aenter__`'s. A
+        # `contextvars.Token` may only be reset in the context that created it, and a scope entered
+        # from a synchronous frame is entered inside a task of its own whose context is discarded
+        # on the way out - so binding there would leave nothing bound where the body runs and a
+        # Token that cannot be reset. See `bind_ambient_in_caller`.
+        self._caller_binds_ambient = False
 
     @property
     def _inert(self) -> bool:
@@ -805,8 +821,8 @@ class OperationScope:
         self._reporter._loop = asyncio.get_running_loop()
         # TW-API-001: bind the ambient reporter, so code six frames down can `await progress.set()`
         # without every function between here and there growing a `reporter` parameter. The
-        # synchronous form binds in `__enter__` instead - see `_sync_form`.
-        if not self._sync_form:
+        # caller-bound form binds around the body instead - see `bind_ambient_in_caller`.
+        if not self._caller_binds_ambient:
             self._ambient_token = ambient_bind(self._reporter)
         await self._reporter._commit()
         self._keepalive = asyncio.get_running_loop().create_task(self._keepalive_loop(store, k))
@@ -834,7 +850,7 @@ class OperationScope:
         # than an overwrite, and TW-INV-011 names the failure: a raising task that leaked its
         # binding puts operation A's progress on operation B's key, on the next task to reuse the
         # thread. Nothing below here may be able to skip it.
-        if not self._sync_form:
+        if not self._caller_binds_ambient:
             ambient_unbind(self._ambient_token)
             self._ambient_token = None
 
@@ -851,7 +867,12 @@ class OperationScope:
             return False
 
         state, error = _terminal_for(exc_type, exc)
-        if error is not None:
+        # An error the operation named for itself outranks one derived from the exception's class
+        # (`name_error`). The class is the more specific fact only when nobody knew better: a worker
+        # killed while holding a question raises whatever its execution limit raises, and
+        # `dialog_timeout` with `retryable: true` is what the reader can act on (TW-DLG-006,
+        # TW-PROG-005).
+        if error is not None and reporter._progress.error is None:
             reporter._progress.error = error
 
         if state is ProgressState.DONE and reporter._result_parked:
@@ -877,6 +898,20 @@ class OperationScope:
         # the caller meant.
         return False
 
+    def bind_ambient_in_caller(self) -> None:
+        """Leave the ambient binding to the caller, who binds around the body in its own context.
+
+        For a caller that enters this scope from a synchronous frame by driving `__aenter__` on a
+        loop it already owns. The task that drives it has a context of its own which is discarded on
+        the way out, so a binding made inside `__aenter__` would be invisible where the body runs and
+        would carry a `contextvars.Token` that can never be reset (TW-AMB-005, TW-INV-011). Call this
+        before `__aenter__`, then `taskwire.ambient.bind` around the body and `unbind` in a `finally`.
+
+        `__enter__` does exactly that for the synchronous form; `wrap_sync_runner` does it for a
+        worker that owns its own loop (TW-CELERY-007).
+        """
+        self._caller_binds_ambient = True
+
     # ---------------------------------------------------------------- sync form
 
     def __enter__(self) -> Reporter:
@@ -887,7 +922,7 @@ class OperationScope:
         calling thread is inside a CPU-bound phase - the synchronous form is the Celery form, and
         Celery workers are exactly where a 90-second silent phase happens.
         """
-        self._sync_form = True
+        self._caller_binds_ambient = True
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, name="taskwire-operation-loop", daemon=True)
         self._loop_thread.start()
