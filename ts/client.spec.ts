@@ -1333,6 +1333,104 @@ describe('the write path (TW-REST-004)', () => {
     expect(tw.register).toEqual([]);
     expect(entry.closed).toBe(true);
   });
+
+  it('reads the token again the moment an answer lands, off the rung the question chose', async () => {
+    // The ladder answers its ceiling while a question is open - a human is deciding, and asking the
+    // server faster changes nothing about how fast they decide (§8.2). The reply ends that: the
+    // worker was released the moment it landed, and the next rung was chosen for a situation that
+    // has just stopped being true. Without this the bar stands still for up to five seconds after
+    // every answer, and moves only when something else happens to be read.
+    const token = new_token();
+    let answered = false;
+    server.handler = (url) => {
+      if (url !== `${DEFAULT_BASE_PATH}/${token}`) return { status: 204 };
+      return {
+        status: 200,
+        data: answered
+          ? snapshotPayload(token, 'running', { rev: 2, progress: progressPayload('running', { percent: 40 }) })
+          : snapshotPayload(token, 'running', { dialogs: [OPEN_DIALOG] }),
+      };
+    };
+
+    const handle = tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(handle.dialog?.id).toBe(OPEN_DIALOG.id);
+    // Climbed to the ceiling and parked there: the next read is five seconds away.
+    await vi.advanceTimersByTimeAsync(CEILING);
+    const reads = server.polls(token).length;
+
+    answered = true;
+    await handle.answer('yes');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.polls(token)).toHaveLength(reads + 1);
+    expect(handle.progress?.percent).toBe(40);
+
+    // And the climb starts again from the base rung rather than resuming where the question left it.
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(server.polls(token)).toHaveLength(reads + 2);
+  });
+
+  it('climbs again from the base rung after a write, even when the document has not moved', async () => {
+    // A cancel is a request and not a completion (TW-CANCEL-003): the operation notices at its next
+    // progress call, so the read that follows the write routinely finds the same document. The rung
+    // that read would choose on its own is the one the climb had reached while the question was
+    // open - the ceiling - and the state the client is now waiting for is seconds away.
+    const token = new_token();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}`
+        ? { status: 200, data: snapshotPayload(token, 'running') }
+        : { status: 202 };
+
+    const handle = tw.track(token);
+    // Nothing changes, so the ladder backs off ×1.5 a rung at a time until it is at the ceiling.
+    await vi.advanceTimersByTimeAsync(CEILING * 5);
+
+    await handle.cancel();
+    await vi.advanceTimersByTimeAsync(1);
+    const reads = server.polls(token).length;
+
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(server.polls(token)).toHaveLength(reads + 1);
+  });
+
+  it('reads the token again after a cancel, a collect and a dismiss', async () => {
+    // The other three end the other situation the ceiling is for: an operation with nothing left to
+    // do. Each of them takes the row out of the register in the same step on the server
+    // (TW-REG-007), and a client that waited for its own ladder would draw a row that is gone.
+    const token = new_token();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}` ? { status: 200, data: parkedPayload(token) } : { status: 204 };
+
+    const handle = tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE);
+    await vi.advanceTimersByTimeAsync(CEILING);
+
+    for (const write of [() => handle.cancel(), () => handle.collect(), () => handle.dismiss()]) {
+      const reads = server.polls(token).length;
+      await write();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(server.polls(token)).toHaveLength(reads + 1);
+    }
+  });
+
+  it('asks for no read on a write while a transport carries the token (TW-TS-007)', async () => {
+    // The socket delivers the same change sooner, and the ladder is held for exactly that reason. A
+    // write that read anyway would put a request back on the wire for every button a user presses.
+    const token = new_token();
+    const socket = new FakeTransport();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}` ? { status: 200, data: parkedPayload(token) } : { status: 204 };
+
+    const handle = tw.track(token);
+    tw.attachTransport(socket);
+    await vi.advanceTimersByTimeAsync(BASE);
+    const reads = server.polls(token).length;
+
+    await handle.dismiss();
+    await handle.cancel();
+    await vi.advanceTimersByTimeAsync(CEILING);
+    expect(server.polls(token)).toHaveLength(reads);
+  });
 });
 
 describe('the members that never leave this client', () => {

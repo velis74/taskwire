@@ -248,6 +248,9 @@ class TokenPoller {
   /** Whether a read is in flight, so suspending and resuming across one cannot double the timer. */
   private reading = false;
 
+  /** A read this client's own write asked for while one was already on the wire. */
+  private owed = false;
+
   /** Whether a read has ever been asked for on this token. A held ladder still owes the first one. */
   private opened = false;
 
@@ -320,6 +323,35 @@ class TokenPoller {
       this.timer = null;
       void this.tick();
     }, this.ladder.resume());
+  }
+
+  /**
+   * Read now, and climb again from the base rung: this client has just written to the token.
+   *
+   * The rung in flight was chosen for the situation *before* the write, and the two situations a
+   * write ends are the two the ladder answers with its ceiling (§8.2). Answering the question a
+   * worker was parked on releases that worker at once and leaves the next read up to five seconds
+   * away, so the bar stands still through everything the job does next and moves only when something
+   * else happens to be read; releasing an uncollected result is the same shape. A write is a change
+   * this client knows about before any read could tell it, which is the one case the interval rules
+   * cannot express.
+   *
+   * Nothing here while a transport carries the token: it delivers the same change sooner, and the
+   * ladder is held for exactly that reason (TW-TS-007).
+   */
+  readNow(): void {
+    if (this.stopped || !this.wanted || this.suspended) return;
+    // A read on the wire was issued before the write landed, so it will answer with the document as
+    // it stood before it. The request is owed rather than dropped, and `tick()` issues it on the way
+    // out - where it also knows the rung it would otherwise have scheduled is the wrong one.
+    if (this.reading) {
+      this.owed = true;
+      return;
+    }
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    this.ladder.reset();
+    void this.tick();
   }
 
   attachHandle(handle: Operation<unknown>): void {
@@ -404,6 +436,14 @@ class TokenPoller {
       return;
     }
 
+    // The read this one was asked to follow was asked for by a write, and this document was written
+    // before it. Re-issue rather than schedule: the rung this read would choose is one the write has
+    // already made wrong.
+    if (this.owed) {
+      this.owed = false;
+      this.readNow();
+      return;
+    }
     // A read that landed after the ladder was suspended is delivered and not followed up: the
     // transport is carrying this token now, and the next rung is what resuming produces.
     if (!this.suspended) this.schedule(snapshot, previousRev);
@@ -884,7 +924,14 @@ export class Taskwire implements OperationHost, RegisterClient {
    * judgement in one place, on the handle, rather than in every call site.
    */
   async replyToDialog(token: string, did: string, button: string, values: Record<string, unknown> = {}): Promise<void> {
-    await this.calls.replyToDialog(token, did, button, values);
+    try {
+      await this.calls.replyToDialog(token, did, button, values);
+    } finally {
+      // Whether or not the reply was accepted. A `409` or a `410` is another tab having answered
+      // first (TW-DLG-011), which ends this question exactly as an accepted reply does and leaves the
+      // same worker running with nobody reading it.
+      this.noteWrite(token);
+    }
   }
 
   /**
@@ -902,15 +949,44 @@ export class Taskwire implements OperationHost, RegisterClient {
    * one (TW-CORE-002).
    */
   async cancel(token: string): Promise<void> {
-    await this.calls.cancel(token);
+    try {
+      await this.calls.cancel(token);
+    } finally {
+      this.noteWrite(token);
+    }
   }
 
   async collect(token: string): Promise<void> {
-    await this.calls.collect(token);
+    try {
+      await this.calls.collect(token);
+    } finally {
+      this.noteWrite(token);
+    }
   }
 
   async dismiss(token: string): Promise<void> {
-    await this.calls.dismiss(token);
+    try {
+      await this.calls.dismiss(token);
+    } finally {
+      this.noteWrite(token);
+    }
+  }
+
+  /**
+   * A write of this client's own has changed what the operation is doing: read, on both loops.
+   *
+   * The interval rules answer their ceiling for the two situations these calls end - a question a
+   * human is deciding, and an operation with nothing left to do - so the rung in flight when one of
+   * them returns is the one chosen for the situation that has just stopped being true. Every one of
+   * the four also changes the register: a question answered moves `needs_attention`, and a release
+   * takes the row out of it in the same step (TW-REG-007, TW-REG-004).
+   *
+   * Neither loop is asked for anything while a transport carries the namespace: it delivers what
+   * changed, and the ladders are held for that reason (TW-TS-007).
+   */
+  private noteWrite(token: string): void {
+    this.pollers.get(token)?.readNow();
+    this.registerState.noteWrite();
   }
 
   mute(token: string): void {

@@ -467,7 +467,11 @@ export class Operation<T> implements PromiseLike<T> {
   applySnapshot(snapshot: { rev: number; progress: Progress; dialogs?: readonly DialogRequest[] }): boolean {
     if (this.#closed) return false;
     this.#seen = true;
-    if (snapshot.rev < this.#rev) return false;
+    // Not newer is not news. One `rev` is one document, and this handle may hold moves that document
+    // does not: a question answered here settles without waiting for a read, and a released result is
+    // dropped here in the same way (TW-RES-010). A read issued before one of those writes lands after
+    // it, and re-applying the document it answered with would put both back on screen.
+    if (snapshot.rev <= this.#rev) return false;
     this.#rev = snapshot.rev;
     this.#progress = snapshot.progress;
     // Dialogs are applied by ID and are NOT gated by `rev` (TW-REV-006): a stale rev on a dialog

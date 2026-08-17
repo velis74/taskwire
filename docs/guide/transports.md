@@ -95,6 +95,13 @@ a push that names one, the command of its own `run()` answering, or that token's
 Each is bounded by the answer, because the payload it fetches carries the token — and a private
 operation, which no payload carries for any caller including its own, asks for none of them.
 
+**A write of your own reads immediately, and starts the climb again from the base rung.** Two of the
+four branches above answer the ceiling, and both describe something `answer()`, `cancel()`,
+`collect()` and `dismiss()` end: a question a human is deciding, and an operation with nothing left
+to do. Keeping that rung after the reply landed would freeze the bar for five seconds after every
+answer, while the worker it released got on with the job. None of this happens over a socket, which
+carries the same change sooner.
+
 The server advertises `poll_after_ms`, and it may only ever **slow a client down**: the effective
 interval is `max(poll_after_ms, the client's own ladder)`. Without that clamp a miscomputed or
 zeroed value becomes a request flood against the server that emitted it.

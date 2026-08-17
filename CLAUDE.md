@@ -18,7 +18,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 
 ```bash
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 271 pass, 9 skip
-npx vitest run                                            # 390 pass
+npx vitest run                                            # 395 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npx eslint ts --fix && npx vue-tsc --noEmit
 python demo.py                                            # both halves, Ctrl-C stops the pair

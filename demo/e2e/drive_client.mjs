@@ -77,6 +77,8 @@ const T = {
   settles: 10_000,
   holdEnds: 30_000,
   pollWindow: 4_000,
+  /** Long enough that both ladders have seen the question and parked on the rung it chooses. */
+  thinking: 1_500,
 };
 
 /**
@@ -90,6 +92,17 @@ const T = {
  * i.e. always, at the moment somebody starts the first job of the day.
  */
 const ROW_BUDGET_MS = 500;
+
+/**
+ * How long the bar may stand still after this client answered the question the worker was parked on.
+ *
+ * The reply releases the worker on the spot, and `reconcile` reports again within a step. What the
+ * budget is really about is the *reader*: the interval rules answer their ceiling while a question is
+ * open - a human is deciding, and asking faster changes nothing - so a client that kept that rung
+ * after its own reply would show a frozen bar for five seconds after every answer and move only when
+ * the next question happened to arrive.
+ */
+const RESUME_BUDGET_MS = 2_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -454,9 +467,13 @@ async function phaseDialogs(h) {
   const first = await until(() => h.row(token)?.dialog ?? null, T.question);
   if (first === null) {
     ledger.blocked('dialog.arrives', 'a question arrives on the register row', 'no dialog appeared');
-    ['dialog.answered_leaves_open', 'dialog.client_clears', 'job.resumes', 'result.collect_clears_row'].forEach((id) =>
-      ledger.blocked(id, id, 'the question never arrived'),
-    );
+    [
+      'dialog.answered_leaves_open',
+      'dialog.client_clears',
+      'job.resumes',
+      'job.resumes_promptly',
+      'result.collect_clears_row',
+    ].forEach((id) => ledger.blocked(id, id, 'the question never arrived'));
     await h.cleanup(token);
     return;
   }
@@ -483,7 +500,31 @@ async function phaseDialogs(h) {
   const percentAtAsk = h.row(token)?.progress?.percent ?? 0;
   // `answer()` answers the oldest open question, so this is the one guard that makes "by id" true.
   const answeringTheCaptured = h.row(token)?.dialog?.id === id;
+  // A moment's thought, and it is the assertion below rather than politeness. Answering in the same
+  // tick as the question arrives leaves both loops holding a rung scheduled *before* it - a short one
+  // - and the bar then moves again for a reason that has nothing to do with the reply. A person takes
+  // longer than one rung, by which time both ladders are on the ceiling a question puts them on.
+  await sleep(T.thinking);
   await h.row(token).answer('ours');
+  const answeredAt = Date.now();
+
+  // Measured before the two checks below and not after them, because this is the only one of the
+  // three that is about *when*: the other two assert states that stay true once they are reached,
+  // and waiting on them first would put their own latency inside this number.
+  const resumed = await until(() => (h.row(token)?.progress?.percent ?? 0) > percentAtAsk, T.resumes, 25);
+  const stoodStill = resumed === null ? null : Date.now() - answeredAt;
+  ledger.check(
+    'job.resumes',
+    'the worker proceeds past the question it was answered',
+    resumed !== null,
+    `percent never rose above ${percentAtAsk}`,
+  );
+  ledger.check(
+    'job.resumes_promptly',
+    `the bar moves again within ${RESUME_BUDGET_MS} ms of the answer`,
+    stoodStill !== null && stoodStill <= RESUME_BUDGET_MS,
+    stoodStill === null ? 'the bar never moved' : `it stood still for ${stoodStill} ms on a ${h.wire} client`,
+  );
 
   const onServer = await until(async () => {
     const state = await h.serverDialogState(token, id);
@@ -505,17 +546,6 @@ async function phaseDialogs(h) {
     'the client stops offering that id as an open question',
     cleared !== null,
     `dialog ${id} is still open on the row`,
-  );
-
-  const resumed = await until(() => {
-    const entry = h.row(token);
-    return entry !== null && (entry.progress?.percent ?? 0) > percentAtAsk;
-  }, T.resumes);
-  ledger.check(
-    'job.resumes',
-    'the worker proceeds past the question it was answered',
-    resumed !== null,
-    `percent never rose above ${percentAtAsk}`,
   );
 
   // The rest of the questions, so the job reaches its result. Each is answered by its own id.

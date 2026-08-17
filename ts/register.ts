@@ -528,6 +528,20 @@ export class RegisterState {
   }
 
   /**
+   * One of the four writes has returned: read the list, unless a transport is carrying it.
+   *
+   * The payload is what says who is in the register and in what order, and each of the four moves
+   * one of those: an answered question clears `needs_attention` and re-sorts the row (TW-REG-004,
+   * TW-REG-005), and a collect, a dismiss or a cancel takes it out altogether (TW-REG-007). The rung
+   * that would have brought the news was chosen while the question was still open, which is the
+   * ceiling.
+   */
+  noteWrite(): void {
+    if (this.suspended) return;
+    this.readOnce();
+  }
+
+  /**
    * Whether the merged register already accounts for this token, by either of the two ways it can.
    *
    * A row in the last payload is one; being **this tab's own private operation** is the other, and

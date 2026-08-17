@@ -384,7 +384,7 @@ its clock.
 
 ---
 
-## taskwire-m1c-ts-register-and-vue.md §6 — what reads the register between rungs — OPEN
+## taskwire-m1c-ts-register-and-vue.md §6 — what reads between rungs — OPEN
 
 **What I needed:** the row of a shared operation comes from the register payload and from nowhere
 else (TW-PRIV-002 leaves the per-token reads only the private half). Something has to decide when
@@ -394,7 +394,7 @@ that payload is asked for, other than the ladder.
 ceiling whenever nothing in the last payload was active — which is the state of every client at the
 moment somebody starts the first job of the day.
 
-**What I assumed:** four triggers, all of them off the ladder and all of them one read.
+**What I assumed:** five triggers, all of them off the ladder and all of them one read.
 
 1. A push naming a token this client cannot place, and
 2. a push for a token it has a handle for but no row — both already the brief's own consequence of
@@ -406,9 +406,20 @@ moment somebody starts the first job of the day.
    It covers an application that writes `queued` in the worker rather than in the command, and a
    token this tab was asked to `track()` rather than started.
 
-`knownMember` bounds all four to one read per token — the payload that answers carries it — and a
+`knownMember` bounds those four to one read per token — the payload that answers carries it — and a
 private operation asks for none of them: no payload carries one for any caller including its own,
 and its row is the copy its own poller already holds.
+
+5. **One of the four writes of TW-REST-004 returning**, on *both* loops, with the token's own ladder
+   set back to its base rung. Two of §8.2's four branches answer the ceiling, and both describe a
+   situation a write ends: a question a human is deciding, and an operation with nothing left to do.
+   So the rung in flight when a reply, a cancel, a collect or a dismiss returns was chosen for a
+   situation that has just stopped being true, and a client that kept it would show a bar standing
+   still for five seconds after every answer. A write is the one change a client knows about before
+   any read could tell it, which is what the interval rules cannot express.
+
+None of the five asks for anything while a transport is attached and healthy: it delivers the same
+change sooner, and the ladders are held for that reason (TW-TS-007).
 
 ---
 

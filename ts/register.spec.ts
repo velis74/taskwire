@@ -529,6 +529,24 @@ describe('what puts a row on screen with no push to carry it (TW-REG-006)', () =
     expect(tokensOf(tw.register)).toEqual([token]);
   });
 
+  it('reads the list when one of this client own writes lands', async () => {
+    // Every one of the four moves the payload: an answered question clears `needs_attention` and
+    // re-sorts the row (TW-REG-004, TW-REG-005), and a cancel, a collect or a dismiss takes it out
+    // (TW-REG-007). The rung that would otherwise carry that news was chosen while the question was
+    // still open, which is the ceiling.
+    const token = new_token();
+    server.list(summaryWire(token, { dialog: true }));
+    server.documents.set(token, snapshotWire(token, { dialog: true }));
+    await poll(10);
+    const entry = tw.register[0];
+    expect(entry.dialog?.id).toBe(OPEN_DIALOG.id);
+    const reads = server.polls(REGISTER_URL).length;
+
+    await entry.answer('yes');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads + 1);
+  });
+
   it('asks for nothing on behalf of a private operation, on either path (TW-PRIV-002)', async () => {
     // No register payload carries a private operation for any caller including its own, so a read
     // asked for on its behalf is a question the list cannot answer. Its row is the one its own
