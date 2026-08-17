@@ -29,6 +29,38 @@ declares as a viewset, which of the library's mechanisms therefore apply to task
 
 Not started at all. Two packages, one version stream (TW-PKG-001).
 
+## 5. Five things the end-to-end run walked past
+
+Found while chasing the socket and the cancel, none of them the defect being chased. In descending
+order of what they cost someone who hits them:
+
+1. **An application's own axios interceptor silently disables the token workflow.** `use_taskwire`
+   installs its interceptor `synchronous: true`, and axios honours that only when *every* request
+   interceptor on the instance is synchronous. An ordinary async one - an auth header, a tracing
+   span - pushes taskwire's into a microtask, by which time `run()` has unbound the ambient token:
+   `X-Taskwire-Token` is never written, the server mints a token of its own, and the handle the
+   caller holds polls an address nothing will ever write. Nothing reports it. The docstring at
+   `ts/taskwire.ts:603` describes the mechanism; there is no guard and no diagnostic.
+2. **`mute()` / `unmute()` reach no socket.** `Taskwire.overrides` and
+   `MuxwsClientTransport.overrides` are two unconnected maps: only the transport's is ever sent, and
+   only `watch()` sends it. So the client-side half of TW-DEL-006 is inert, and TW-DEL-023's pruning
+   is implemented on the transport's copy alone.
+3. **A dropped push in the browser leaves no trace.** Bare `catch {}` at `ts/muxws.ts:150` and
+   `ts/register.ts:440`, and a silent return when no consumer is attached. The Python side logs every
+   equivalent drop at debug (`contrib/muxws.py:86,125,127`).
+4. **A cancel is noticed one `settings.progress_interval` late for a job that does not ask.** The
+   sticky flag is re-read inside `_commit` (`taskwire/reporter.py:385,401`), which runs only when the
+   throttle window has elapsed - so `set()` called every 0.2 s still raises up to 0.25 s after the
+   cancel landed. Bounded and small, but it is not "the next progress call" as TW-CANCEL-002 reads.
+5. **`taskwire/cancel_test.py:352`** is named `test_dialog_reply_after_a_cancel_is_410` and asserts
+   `404`. The assertion is right - the document is dropped, so the token is unknown - and the name is
+   not.
+
+A sixth, which is a question rather than a defect: a client that renders only `tw.operations` never
+starts the register loop (TW-REG-021), so `readOnce()` returns immediately and a push naming an
+unknown token asks for nothing. Whether that client is entitled to TW-TS-009's guarantee at all is
+the same question `GAPS.md` records under "when does the register poll start?".
+
 ## Open questions for the author
 
 1. **Should `contrib/fastapi.py` be deleted?** It is the old hand-rolled `APIRouter`, still working
