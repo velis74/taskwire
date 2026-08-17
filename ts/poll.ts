@@ -209,4 +209,20 @@ export class PollLadder {
   reset(): void {
     this.previous = null;
   }
+
+  /**
+   * The base rung itself, jittered, with the climb set to start from it: what a loop schedules the
+   * moment it is handed back its ladder (TW-TS-007).
+   *
+   * The interval rules describe a loop that has been reading, and two of their branches outrank
+   * everything else - an open question and an idle namespace both answer the ceiling. Both are
+   * routinely true of a client that has just lost its socket, so a resumption asked of those rules
+   * would put the recovery five seconds away rather than one base interval, which is the whole of
+   * what makes losing a socket survivable.
+   */
+  resume(): number {
+    const { baseIntervalMs } = this.settings;
+    this.previous = baseIntervalMs;
+    return Math.max(Math.round(baseIntervalMs * jitterMultiplier(this.draw, this.settings)), baseIntervalMs);
+  }
 }

@@ -30,3 +30,6 @@ docs/.vitepress/dist/
 .idea/
 .vscode/
 .DS_Store
+
+# Scratch drivers written while chasing something down
+.scratch/

@@ -128,9 +128,24 @@ until it ends. Every rung after that first read is the ladder, and the ladder is
 
 Losing the socket puts every ladder back on its **base** rung, 400 ms, within one interval, and one
 register read is the whole of the recovery. Nothing is replayed and nothing is resumed: a reconnected
-socket is a new socket, and the client's next read is what restores the picture. If the new socket
-needs its connection id back, `announce()` asks for one — an empty declaration, asserting exactly
-the state the new socket already has.
+socket is a new socket, and the client's next read is what restores the picture.
+
+## The connection id
+
+`announce()` sends one empty declaration — `{"kind": "watch", "overrides": {}}` — and the reply
+carries this socket's server-issued id. The client keeps it in memory and stamps it on every request
+it makes, as `X-Taskwire-Connection`. That header is the whole of what the id does, and it does two
+things with it:
+
+- a **private** operation — one started with no `result_kind` — records the id of the connection its
+  start command carried, and its progress is pushed to that socket and to no other;
+- `progress_delivery` on a register read is answered for *this* connection, so an operation this tab
+  silenced renders as silenced in this tab.
+
+The id belongs to the socket rather than to the client, and does not survive a reconnect. taskwire
+re-obtains it: a socket that has declared once declares again, empty, when it comes back — and the
+client names no connection at all in between rather than one that is gone. An empty declaration
+restores nothing; it asserts exactly the state the new socket already has.
 
 ## The store is still the truth
 

@@ -64,6 +64,10 @@ function hostWith(replies: unknown[] = []): OperationHost & { calls: unknown[] }
       const next = replies.shift();
       if (next !== undefined) throw next;
     },
+    // The dialog components issue none of the three; a modal answers, it does not collect.
+    cancel: async () => undefined,
+    collect: async () => undefined,
+    dismiss: async () => undefined,
   };
 }
 

@@ -14,14 +14,15 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `docs/` | the user-facing VitePress site, and only that |
 | `demo/` + `demo.py` | the one demo. A consumer of taskwire, not part of it |
 | `conformance/wire/` | 28 JSON fixtures read in place by **both** pytest and vitest |
-| `GAPS.md` | decisions taken without the author; 7 still OPEN |
+| `GAPS.md` | decisions taken without the author; 9 still OPEN |
 
 ```bash
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 258 pass, 10 skip
-npx vitest run                                            # 372 pass
+npx vitest run                                            # 386 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npx eslint ts --fix && npx vue-tsc --noEmit
 python demo.py                                            # both halves, Ctrl-C stops the pair
+python demo/e2e/run_e2e.py                                # the two halves against each other, ~3 min
 ```
 
 Python venv is at `/home/jure/.venv/taskwire/bin/python` — not `.venv` in the repo.
@@ -95,10 +96,15 @@ returns a handler the application composes behind `process_command` rather than 
 single handler slot, and `attachMuxws(tw, peer)` in the browser, which takes the pushes and moves the
 six calls onto the socket.
 
+`demo/e2e/run_e2e.py` starts a server of its own and runs both halves against it: the protocol over a
+real socket, and the **shipped `dist/`** over HTTP and over the socket, doing what the page does. It
+is collected by neither runner — pytest takes `test_*.py`, vitest takes `*.spec.*` — and it is what
+found every client-side defect the two suites could not see, because neither ever put the two halves
+in one process tree.
+
 **Next, in order** — the detail is in `NEXT.md`:
 
 1. `wrap_sync_runner` (TW-CELERY-007) — the last hook fastapi-viewsets is owed.
 2. CI and publishing.
 
-**The seams that have never run**: the `origin_connection` round trip, and the Vuetify components,
-which have never been mounted.
+**The seam that has never run**: the Vuetify components, which have never been mounted.

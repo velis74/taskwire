@@ -307,6 +307,50 @@ describe('the muxws client transport', () => {
     expect(attached).toEqual([transport, pushesOnly]);
     expect(routed).toHaveLength(1);
   });
+
+  it("hands the client this socket's id, and takes it back with the socket (TW-DEL-022)", async () => {
+    // The id is server-issued and belongs to the socket, not to the client: it decides what
+    // `progress_delivery` answers this reader (TW-DEL-015) and which socket a private operation's
+    // progress is written to (TW-PRIV-003), and both are decided from the header on the way in. A
+    // client that held an id it never sent has neither, and one that kept a dead socket's id names
+    // a connection that is not there - so it travels as a call, on every reply, rather than as a
+    // value somebody has to re-read.
+    const peer = new FakePeer();
+    const seen: (string | null)[] = [];
+    const client = {
+      attachTransport: () => undefined,
+      useCalls: () => undefined,
+      setConnection: (connection: string | null) => seen.push(connection),
+      basePath: '/taskwire',
+    };
+
+    const transport = attachMuxws(client, peer as never);
+    await transport.announce();
+    expect(seen).toEqual(['conn-1']);
+
+    // A new socket is a new id, and the dead one names nothing in between (TW-DEL-016).
+    peer.reply = { v: 1, status: 0, connection: 'conn-2' };
+    peer.die();
+    expect(seen).toEqual(['conn-1', null]);
+
+    peer.reconnect();
+    await vi.waitFor(() => expect(seen).toEqual(['conn-1', null, 'conn-2']));
+    expect(peer.requests).toEqual([
+      { kind: 'watch', overrides: {} },
+      { kind: 'watch', overrides: {} },
+    ]);
+  });
+
+  it('re-declares nothing on a socket that never declared (TW-REG-020)', async () => {
+    // One empty `watch` after a reconnect is permitted purely to learn the new id. A client that
+    // never asked for one is not given one here either, and nothing is restored in either case.
+    const peer = new FakePeer();
+    const transport = new MuxwsClientTransport({ peer: peer as never });
+
+    peer.reconnect();
+    await vi.waitFor(() => expect(peer.requests).toEqual([]));
+    expect(transport.connection).toBeNull();
+  });
 });
 
 describe('a client carried by nothing but pushes', () => {

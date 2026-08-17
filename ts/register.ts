@@ -169,6 +169,9 @@ export class RegisterState {
   /** A read owed because one was already in flight when it was asked for; issued when that lands. */
   private owed = false;
 
+  /** Whether the read every loop owes when it starts has gone out yet (TW-TS-007). */
+  private everRead = false;
+
   /** The last payload, by token. Never merged with the private half - that happens on the way out. */
   private shared: Snapshot[] = [];
 
@@ -284,23 +287,37 @@ export class RegisterState {
    * Hold the register poll while a transport carries the namespace, and let it go again on detach
    * or on loss (TW-TS-007).
    *
-   * Resuming starts from the base rung rather than from wherever the climb had reached: the
-   * suspension says nothing about how often the register is changing, and returning to a five
-   * second ceiling because that is where the ladder was when a socket arrived would make the
-   * recovery this exists for take five seconds to begin.
+   * **What a transport suspends is the ladder, never the first read.** A loop that started before
+   * the socket did has that read scheduled rather than taken, and a suspension that only cleared the
+   * timer would discard the one read the whole namespace's membership rests on - leaving a register
+   * that is empty for the life of the socket, since a push carries what changes and can say nothing
+   * about what was already running (TW-CORE-002).
+   *
+   * Resuming schedules the **base** rung rather than asking the ladder for one. Its rules answer the
+   * ceiling whenever a question is open or nothing is active, and both are routinely true of a client
+   * that has just lost its socket - so a resumption asked of them would take five seconds to begin
+   * the recovery TW-TS-007 puts at one base interval.
    */
   setSuspended(suspended: boolean): void {
     if (this.suspended === suspended || this.stopped) return;
     this.suspended = suspended;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
     if (suspended) {
-      if (this.timer !== null) clearTimeout(this.timer);
-      this.timer = null;
+      if (this.running && !this.everRead) this.readOnce();
       return;
     }
-    this.ladder.reset();
-    // A read still in flight schedules the next rung itself; scheduling here as well would leave
-    // two timers running with only the second reachable.
-    if (this.running && this.timer === null && !this.reading) this.schedule(this.ladderState(null));
+    // A read still in flight brings the ladder back itself, on the way out of `tick()`.
+    if (this.running && !this.reading) this.scheduleResume();
+  }
+
+  /** The first rung after a suspension: the base one, whatever the ladder's rules would say. */
+  private scheduleResume(): void {
+    if (this.stopped) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.tick();
+    }, this.ladder.resume());
   }
 
   /** A per-token poll delivered, a push landed, or a handle went away: the merged view moved. */
@@ -348,6 +365,7 @@ export class RegisterState {
   private async tick(): Promise<void> {
     if (this.stopped) return;
     let payload: Register | null = null;
+    this.everRead = true;
     this.reading = true;
     try {
       payload = parseRegister(await this.client.calls.register());
@@ -435,6 +453,13 @@ export class RegisterState {
       this.readOnce();
       return false;
     }
+    // Having a handle is not being in the register. A token this tab minted through `run()` has one
+    // from the moment it was minted, and the row that carries it arrives with a read of the list -
+    // so a membership change is exactly as invisible here as it is above, and answered the same way
+    // (TW-REG-006). Without this the socket's own accelerator is what hides the row: the ladder is
+    // held while a transport is attached (TW-TS-007), the push moves the handle, `restate()` finds
+    // no row to move, and `tw.register` stays empty for the life of the socket.
+    if (!this.knownMember(envelope.token)) this.readOnce();
     try {
       return this.route(envelope, handle);
     } catch {
@@ -484,6 +509,19 @@ export class RegisterState {
     else this.restate(envelope.token, handle);
     this.refresh();
     return true;
+  }
+
+  /**
+   * Whether the merged register already accounts for this token, by either of the two ways it can.
+   *
+   * A row in the last payload is one; being **this tab's own private operation** is the other, and
+   * that one never becomes a row: no register payload carries a private operation for any caller
+   * including its own (TW-PRIV-002), so a read asked for on its behalf would be asked a question the
+   * list cannot answer and would be asked again on its every push.
+   */
+  private knownMember(token: string): boolean {
+    if (this.shared.some((snapshot) => snapshot.token === token)) return true;
+    return this.client.privateSnapshots().some((snapshot) => snapshot.token === token);
   }
 
   /**

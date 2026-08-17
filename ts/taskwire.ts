@@ -290,20 +290,36 @@ class TokenPoller {
    *
    * Resuming starts from the base rung: where the climb had reached when a socket arrived says
    * nothing about how often the token is changing now, and coming back at the five second ceiling
-   * would make the recovery this exists for take five seconds to begin.
+   * would make the recovery this exists for take five seconds to begin. The read this loop owes is
+   * not the ladder's and is not suspended with it - a token parked on an open question pushes
+   * nothing until it ends, so a handle that never read would draw neither the question nor the state
+   * it waits in (TW-TS-007, TW-INV-004).
    */
   setSuspended(suspended: boolean): void {
     if (this.suspended === suspended || this.stopped) return;
     this.suspended = suspended;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
     if (suspended) {
-      if (this.timer !== null) clearTimeout(this.timer);
-      this.timer = null;
+      // The read this loop owes may be scheduled rather than taken, and clearing the timer without
+      // reinstating it would leave a token that pushes nothing until it ends - a question already
+      // open - with no document at all (TW-TS-007).
+      if (this.wanted && !this.opened) this.schedule(null, null);
       return;
     }
-    this.ladder.reset();
     // A read still in flight schedules the next rung itself; scheduling here as well would leave
     // two timers running with only the second reachable.
-    if (this.wanted && this.timer === null && !this.reading) this.schedule(null, null);
+    if (this.wanted && !this.reading) this.scheduleResume();
+  }
+
+  /** The first rung after a suspension: the base one, whatever the ladder's rules would say. */
+  private scheduleResume(): void {
+    if (this.stopped) return;
+    this.opened = true;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.tick();
+    }, this.ladder.resume());
   }
 
   attachHandle(handle: Operation<unknown>): void {
@@ -570,7 +586,7 @@ export class Taskwire implements OperationHost, RegisterClient {
   /** TW-REG-019, item two: the override map this socket last declared. M8 sends it; M1b only holds it. */
   private readonly overrides = new Map<string, boolean>();
 
-  /** TW-REG-019, item three: the connection id this socket's `watch` reply carried. M8 fills it. */
+  /** TW-REG-019, item three: the connection id this socket's `watch` reply carried. In memory only. */
   private connectionId: string | null = null;
 
   private readonly handles = new Map<string, Operation<unknown>>();
@@ -738,6 +754,29 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
+   * Hold the id a `watch` reply carried, so every request this client makes can name its socket
+   * (TW-DEL-022, TW-REG-019).
+   *
+   * The id decides exactly two things, and both are decided **server-side, from the header**: which
+   * answer `progress_delivery` gives this reader (TW-DEL-014, TW-DEL-015), and which socket a
+   * private operation's progress is written to (TW-PRIV-003) - the latter fixed once, at the opening
+   * write, from the command that started the operation (TW-PRIV-001). A client holding an id it
+   * never sends has neither.
+   *
+   * `null` on a socket that died, and the transport says so rather than this client noticing: the id
+   * is not stable across a reconnect (TW-DEL-016), and a request carrying a dead socket's id is
+   * answered for a socket that no longer exists. Nothing is persisted (TW-REG-018, TW-INV-016).
+   */
+  setConnection(connection: string | null): void {
+    this.connectionId = connection;
+  }
+
+  /** The id this client stamps on its requests, or `null` when no socket has declared one. */
+  get connection(): string | null {
+    return this.connectionId;
+  }
+
+  /**
    * Take pushes from `transport`, and **suspend every polling ladder** while it is attached and
    * healthy (TW-TS-007).
    *
@@ -835,6 +874,32 @@ export class Taskwire implements OperationHost, RegisterClient {
    */
   async replyToDialog(token: string, did: string, button: string, values: Record<string, unknown> = {}): Promise<void> {
     await this.calls.replyToDialog(token, did, button, values);
+  }
+
+  /**
+   * The other three writes of TW-REST-004, over whichever transport `useCalls()` chose.
+   *
+   * They are three lines each for the same reason the reply is: the endpoint and the wire are the
+   * client's business, and what a `202`, a `404` and a `409` *mean* is `Operation`'s - a cancel is a
+   * request rather than a completion (TW-CANCEL-003), a release happens exactly once (TW-RES-010),
+   * and a race between two readers of one namespace is not a fault. Keeping that judgement on the
+   * handle is what stops every call site having to make it again.
+   *
+   * None of the three moves any state here. A cancel changes nothing until the operation notices
+   * (TW-CANCEL-001), and a release leaves the register in the same step it releases (TW-REG-007) -
+   * which arrives as the terminal document over a socket, and as the next read's absence without
+   * one (TW-CORE-002).
+   */
+  async cancel(token: string): Promise<void> {
+    await this.calls.cancel(token);
+  }
+
+  async collect(token: string): Promise<void> {
+    await this.calls.collect(token);
+  }
+
+  async dismiss(token: string): Promise<void> {
+    await this.calls.dismiss(token);
   }
 
   mute(token: string): void {

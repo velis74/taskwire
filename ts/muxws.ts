@@ -67,6 +67,14 @@ export interface MuxwsClientOptions {
   peer: Peer;
   /** Called for every envelope the server pushes. `use_taskwire().attachTransport()` supplies this. */
   onEnvelope?: (envelope: Envelope) => void;
+  /**
+   * Called with this socket's connection id whenever it changes, `null` while there is none.
+   *
+   * `attachMuxws` supplies `client.setConnection`, which is what puts the id on the wire as
+   * `X-Taskwire-Connection` (TW-REST-002). It fires on every `watch` reply rather than once,
+   * because the id belongs to the socket and a reconnect is a different socket (TW-DEL-016).
+   */
+  onConnection?: (connection: string | null) => void;
 }
 
 /**
@@ -93,12 +101,18 @@ export class MuxwsClientTransport implements ClientTransport {
 
   private connectionId: string | null = null;
 
+  /** Whether this socket has ever declared, and therefore whether a new one owes an id (TW-REG-020). */
+  private declaredOnce = false;
+
+  private readonly onConnection: ((connection: string | null) => void) | null;
+
   /** Who is told when this socket dies and when a new one is established under it (TW-TS-007). */
   private readonly healthListeners = new Set<(healthy: boolean) => void>();
 
   constructor(options: MuxwsClientOptions) {
     this.peer = options.peer;
     this.onEnvelope = options.onEnvelope ?? null;
+    this.onConnection = options.onConnection ?? null;
 
     // One handler for every incoming stream. The server opens and ends a stream per envelope
     // (TW-WS-003), so there is no long-lived stream to manage and nothing to clean up.
@@ -109,8 +123,20 @@ export class MuxwsClientTransport implements ClientTransport {
     // muxws reports both ends of a loss - `onClose` when a socket dies, `onReconnect` once a new one
     // is established and its identity accepted - and neither handler can be taken off again. So they
     // are installed once here and `onHealth` fans out to listeners that can come and go.
-    this.peer.onClose(() => this.reportHealth(false));
-    this.peer.onReconnect(() => this.reportHealth(true));
+    this.peer.onClose(() => {
+      // The id dies with the socket that issued it (TW-DEL-016), and a request carrying a dead one
+      // is answered for a socket that is not there: `progress_delivery` falls back to the predicate
+      // and an operation started now would record an `origin_connection` no peer can match.
+      this.setConnection(null);
+      this.reportHealth(false);
+    });
+    this.peer.onReconnect(() => {
+      this.reportHealth(true);
+      // One empty declaration, and only if this socket ever made one. Nothing is restored by it
+      // (TW-WS-006, TW-REG-020): it asserts the state the new socket already has, and the id in the
+      // reply is the whole of what it is for.
+      if (this.declaredOnce) void this.announce().catch(() => undefined);
+    });
   }
 
   /** Attach a consumer after construction - what `attachTransport()` does. */
@@ -167,10 +193,17 @@ export class MuxwsClientTransport implements ClientTransport {
    * one the user asked for and did not get, with no way to tell which half survived.
    */
   async watch(overrides: Record<string, boolean> = {}): Promise<WatchReply> {
+    this.declaredOnce = true;
     const reply = (await this.peer.request({ kind: 'watch', overrides })) as WatchReply;
     if (reply?.status === 0) this.overrides = { ...overrides };
-    this.connectionId = reply?.connection ?? null;
+    // Carried even on a rejection, because the socket is unchanged and the id is what identifies it.
+    this.setConnection(reply?.connection ?? null);
     return reply;
+  }
+
+  private setConnection(connection: string | null): void {
+    this.connectionId = connection;
+    this.onConnection?.(connection);
   }
 
   /** Re-obtain this socket's connection id without changing anything (TW-REG-020). */
@@ -268,6 +301,8 @@ export class MuxwsCalls extends MuxwsProxyImpl<string, Snapshot, 'token'> implem
 export interface MuxwsAttachable {
   attachTransport(transport: ClientTransport): void;
   useCalls?(calls: TaskwireCalls | null): void;
+  /** Told this socket's connection id, so every request the client makes carries it (TW-DEL-022). */
+  setConnection?(connection: string | null): void;
   readonly basePath?: string;
 }
 
@@ -307,7 +342,13 @@ export function attachMuxws(
   if (options.routeCalls !== false) {
     client.useCalls?.(new MuxwsCalls({ peer, basePath: options.basePath ?? client.basePath }));
   }
-  const transport = new MuxwsClientTransport({ peer });
+  // The id travels from here rather than being read off the transport, because it changes: a
+  // reconnect issues a new one and a close leaves none, and both arrive as a call rather than as a
+  // value somebody has to remember to re-read (TW-DEL-016).
+  const transport = new MuxwsClientTransport({
+    peer,
+    onConnection: (connection) => client.setConnection?.(connection),
+  });
   client.attachTransport(transport);
   return transport;
 }
@@ -315,5 +356,8 @@ export function attachMuxws(
 /** Put the six calls back on HTTP and the polling ladder back on its rungs (TW-TS-007). */
 export function detachMuxws(client: MuxwsAttachable & { detachTransport(): void }): void {
   client.useCalls?.(null);
+  // No socket, no connection: `progress_delivery` is the predicate's answer alone from here
+  // (TW-DEL-015), and a stamped id would name a socket this client is no longer reading.
+  client.setConnection?.(null);
   client.detachTransport();
 }

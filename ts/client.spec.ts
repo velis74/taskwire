@@ -48,6 +48,8 @@ interface Reply {
 
 interface Recorded {
   url: string;
+  /** Lower-case, as axios writes it. The four writes are POSTs and the two reads are GETs. */
+  method: string;
   at: number;
   headers: Record<string, string>;
   params: unknown;
@@ -71,6 +73,7 @@ class Server {
         });
         this.requests.push({
           url: String(config.url),
+          method: String(config.method ?? 'get').toLowerCase(),
           at: Date.now(),
           headers: flat,
           params: config.params,
@@ -93,6 +96,11 @@ class Server {
   polls(token: string): Recorded[] {
     return this.requests.filter((request) => request.url === `${DEFAULT_BASE_PATH}/${token}`);
   }
+
+  /** The write half, in the order it went out: every one of TW-REST-004's four is a POST. */
+  posts(): string[] {
+    return this.requests.filter((request) => request.method === 'post').map((request) => request.url);
+  }
 }
 
 let server: Server;
@@ -111,6 +119,15 @@ function progressPayload(state: ProgressState, over: WireObject = {}): WireObjec
     ...over,
   };
 }
+
+/** One question, as a document carries it. */
+const OPEN_DIALOG: WireObject = {
+  id: 'd1e4f2a0-1111-4a7d-9c2e-5f5b6a7c8d90',
+  dialog_id: 'acme.overwrite',
+  buttons: [{ id: 'yes' }],
+  state: 'open',
+  created_at: '2026-01-01T00:00:00Z',
+};
 
 function snapshotPayload(token: string, state: ProgressState, over: WireObject = {}): WireObject {
   return {
@@ -434,10 +451,39 @@ describe('the ambient token and the header (TW-TS-003, TW-CELERY-011)', () => {
     expect(server.polls(op.token).length).toBeGreaterThan(0);
   });
 
-  it('has the connection header plumbed and unset, because no socket exists yet', () => {
-    const client = sources().get('taskwire.ts') ?? '';
+  it('names its socket on every request once one has declared an id (TW-DEL-022, TW-REST-002)', async () => {
+    // One header for both purposes, and it is the *request* that carries them: `origin_connection`
+    // is fixed at the opening write from the command that started the operation (TW-PRIV-001), and
+    // `progress_delivery` is answered per read for the connection that asked (TW-DEL-015). A client
+    // that held an id and never sent it has neither - a private operation's progress then reaches no
+    // socket at all (TW-PRIV-003), and a mute toggle renders the predicate's answer instead of its
+    // own.
     expect(CONNECTION_HEADER).toBe('X-Taskwire-Connection');
-    expect(client).toMatch(/config\.headers\.set\(CONNECTION_HEADER, this\.connectionId\)/);
+    server.handler = () => ({ status: 200, data: { ok: true } });
+    const named = (url: string): unknown =>
+      server.requests.find((request) => request.url === url)?.headers[CONNECTION_HEADER.toLowerCase()];
+
+    // No socket, no connection: absent rather than empty, which is what TW-DEL-015 falls back on.
+    const before = tw.run(() => server.http.get('/api/before'));
+    await before;
+    expect(named('/api/before')).toBeUndefined();
+
+    tw.setConnection('conn-9');
+    const started = tw.run(() => server.http.get('/api/start'));
+    await started;
+    expect(named('/api/start')).toBe('conn-9');
+    expect(server.requests.find((request) => request.url === '/api/start')?.headers[TOKEN_HEADER.toLowerCase()]).toBe(
+      started.token,
+    );
+
+    // Reads too, and not only the command: the display flag is decided per reader, per read.
+    await server.http.get('/api/read');
+    expect(named('/api/read')).toBe('conn-9');
+
+    // The socket died or was detached. An id that names a connection nobody holds is worse than none.
+    tw.setConnection(null);
+    await server.http.get('/api/after');
+    expect(named('/api/after')).toBeUndefined();
   });
 
   it('no tab id ever leaves the browser (TW-TAB-001, TW-PROG-007)', async () => {
@@ -498,6 +544,29 @@ describe('track distinguishes not-written-yet from gone (TW-TS-004)', () => {
     const pollsAtClose = server.polls(token).length;
     await vi.advanceTimersByTimeAsync(30_000);
     expect(server.polls(token)).toHaveLength(pollsAtClose);
+  });
+
+  it('withdraws an open question when the operation disappears (TW-CANCEL-011, TW-DLG-016)', async () => {
+    // The cancel case, and it is the ordinary one on a wire with no push. A cancel wakes a worker
+    // parked in `ask()` at once (TW-CANCEL-007) and the terminal write drops the entry in the same
+    // step (TW-REG-007), so `cancelled` exists for microseconds and the ladder's next read finds the
+    // `404` rather than the state. If the withdrawal travelled only on the terminal document, the
+    // question would outlive the operation that asked it and the page would keep a modal up over a
+    // worker that ended - with buttons that now answer `404`.
+    const token = new_token();
+    const asking = snapshotPayload(token, 'running', { rev: 3, dialogs: [OPEN_DIALOG] });
+    server.handler = script(token, [{ status: 200, data: asking }, { status: 404 }]);
+
+    const handle = tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE + 100);
+    expect(handle.dialog?.id).toBe(OPEN_DIALOG.id);
+
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(handle.closed).toBe(true);
+    expect(handle.dialog).toBeNull();
+    // Settled to the state the store's own withdrawal writes, rather than forgotten: a dialog that
+    // has left `open` never goes back to it (TW-REV-007).
+    expect(handle.dialogs.map((dialog) => dialog.state)).toEqual(['cancelled']);
   });
 
   it('drops an operation that was never written once fn has settled, and does so silently', async () => {
@@ -932,6 +1001,26 @@ describe('what a pushed envelope moves (TW-CORE-008, TW-TS-007)', () => {
     expect(handle.closed).toBe(true);
   });
 
+  it('reports `waiting_input` on a push, as a read would (TW-PROG-010, TW-CORE-002)', async () => {
+    // `waiting_input` is derived and never written: the server derives it on the way out of a read,
+    // and a push carries the document that was committed - which is `running`. A client reporting
+    // what arrived would say `running` over a socket and `waiting input` over REST about one
+    // operation at one moment, and a page showing both wires would disagree with itself.
+    const token = new_token();
+    const handle = tw.track(token);
+
+    socket.push(token, 1, 'progress', pushedProgress('running', 10));
+    expect(handle.progress?.state).toBe('running');
+
+    socket.push(token, 2, 'dialog.open', pushedDialog());
+    expect(handle.progress?.state).toBe('waiting_input');
+
+    // Derived, so it goes away by itself when the question does (TW-INV-006): nothing has to unwrite
+    // a state nothing wrote. A later progress commit still carrying `running` says `running` again.
+    socket.push(token, 3, 'dialog.close', { ...pushedDialog(), state: 'answered' });
+    expect(handle.progress?.state).toBe('running');
+  });
+
   it('a progress push never blanks the open question it does not mention', async () => {
     // A progress body is a `Progress` document with no dialogs array, and `applySnapshot` replaces
     // them only when the key is there. Nothing else would re-announce the question.
@@ -1077,14 +1166,191 @@ describe('privacy is about listing and fan-out, never reach (TW-PRIV-002)', () =
   });
 });
 
-describe('members later milestones fill in exist and are inert', () => {
-  it('answers, cancels and dismisses without doing anything yet', async () => {
+// ---------------------------------------------------------------------------------------------
+// The write half of TW-REST-004: cancel, collect and dismiss.
+//
+// The handle calls the client, the client owns the call, and the handle decides which rejections
+// are ordinary - the same division `answer()` already runs on (TW-DLG-011).
+// ---------------------------------------------------------------------------------------------
+
+const RESULT: WireObject = { kind: 'acme.report', value: { rows: 12 } };
+
+/**
+ * A token parked on an uncollected result.
+ *
+ * `waiting_input`, not `done`: the work is over and only the record waits, so the entry is still in
+ * the register and the state that ends it is the release (TW-RES-004, TW-RES-005).
+ */
+function parkedPayload(token: string): WireObject {
+  return snapshotPayload(token, 'waiting_input', {
+    progress: progressPayload('waiting_input', { result: RESULT, result_kind: 'acme.report' }),
+  });
+}
+
+function summaryPayload(token: string): WireObject {
+  return {
+    token,
+    snapshot: parkedPayload(token),
+    result_kind: 'acme.report',
+    origin_session: 'ns',
+    result: RESULT,
+    // TW-REG-004: an uncollected result is exactly what a register row means by attention.
+    needs_attention: true,
+    progress_delivery: true,
+  };
+}
+
+function registerPayload(operations: WireObject[]): WireObject {
+  return { v: 1, operations, aggregate: null, server_time: STAMP, poll_after_ms: 400 };
+}
+
+describe('the write path (TW-REST-004)', () => {
+  it('sends each write to its own endpoint, and sends nothing else', async () => {
+    const token = new_token();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}` ? { status: 200, data: parkedPayload(token) } : { status: 204 };
+
+    const handle = tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE);
+    await handle.cancel();
+    await handle.collect();
+    await handle.dismiss();
+
+    expect(server.posts()).toEqual([
+      `${DEFAULT_BASE_PATH}/${token}/cancel`,
+      `${DEFAULT_BASE_PATH}/${token}/collect`,
+      `${DEFAULT_BASE_PATH}/${token}/dismiss`,
+    ]);
+  });
+
+  it('hands the result back on collect and releases it exactly once (TW-RES-010)', async () => {
+    const token = new_token();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}` ? { status: 200, data: parkedPayload(token) } : { status: 204 };
+
+    const handle = tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(handle.result?.value).toEqual({ rows: 12 });
+
+    const collected = await handle.collect();
+    expect(collected.kind).toBe('acme.report');
+    expect(collected.value).toEqual({ rows: 12 });
+    // The release cleared the result off the stored document in the same step, so the handle stops
+    // offering one and a second collect never reaches the wire - the hook that fires on a release
+    // would otherwise fire twice on one artefact.
+    expect(handle.result).toBeNull();
+    await expect(handle.collect()).rejects.toThrow(/no uncollected result/);
+    expect(server.posts()).toEqual([`${DEFAULT_BASE_PATH}/${token}/collect`]);
+  });
+
+  it('releases on dismiss and hands nothing back (TW-REST-008)', async () => {
+    const token = new_token();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}` ? { status: 200, data: parkedPayload(token) } : { status: 204 };
+
+    const handle = tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE);
+
+    await expect(handle.dismiss()).resolves.toBeUndefined();
+    expect(handle.result).toBeNull();
+    // Idempotent: a second dismiss is a request the server answers 204, not a fault to guard against.
+    await expect(handle.dismiss()).resolves.toBeUndefined();
+    expect(server.posts()).toEqual([`${DEFAULT_BASE_PATH}/${token}/dismiss`, `${DEFAULT_BASE_PATH}/${token}/dismiss`]);
+  });
+
+  it('treats a 409 as a race lost and lets everything else through', async () => {
+    const token = new_token();
+    // `already_terminal`, `holds_an_uncollected_result`, `no_uncollected_result`: three names for
+    // one event, which is another reader having got there first (TW-CANCEL-010, TW-REST-008).
+    let writeStatus = 409;
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}`
+        ? { status: 200, data: parkedPayload(token) }
+        : { status: writeStatus, data: { detail: 'already_terminal' } };
+
+    const handle = tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE);
+
+    await expect(handle.cancel()).resolves.toBeUndefined();
+    // A cancel is a request and confirms nothing (TW-CANCEL-003), so a refused one moves no state
+    // here either.
+    expect(handle.progress?.state).toBe('waiting_input');
+    // The value the winner released is the value in hand, so the caller gets it rather than an
+    // error nothing can act on.
+    await expect(handle.collect()).resolves.toMatchObject({ kind: 'acme.report' });
+    await expect(handle.dismiss()).resolves.toBeUndefined();
+
+    writeStatus = 500;
+    await expect(handle.cancel()).rejects.toThrow(/500/);
+  });
+
+  it('leaves the register when the result is released, over REST (TW-REG-007)', async () => {
+    const token = new_token();
+    let released = false;
+    server.handler = (url) => {
+      if (url === DEFAULT_BASE_PATH)
+        return { status: 200, data: registerPayload(released ? [] : [summaryPayload(token)]) };
+      if (url === `${DEFAULT_BASE_PATH}/${token}/collect`) {
+        released = true;
+        return { status: 204 };
+      }
+      return { status: 404 };
+    };
+
+    void tw.register;
+    await vi.advanceTimersByTimeAsync(BASE);
+    const [entry] = tw.register;
+    expect(entry.token).toBe(token);
+    expect(entry.result).not.toBeNull();
+
+    await entry.collect();
+    // The handle agrees at once, and the row follows on the next read: the store is the truth and
+    // one read is the whole of the correction (TW-CORE-002, TW-CORE-005).
+    expect(entry.result).toBeNull();
+    await vi.advanceTimersByTimeAsync(CEILING);
+    expect(tw.register).toEqual([]);
+    expect(entry.closed).toBe(true);
+  });
+
+  it('leaves the register when the release publishes, over a socket (TW-REG-007)', async () => {
+    const token = new_token();
+    const socket = new FakeTransport();
+    server.handler = (url) =>
+      url === DEFAULT_BASE_PATH ? { status: 200, data: registerPayload([summaryPayload(token)]) } : { status: 204 };
+
+    // Attached first, so the one read a held ladder still owes is the read that brings the row in.
+    tw.attachTransport(socket);
+    void tw.register;
+    await vi.advanceTimersByTimeAsync(0);
+    const [entry] = tw.register;
+    expect(entry.token).toBe(token);
+
+    await entry.dismiss();
+    expect(entry.result).toBeNull();
+    // What the release publishes: the document as it stands after it, which is `done` with nothing
+    // left to collect. The entry is dropped in the same step, so this is the last one it sends.
+    socket.push(token, 2, 'progress', pushedProgress('done'));
+    expect(tw.register).toEqual([]);
+    expect(entry.closed).toBe(true);
+  });
+});
+
+describe('the members that never leave this client', () => {
+  it('answers nothing, collects nothing, and shows, hides and overrides locally', async () => {
     server.handler = () => ({ status: 404 });
     const handle = tw.track(new_token());
+    // No open question and no result in hand: neither write has anything to send, so neither is
+    // sent - the two POSTs below are the whole of what left.
     await expect(handle.answer('ok')).resolves.toBeUndefined();
+    await expect(handle.collect()).rejects.toThrow(/no uncollected result/);
+    // A write on a token this server has never heard of is a race lost rather than a fault: the
+    // entry left every register there is in the step that ended it (TW-REG-007).
     await expect(handle.cancel()).resolves.toBeUndefined();
     await expect(handle.dismiss()).resolves.toBeUndefined();
-    await expect(handle.collect()).rejects.toThrow(/no uncollected result/);
+    expect(server.posts()).toEqual([
+      `${DEFAULT_BASE_PATH}/${handle.token}/cancel`,
+      `${DEFAULT_BASE_PATH}/${handle.token}/dismiss`,
+    ]);
     expect(() => {
       handle.show();
       handle.hide();

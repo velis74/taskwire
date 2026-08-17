@@ -22,6 +22,23 @@ the server when its code changes.
 
 `python demo/live_socket_check.py` drives a running server over the socket and asserts the envelopes.
 
+## Checking that the demo works
+
+```bash
+python demo/e2e/run_e2e.py          # ~3 minutes; --no-build trusts dist/ as it stands
+```
+
+It builds the client bundle, starts a server of its own on a free port, runs both halves against it
+and stops the server on every path out. The halves are the protocol (`live_socket_check.py`, over a
+real socket) and the **shipped `dist/`** (`e2e/drive_client.mjs`, over HTTP and over the socket,
+doing what `App.vue` does). Both wires run the same phases and the last thing printed is whether they
+agreed.
+
+Neither `pytest -q` nor `npx vitest run` collects it, and that is deliberate: it starts a server and
+runs for minutes. It is also the only place the client that ships meets the server that ships — every
+test in the two suites fakes one end, so a call that resolves without reaching the wire is invisible
+to both and obvious here.
+
 ## What to try
 
 | | |
@@ -45,17 +62,14 @@ demo/server/          FastAPI: the viewset registration, the socket, the jobs, t
   market.py           deterministic positions and trades; nothing touches a network
 demo/client/          Vue 3 + Vite
   src/App.vue         the page: the wire switch, buttons, the register, the question
+demo/e2e/             the end-to-end check, run on purpose and by neither test runner
+  run_e2e.py          starts the server, runs both halves, stops it
+  drive_client.mjs    the shipped dist/ against the live server, over both wires
+live_socket_check.py  the protocol over a real socket: envelopes asserted as documents
 demo_test.py          the demo driven the way the browser drives it
 ```
 
 ## What this demo is not
-
-**On the socket, the page stops redrawing.** Choosing WebSocket routes the six calls onto the
-connection and suspends the polling ladder, and the envelopes do arrive — a `revalue` alone pushes
-eleven of them — but the client applies no envelope to a handle, so the register holds still until
-something reads again. Switch back to HTTP and one read makes the page current, which is the
-invariant the whole design rests on and the reason the switch is safe either way: the store is the
-truth and a push is only an accelerator.
 
 **It does not use the shipped Vuetify components.** `taskwire/vuetify` ships a dialog adapter and a
 footer; this page uses the framework-free composables underneath them instead, so that what you are

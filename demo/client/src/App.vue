@@ -153,6 +153,8 @@ async function chooseWire(next: Wire): Promise<void> {
     wire.value = 'websocket';
     // One `watch` with an empty declaration. It restores nothing - it asserts exactly the state the
     // new socket already has - and its reply is how this connection learns its id (TW-REG-020).
+    // `attachMuxws` has already wired that id into the client, which stamps it on every request it
+    // makes; this ref is only what the switch displays.
     connection.value = await transport.announce();
   } catch (error) {
     socketError.value = error instanceof Error ? error.message : String(error);

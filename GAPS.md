@@ -609,8 +609,59 @@ They are written in the section's own voice and cite the muxws rule (WSM-REG-010
 on. If the author would rather have facts of this kind live in the module docstring alone, delete
 them; nothing else references the two ids.
 
+---
+
+## taskwire-spec.md §5.4 / TW-PROG-010 — what a pushed `progress` body carries — OPEN
+
+**What I needed:** whether a `progress` envelope carries the **derived** state or the committed
+document.
+
+**What the spec says:** TW-PROG-010 and TW-PROG-012 derive `waiting_input` and forbid any caller
+writing it, and TW-INV-006 is the reason — a written `waiting_input` is an operation parked with
+nothing to release it. Both are stated of the read path. Nothing rules on the push path.
+
+**Why it matters:** the two are not the same document. `Reporter._commit` publishes what was
+committed, which is `running` while a question is open, and a client reporting what arrived says
+`running` over a socket and `waiting_input` over REST about one operation at one moment. TW-CORE-002
+says a push may not make a later read disagree with it.
+
+**What was decided:** derive on the client. `Operation.progress` applies the same two-cause rule
+(TW-PROG-013) to the dialogs and the uncollected result the handle already holds, so the two wires
+answer alike and nothing is written anywhere. The alternative — deriving at publish — would require
+the publisher to know the operation's open dialogs at commit time, which `Reporter._commit` does not,
+and would put a derived state into a document that other consumers read raw.
+
+**What the author may prefer instead:** publishing the derived state, and a rule saying so.
+
+---
+
+## taskwire-spec.md §5.3 — who obtains a connection id, and when — OPEN
+
+**What I needed:** whether the library or the application is responsible for holding a socket's
+connection id, and what happens to it across a reconnect.
+
+**What the spec says:** TW-DEL-022 mints the id in the `watch` reply, TW-DEL-016 says it is not
+stable across a reconnect and names the exactly two things it decides, TW-REG-019 permits the client
+to hold it in memory, and TW-REG-020 says a reconnecting client **MAY** send one empty `watch` to
+obtain the new one. No rule says a client must ever obtain one, and none says who does it.
+
+**What was decided:** the application still asks — `attachMuxws` issues no `watch` of its own, since
+a library that declared on attach would send a request an application that never wanted an id did not
+ask for. What the library does own is everything after the first reply: the id travels from the
+transport to the client on every `watch` reply, is cleared to `null` when the socket closes or is
+detached, and a socket that has declared once declares again — empty — when it reconnects. The client
+stamps whatever it holds on every request as `X-Taskwire-Connection`.
+
+**Why the middle half is not optional:** with no id on the wire, `origin_connection` is null on every
+operation, and TW-PRIV-003 then pushes a private operation's progress to no socket at all.
+
+---
+
 ## Coverage of the two languages
 
-Python 202 tests (5 skipped: they drive an injected clock, and Redis owns its own expiry).
-TypeScript 314 tests. Both lint- and type-clean; the Python core still imports none of redis,
+Python 258 tests (10 skipped: they drive an injected clock, and Redis owns its own expiry).
+TypeScript 386 tests. Both lint- and type-clean; the Python core still imports none of redis,
 fastapi, celery or muxws.
+
+Neither number covers the seam the two suites share and neither crosses: `demo/e2e/run_e2e.py` puts
+the shipped `dist/` next to a live server over both wires, and it is not collected by either runner.

@@ -781,6 +781,45 @@ describe('the register poll while a transport carries the namespace (TW-TS-007)'
     await vi.advanceTimersByTimeAsync(30_000);
     expect(server.polls(REGISTER_URL)).toHaveLength(1);
   });
+
+  it('still takes the read it owed when the socket arrives before it', async () => {
+    // The page's own order: `use_register()` at setup starts the loop, and the wire is chosen on a
+    // click - so the first read is *scheduled* rather than taken when the transport attaches. What
+    // is suspended is the ladder and never that read (TW-TS-007), and a suspension that only
+    // cancelled the timer would leave the register empty for the whole life of the socket.
+    const elsewhere = new_token();
+    server.list(summaryWire(elsewhere, { dialog: true }));
+
+    void tw.register;
+    tw.attachTransport(new FakeTransport());
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(server.polls(REGISTER_URL)).toHaveLength(1);
+    expect(tokensOf(tw.register)).toEqual([elsewhere]);
+  });
+
+  it('resumes on the base rung even with a question open (TW-TS-007)', async () => {
+    // The ladder's own rules answer the ceiling for an open question, so a resumption asked of them
+    // would begin the recovery five seconds after the socket died - and a reconnect inside that
+    // window would cancel it again. The base rung is what the rule says the recovery costs.
+    server.list(summaryWire(new_token(), { dialog: true }));
+    await poll(2);
+    const before = server.polls(REGISTER_URL).length;
+
+    let health: ((healthy: boolean) => void) | null = null;
+    tw.attachTransport({
+      subscribe: () => () => undefined,
+      onHealth: (listener) => {
+        health = listener;
+        return () => undefined;
+      },
+    });
+    const report = health as unknown as (healthy: boolean) => void;
+
+    report(false);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(server.polls(REGISTER_URL)).toHaveLength(before + 1);
+  });
 });
 
 describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
@@ -826,6 +865,50 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
     expect(tw.aggregate).toBeNull();
     expect(tw.selected).toBeNull();
     expect(server.polls(REGISTER_URL)).toHaveLength(reads);
+  });
+
+  it('reads the register for a push naming a token this tab started (TW-REG-006)', async () => {
+    // Having a handle is not being in the register. `run()` mints one before the command is even
+    // sent, so the `handle === null` test says "known" about a token that has no row yet, and the
+    // row only ever arrives with a read of the list. Held ladder, moved handle, empty register - the
+    // failure is silent, because the push did land and the entry it landed on is not on screen.
+    server.list();
+    await poll(2);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    const reads = server.polls(REGISTER_URL).length;
+
+    const op = tw.run(async () => undefined, { resultKind: 'acme.report' });
+    server.list(summaryWire(op.token, { percent: 7 }));
+    socket.push(op.token, 2, 'progress', progressBody({ percent: 7 }));
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads + 1);
+    expect(tokensOf(tw.register)).toEqual([op.token]);
+  });
+
+  it('asks for no read on behalf of a private operation of its own (TW-PRIV-002)', async () => {
+    // No register payload carries a private operation for any caller including its own, so a read
+    // asked for on its behalf is a question the list cannot answer - and it would be asked again on
+    // its every push. The only copy is the one its own poller holds, and that is where it stays.
+    server.list();
+    await poll(2);
+
+    const op = tw.run(async () => undefined);
+    server.documents.set(op.token, snapshotWire(op.token, { resultKind: null }));
+    await vi.advanceTimersByTimeAsync(600);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    const reads = server.polls(REGISTER_URL).length;
+
+    socket.push(op.token, 3, 'progress', progressBody({ percent: 61, resultKind: null }));
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads);
+    expect(tokensOf(tw.register)).toEqual([op.token]);
+    expect(tw.register[0].progress?.percent).toBe(61);
   });
 
   it('reads the register once for a burst of pushes it cannot place', async () => {

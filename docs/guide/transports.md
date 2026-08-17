@@ -93,6 +93,14 @@ The server advertises `poll_after_ms`, and it may only ever **slow a client down
 interval is `max(poll_after_ms, the client's own ladder)`. Without that clamp a miscomputed or
 zeroed value becomes a request flood against the server that emitted it.
 
+## One state, either way
+
+`waiting_input` is derived and never stored, so the two wires carry different documents for the same
+operation: a read derives it on the way out, and a push carries the document that was committed —
+which says `running` while a question is open. The TypeScript client derives it again on the handle,
+from the dialogs and the uncollected result it already holds, so what a reader is told is the same on
+both. A tab watching over a socket and a tab watching over HTTP never disagree about one operation.
+
 ## Namespaces and privacy
 
 `session_resolver` is the only thing that produces a namespace, and the namespace is the **only**

@@ -20,11 +20,14 @@
  * document it was handed, which is a live value rather than a cache: nothing reads it after the
  * handle closes, and nothing writes it anywhere a reload could find it.
  *
- * Several members below belong to later milestones and are inert here, with their final signatures,
- * so that no call site written today has to be rewritten: `answer()` is M3b, `cancel()` M6,
- * `collect()` / `dismiss()` M7, `show()` / `hide()` M1c, `mute()` / `unmute()` /
- * `clearOverride()` M8. `dialog` is always `null` until M3b - and it hangs here, on its own entry,
- * because there is no global dialog slot and no dialog queue anywhere in this client (TW-TS-006).
+ * **Every write goes out through the host** - `answer()`, `cancel()`, `collect()` and `dismiss()`.
+ * The host owns the call, which is what keeps this file's imports down to `./wire`; what stays here
+ * is the judgement no call site may be asked to repeat, that a `404`, a `409` and a `410` on a write
+ * are a race between readers rather than a fault (TW-DLG-011). `show()` / `hide()` and the three
+ * override members are local to this client and travel nowhere on their own.
+ *
+ * `dialog` hangs here, on its own entry, because there is no global dialog slot and no dialog queue
+ * anywhere in this client (TW-TS-006).
  */
 
 import { type DialogRequest, isTerminal, type Progress, type Result, type Text } from './wire';
@@ -64,11 +67,26 @@ export class OperationFailed extends Error {
 }
 
 /**
+ * Whether a rejected write lost a race rather than failed.
+ *
+ * One rule for all four writes, because they answer the same three statuses for the same reason. A
+ * `409` is somebody else having got there first - another tab answered the question, released the
+ * result, or the work ended before the cancel arrived. A `404` is that race one step further on: the
+ * entry left every register there is in the step that ended it (TW-REG-007). A `410` is a withdrawn
+ * question (TW-DLG-011). None of the three is a fault, so no application error handler is shown one;
+ * everything else, `422` included, is a programming error and is left to travel.
+ */
+function lostTheRace(raised: unknown): boolean {
+  const status = (raised as { response?: { status?: number } } | null | undefined)?.response?.status;
+  return status === 404 || status === 409 || status === 410;
+}
+
+/**
  * What a handle needs from the client that made it.
  *
  * Kept to this, so `Operation` imports nothing but `./wire`: no `axios`, no scheduler and - the rule
- * this one is really protecting - no Vue (TW-CORE-006). Every member is a milestone's placeholder
- * except `release`, which is what `close()` means.
+ * this one is really protecting - no Vue (TW-CORE-006). The four writes are the client's to issue
+ * and the handle's to interpret; `release` is what `close()` means.
  */
 export interface OperationHost {
   /** Stop polling this token and forget the handle. Called by `close()`, once. */
@@ -85,6 +103,12 @@ export interface OperationHost {
    * reject, and `answer()` is the one that decides which rejections are normal (TW-DLG-011).
    */
   replyToDialog(token: string, did: string, button: string, values: Record<string, unknown>): Promise<void>;
+  /** Ask for a cancel. Answered `202`, and only the terminal state confirms it (TW-CANCEL-003). */
+  cancel(token: string): Promise<void>;
+  /** Release the result, once (TW-RES-010). The value is the handle's; this only frees the record. */
+  collect(token: string): Promise<void>;
+  /** The same release, idempotent and with the value thrown away (TW-REST-008). */
+  dismiss(token: string): Promise<void>;
 }
 
 export interface OperationInit<T> {
@@ -197,8 +221,23 @@ export class Operation<T> implements PromiseLike<T> {
     return this.#progress?.title ?? this.#title;
   }
 
+  /**
+   * The operation's state as a reader must see it, with `waiting_input` **derived** here rather than
+   * taken from the document (TW-PROG-010, TW-PROG-012).
+   *
+   * Nobody writes that state and no store holds it: the server derives it on the way out of a read,
+   * and a push carries the committed document instead - so a client that reported what arrived would
+   * say `running` over a socket and `waiting_input` over REST about one operation at one moment,
+   * which is the disagreement TW-CORE-002 exists to forbid. Deriving it on the handle makes the two
+   * wires answer alike, because the handle holds both of TW-PROG-013's causes already: the dialogs,
+   * and the uncollected result.
+   */
   get progress(): Progress | null {
-    return this.#progress;
+    const progress = this.#progress;
+    if (progress === null || isTerminal(progress)) return progress;
+    const asking = this.#dialogs.some((dialog) => dialog.state === 'open');
+    if (!asking && (progress.result ?? null) === null) return progress;
+    return { ...progress, state: 'waiting_input' };
   }
 
   /**
@@ -283,13 +322,8 @@ export class Operation<T> implements PromiseLike<T> {
     try {
       await this.#host?.replyToDialog(this.token, dialog.id, button, values ?? {});
     } catch (raised) {
-      const status = (raised as { response?: { status?: number } })?.response?.status;
-      if (status === 409 || status === 404 || status === 410) {
-        // Somebody else got there first, or the question is gone. Close and say nothing.
-        this.#markDialogSettled(dialog.id);
-        return;
-      }
-      throw raised;
+      // Somebody else got there first, or the question is gone. Close and say nothing.
+      if (!lostTheRace(raised)) throw raised;
     }
     this.#markDialogSettled(dialog.id);
   }
@@ -308,25 +342,84 @@ export class Operation<T> implements PromiseLike<T> {
     this.#notify();
   }
 
-  /** M6. */
+  /**
+   * Ask for this operation to stop.
+   *
+   * **A request, never a completion** (TW-CANCEL-003). The endpoint answers `202`: a sticky flag is
+   * written and the operation notices at its next progress call, which it may never reach -
+   * cancellation is cooperative and taskwire kills nothing (TW-CANCEL-009). So nothing moves here on
+   * the way out; the terminal `cancelled` state is what confirms it, and it arrives as an ordinary
+   * document on whichever wire is attached.
+   *
+   * The two `409`s are named by the endpoint and both are ordinary: `already_terminal`, and
+   * `holds_an_uncollected_result` - an operation whose work is over has nothing left to interrupt,
+   * and the affordance on such an entry is `dismiss()` rather than this (TW-CANCEL-010).
+   */
   async cancel(): Promise<void> {
-    return undefined;
+    try {
+      await this.#host?.cancel(this.token);
+    } catch (raised) {
+      if (!lostTheRace(raised)) throw raised;
+    }
   }
 
   /**
-   * M7. Resolves with the uncollected result when there is one and rejects when there is not, which
-   * is the shape of the `409` the endpoint will answer with (TW-REST-008) - so the call site written
-   * today is the call site M7 keeps.
+   * Take the result, releasing it server-side in the same call (TW-RES-010, TW-REST-008).
+   *
+   * "I have taken it", and deliberately not idempotent: the release fires `result_released` exactly
+   * once, and an application deleting its own artefact in that hook would delete it twice under a
+   * second one. What comes back is the document in hand, because it is the only copy there will be -
+   * the release clears the result off the stored document in the same atomic step, so no read after
+   * this one carries it.
+   *
+   * Rejects when this handle holds no result at all: there is nothing to take, and the endpoint
+   * would answer the same `409` (`no_uncollected_result`). A rejection on a call issued *with* a
+   * result in hand is another reader having released it first, and the value that reader released is
+   * the value in hand - so the caller is given it rather than an error nothing can act on.
    */
   async collect(): Promise<Result> {
     const result = this.result;
     if (result === null) throw new Error(`taskwire: operation ${this.token} has no uncollected result`);
+    try {
+      await this.#host?.collect(this.token);
+    } catch (raised) {
+      if (!lostTheRace(raised)) throw raised;
+    }
+    this.#markResultReleased();
     return result;
   }
 
-  /** M7. Idempotent by TW-REST-008, which an inert body satisfies trivially. */
+  /**
+   * Give the result up: the same act as `collect()` with the value thrown away, and idempotent
+   * (TW-REST-008).
+   *
+   * A second dismiss releases nothing and is answered `204`, a `404` is the entry already dropped and
+   * a `409` is nothing left to release. All three are the state the caller asked for.
+   */
   async dismiss(): Promise<void> {
-    return undefined;
+    try {
+      await this.#host?.dismiss(this.token);
+    } catch (raised) {
+      if (!lostTheRace(raised)) throw raised;
+    }
+    this.#markResultReleased();
+  }
+
+  /**
+   * Drop the released result locally, without waiting for the next read - the move
+   * `#markDialogSettled` makes for an answered question, for the other write that settles something.
+   *
+   * The release is acknowledged, so the stored document carries no result any more (TW-RES-010) and
+   * a handle still offering one would offer a second collect over a row the server dropped in the
+   * same step (TW-REG-007). Only the result moves: which state the operation ends in is the wire's
+   * to say, and it arrives as the terminal document the release publishes or as the absence the next
+   * read finds (TW-TS-004).
+   */
+  #markResultReleased(): void {
+    const progress = this.#progress;
+    if (progress === null || (progress.result ?? null) === null) return;
+    this.#progress = { ...progress, result: null };
+    this.#notify();
   }
 
   /** M1c. */
@@ -449,9 +542,18 @@ export class Operation<T> implements PromiseLike<T> {
   /**
    * @internal The document disappeared after it had been seen (TW-TS-004). A terminal state already
    * settled the handle if one arrived; this is the case where none did.
+   *
+   * The questions go with it. A dialog can never outlive the operation that asked it
+   * (TW-CANCEL-011), and TW-DLG-016 writes the client's close rule against dialog state rather than
+   * against how that state was learnt - so an absence carries the withdrawal exactly as the terminal
+   * document does. The two are not alternatives on the REST wire: a cancel drops the entry in the
+   * same step that ends it (TW-REG-007), so the terminal document exists for microseconds and the
+   * next read on the ladder finds the `404` instead. A handle that withdrew questions only on the
+   * document would leave a modal on screen over a worker that ended, on every wire without a push.
    */
   markGone(): void {
     this.#settle(() => this.#reject?.(new OperationGone(this.token)));
+    this.#withdrawOpenDialogs();
     this.close();
   }
 
