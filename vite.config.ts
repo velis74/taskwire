@@ -29,6 +29,11 @@ export default defineConfig({
     },
     rollupOptions: {
       external: [
+        // Every optional peer, and for the same reason: a bundled copy is a second copy. An
+        // application that catches `ViewSetRequestError` from its own installed package would never
+        // match one thrown by a frozen copy inlined here, and the declared version range would be
+        // bypassed by whatever happened to be installed when this was built (TW-CORE-006).
+        '@dynamicforms/fastapi-viewsets',
         '@dynamicforms/vuetify-modal-form-kit',
         'muxws',
         'axios',

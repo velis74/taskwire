@@ -36,6 +36,11 @@ export {
   use_taskwire,
 } from './taskwire';
 
+// The six calls of TW-REST-004 as one interface: what `useCalls()` takes, and what a transport that
+// is not `taskwire/muxws` would implement. `RestCalls` itself is not exported - a client builds its
+// own, and there is nothing an application does with a second one.
+export type { TaskwireCalls } from './calls';
+
 export { Operation, OperationFailed, OperationGone, type OperationHost, type OperationInit } from './operation';
 
 // The register, its aggregate and the FIFO selection (§3.8, §3.8a) - the same rules the server uses.

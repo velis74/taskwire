@@ -41,6 +41,10 @@ def _brisk(monkeypatch: pytest.MonkeyPatch) -> None:
     # this to 0.002 turns a real test into one that asserts the wrong branch.
     monkeypatch.setattr(jobs, "EXPORT_STEP", 0.02)
     monkeypatch.setattr(jobs, "SECTOR_STEP", 0.01)
+    monkeypatch.setattr(jobs, "HOLD_STEP", 0.005)
+    # Long enough that the poll below reliably catches the question while it is open, short enough
+    # that the suite does not sit out the fifteen seconds a reader is meant to sit out.
+    monkeypatch.setattr(jobs, "HOLD_DEADLINE", 0.6)
 
 
 @pytest.fixture
@@ -203,6 +207,29 @@ def test_a_parked_result_survives_a_reload_and_is_collected_once(http: TestClien
     assert http.post(f"/taskwire/{token}/collect").status_code == 204
     assert http.post(f"/taskwire/{token}/collect").status_code in (404, 409, 410)
     assert http.get("/taskwire").json()["operations"] == []
+
+
+def test_an_unanswered_question_dies_with_the_worker_that_asked_it(http: TestClient) -> None:
+    """TW-CANCEL-011: the terminal write withdraws the dialog in the same step.
+
+    The deadline here is `hold_the_line`'s own `asyncio.wait_for` - taskwire has none to offer
+    (TW-DLG-005) and the demo has no Celery to impose one. When it expires the operation goes
+    `failed` and the question goes with it, so nothing is left on screen pointing at a worker that
+    is no longer running. A reply arriving after that is 404 rather than an error the client has to
+    explain (TW-DLG-011).
+    """
+    token = _start(http, "hold")
+    snapshot = _wait(http, token, lambda s: any(d["state"] == "open" for d in s["dialogs"]))
+    assert snapshot is not None, "the job never asked"
+    assert snapshot["progress"]["state"] == "waiting_input"
+    dialog = next(d for d in snapshot["dialogs"] if d["state"] == "open")
+
+    # Nobody answers, which is the whole test.
+    assert _wait(http, token, lambda _s: False) is None
+    assert http.get("/taskwire").json()["operations"] == []
+
+    late = http.post(f"/taskwire/{token}/dialogs/{dialog['id']}", json={"button": "release", "values": {}})
+    assert late.status_code in (404, 410)
 
 
 def test_two_sessions_never_see_each_others_work(http: TestClient) -> None:

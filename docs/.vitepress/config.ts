@@ -24,6 +24,7 @@ export default defineConfig({
             { text: 'Collectable results', link: '/guide/results' },
             { text: 'Several operations', link: '/guide/several-operations' },
             { text: 'Transports', link: '/guide/transports' },
+            { text: 'The WebSocket transport', link: '/guide/websockets' },
           ],
         },
       ],

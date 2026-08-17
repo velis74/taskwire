@@ -8,8 +8,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Operation } from './operation';
 import { DEFAULT_POLL_SETTINGS } from './poll';
 import * as taskwireModule from './taskwire';
-import { CONNECTION_HEADER, DEFAULT_BASE_PATH, new_token, Taskwire, TOKEN_HEADER, use_taskwire } from './taskwire';
-import type { ProgressState, WireObject } from './wire';
+import {
+  type ClientTransport,
+  CONNECTION_HEADER,
+  DEFAULT_BASE_PATH,
+  new_token,
+  Taskwire,
+  TOKEN_HEADER,
+  use_taskwire,
+} from './taskwire';
+import {
+  type Envelope,
+  type EnvelopeKind,
+  parseEnvelope,
+  type ProgressState,
+  serializeDialogReply,
+  serializeDialogRequest,
+  serializeEnvelope,
+  serializeProgress,
+  WIRE_VERSION,
+  type WireObject,
+} from './wire';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -105,6 +124,67 @@ function snapshotPayload(token: string, state: ProgressState, over: WireObject =
     poll_after_ms: 400,
     ...over,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// A socket that never exists: a transport whose pushes the test writes.
+// ---------------------------------------------------------------------------------------------
+
+class FakeTransport implements ClientTransport {
+  private listener: ((envelope: Envelope) => void) | null = null;
+
+  subscribe(onEnvelope: (envelope: Envelope) => void): () => void {
+    this.listener = onEnvelope;
+    return () => {
+      this.listener = null;
+    };
+  }
+
+  /** Whether anything is taking the pushes - `false` once the client has let this transport go. */
+  get feeding(): boolean {
+    return this.listener !== null;
+  }
+
+  /**
+   * Push one envelope, through the same serialize/parse pair a frame crosses on a real socket, so a
+   * test cannot hand the client a document the wire could not have carried.
+   */
+  push(token: string, rev: number, kind: EnvelopeKind, body: WireObject): void {
+    this.listener?.(parseEnvelope(serializeEnvelope({ v: WIRE_VERSION, token, rev, kind, body })));
+  }
+}
+
+const STAMP = '2026-01-01T00:00:00.000Z';
+const DIALOG_ID = '0e2f7a5c-1111-4a7d-9c2e-5f5b6a7c8d90';
+
+/** A pushed `progress` body: a `Progress` document and, deliberately, no dialogs array. */
+function pushedProgress(state: ProgressState, percent: number | null = null): WireObject {
+  return serializeProgress({
+    state,
+    percent,
+    data: {},
+    resultKind: null,
+    originSession: 'ns',
+    originConnection: null,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+  }) as WireObject;
+}
+
+function pushedDialog(): WireObject {
+  return serializeDialogRequest({
+    id: DIALOG_ID,
+    dialogId: 'acme.overwrite',
+    buttons: [{ id: 'yes' }, { id: 'no' }],
+    inputs: [],
+    state: 'open',
+    createdAt: STAMP,
+  }) as WireObject;
+}
+
+/** A `dialog.close` body: an id, the state the store arbitrated, and the reply that won. */
+function pushedClose(button: string): WireObject {
+  return { id: DIALOG_ID, state: 'answered', reply: serializeDialogReply({ button, values: {} }) as WireObject };
 }
 
 /** Reply with the next scripted answer each time the token is read; the last one repeats. */
@@ -569,8 +649,18 @@ describe('the module surface', () => {
   });
 
   it('imports no vue, no vuetify and no modal kit (TW-CORE-006)', () => {
-    const offenders = [...sources()]
+    // A subpath export is the only place an optional dependency may be imported, and each gets
+    // exactly its own: `vue.ts` and `vuetify.ts` the UI stack, `muxws.ts` the socket and the viewset
+    // proxy that addresses its streams. The UI half of that is stricter (TW-TS-010) - `muxws.ts` is
+    // as forbidden to import Vue as any other file, because a browser-only program that speaks the
+    // socket must not be made to install a framework.
+    const ui = [...sources()]
       .filter(([name]) => !['vue.ts', 'vuetify.ts'].includes(name))
+      .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/vuetify-[^']+)'/.test(text));
+    expect(ui.map(([name]) => name)).toEqual([]);
+
+    const offenders = [...sources()]
+      .filter(([name]) => !['vue.ts', 'vuetify.ts', 'muxws.ts'].includes(name))
       .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/[^']+)'/.test(text));
     expect(offenders.map(([name]) => name)).toEqual([]);
   });
@@ -691,17 +781,87 @@ describe('subscribe (TW-TS-007, TW-REST-011)', () => {
     expect(server.polls(token)).toHaveLength(closed);
   });
 
-  it('keeps polling with a transport attached, because a push is a notification (TW-CORE-002)', async () => {
+  it('suspends the ladder while a transport is attached, and resumes on loss (TW-TS-007)', async () => {
+    // Exclusive, not additive: the socket that pushes and the ladder that asks again are two answers
+    // to one question, and paying for both leaves a request per tab per tick on the wire. The health
+    // signal is what makes the loss of the first one observable.
     const token = new_token();
     server.handler = (url) =>
       url === `${DEFAULT_BASE_PATH}/${token}`
         ? { status: 200, data: snapshotPayload(token, 'waiting_input', { rev: 1 }) }
         : { status: 404 };
 
-    tw.attachTransport({ subscribe: () => () => undefined });
+    let health: ((healthy: boolean) => void) | null = null;
+    tw.attachTransport({
+      subscribe: () => () => undefined,
+      onHealth: (listener) => {
+        health = listener;
+        return () => {
+          health = null;
+        };
+      },
+    });
+
+    // One read, and then nothing: the first is owed even while the ladder is held, because a
+    // transport carries what changes and this token is parked in `waiting_input`. Every rung after
+    // it is the ladder, and the ladder is what the attach stopped.
     tw.subscribe(token);
     await vi.advanceTimersByTimeAsync(BASE + CEILING * 2);
-    expect(server.polls(token).length).toBeGreaterThanOrEqual(3);
+    expect(server.polls(token)).toHaveLength(1);
+
+    // A dead socket brings the ladder straight back, on its base rung rather than at the ceiling.
+    (health as unknown as (healthy: boolean) => void)(false);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(server.polls(token)).toHaveLength(2);
+
+    // ...and a reconnect stops it again.
+    (health as unknown as (healthy: boolean) => void)(true);
+    await vi.advanceTimersByTimeAsync(CEILING * 3);
+    expect(server.polls(token)).toHaveLength(2);
+  });
+
+  it('a transport that is already down never stops the ladder (TW-TS-007)', async () => {
+    // The loss it would have reported happened before the client was watching, so it reports it at
+    // once instead. A client that suspended anyway would sit blind over a dead socket for the life
+    // of the page - which is why the health listener is installed after the suspension, not before.
+    const token = new_token();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}`
+        ? { status: 200, data: snapshotPayload(token, 'running', { rev: 1 }) }
+        : { status: 404 };
+
+    tw.attachTransport({
+      subscribe: () => () => undefined,
+      onHealth: (listener) => {
+        listener(false);
+        return () => undefined;
+      },
+    });
+    tw.track(token);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(server.polls(token)).toHaveLength(1);
+  });
+
+  it('detaching a transport is a client that polls again (TW-TS-007)', async () => {
+    // A transport that reports no health at all counts as healthy for as long as it is attached, so
+    // this is the way back for one: exactly one call, and the ladder starts at the base interval.
+    const token = new_token();
+    server.handler = (url) =>
+      url === `${DEFAULT_BASE_PATH}/${token}`
+        ? { status: 200, data: snapshotPayload(token, 'running', { rev: 1 }) }
+        : { status: 404 };
+
+    tw.attachTransport({ subscribe: () => () => undefined });
+    // Tracked while the socket is up: the poller is born held rather than started and then stopped,
+    // and it reads exactly once - the state the token was already in is the one thing no push can
+    // announce. Two ceilings later that is still the only read there has been.
+    tw.track(token);
+    await vi.advanceTimersByTimeAsync(CEILING * 2);
+    expect(server.polls(token)).toHaveLength(1);
+
+    tw.detachTransport();
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(server.polls(token)).toHaveLength(2);
   });
 
   it('reports a transport failure without giving up the loop', async () => {
@@ -722,6 +882,155 @@ describe('subscribe (TW-TS-007, TW-REST-011)', () => {
     expect(failures).toHaveLength(2);
     expect(subscription.snapshot?.token).toBe(token);
     subscription.close();
+  });
+});
+
+describe('what a pushed envelope moves (TW-CORE-008, TW-TS-007)', () => {
+  let socket: FakeTransport;
+
+  beforeEach(() => {
+    socket = new FakeTransport();
+    tw.attachTransport(socket);
+  });
+
+  it('carries the handle while the ladder is held', async () => {
+    // The whole point of the suspension: with a transport attached the pushes are the only thing
+    // moving the handle, so a client that did not consume them would update from nothing.
+    const token = new_token();
+    const handle = tw.track(token);
+
+    socket.push(token, 5, 'progress', pushedProgress('running', 40));
+    expect(handle.progress?.percent).toBe(40);
+    expect(handle.rev).toBe(5);
+
+    // The one read every held ladder owes, and no rung after it. What that read answers here is
+    // `404` - not written yet, which is an absence and not an error (TW-TS-004) - and the pushed
+    // document stands.
+    await vi.advanceTimersByTimeAsync(CEILING * 3);
+    expect(server.polls(token)).toHaveLength(1);
+    expect(handle.progress?.percent).toBe(40);
+  });
+
+  it('opens a question on a push and settles it on the terminal state (TW-DLG-016)', async () => {
+    // The withdrawal at the end of an operation publishes NO `dialog.close` - that envelope is
+    // written on the answered path alone - so the terminal progress is the entire announcement that
+    // the question is gone, and a client waiting for a close leaves the modal up for the life of the
+    // page. `cancelled` is the state the store's own withdrawal writes (TW-CANCEL-011).
+    const token = new_token();
+    const handle = tw.track(token);
+
+    socket.push(token, 1, 'progress', pushedProgress('running', 10));
+    socket.push(token, 2, 'dialog.open', pushedDialog());
+    expect(handle.dialog?.id).toBe(DIALOG_ID);
+    expect(handle.progress?.percent).toBe(10);
+
+    socket.push(token, 3, 'progress', pushedProgress('failed'));
+    expect(handle.dialog).toBeNull();
+    expect(handle.dialogs.map((dialog) => dialog.state)).toEqual(['cancelled']);
+    // The terminal document is the last one there will ever be for the token (TW-REG-007).
+    expect(handle.progress?.state).toBe('failed');
+    expect(handle.closed).toBe(true);
+  });
+
+  it('a progress push never blanks the open question it does not mention', async () => {
+    // A progress body is a `Progress` document with no dialogs array, and `applySnapshot` replaces
+    // them only when the key is there. Nothing else would re-announce the question.
+    const token = new_token();
+    const handle = tw.track(token);
+
+    socket.push(token, 1, 'dialog.open', pushedDialog());
+    socket.push(token, 2, 'progress', pushedProgress('running', 60));
+    expect(handle.dialog?.id).toBe(DIALOG_ID);
+    expect(handle.progress?.percent).toBe(60);
+  });
+
+  it('gates progress on rev and applies dialogs regardless of it (TW-REV-006)', () => {
+    const token = new_token();
+    const handle = tw.track(token);
+
+    socket.push(token, 9, 'progress', pushedProgress('running', 90));
+    socket.push(token, 4, 'progress', pushedProgress('running', 10));
+    expect(handle.progress?.percent).toBe(90);
+    expect(handle.rev).toBe(9);
+
+    // A `dialog.open` overtaken by a later progress commit must still be applied, or the question
+    // never appears at all (TW-INV-004).
+    socket.push(token, 4, 'dialog.open', pushedDialog());
+    expect(handle.dialog?.id).toBe(DIALOG_ID);
+
+    // And a `dialog.close` settles the question this client is holding, in the state the store
+    // arbitrated - not in one the client guessed.
+    socket.push(token, 4, 'dialog.close', pushedClose('yes'));
+    expect(handle.dialog).toBeNull();
+    expect(handle.dialogs[0].state).toBe('answered');
+    expect(handle.dialogs[0].reply?.button).toBe('yes');
+  });
+
+  it('feeds the subscription surface the same document a read would have', () => {
+    // `subscribe()` has no handle of its own; one token is one handle (TW-TS-005), so the envelope
+    // lands on an adopted one and the snapshot the subscription is handed is re-stated from it.
+    const token = new_token();
+    const seen: number[] = [];
+    const subscription = tw.subscribe(token);
+    subscription.onSnapshot((snapshot) => seen.push(snapshot.progress.percent ?? -1));
+
+    socket.push(token, 3, 'progress', pushedProgress('running', 25));
+    expect(seen).toEqual([25]);
+    expect(subscription.snapshot?.rev).toBe(3);
+    expect(subscription.snapshot?.token).toBe(token);
+  });
+
+  it('a subscribed token gets one handle, and the terminal push closes it (TW-TS-005)', () => {
+    // `subscribe()` has no handle of its own, so the first push adopts one - and the loop takes it,
+    // or nothing would ever close it: this token is in no register, so no departure can, and a
+    // client that kept an `Operation` per subscribed token would hold one for the life of the page.
+    const token = new_token();
+    const seen: string[] = [];
+    let closed = 0;
+    const subscription = tw.subscribe(token);
+    subscription.onSnapshot((snapshot) => seen.push(snapshot.progress.state));
+    subscription.onClose(() => {
+      closed += 1;
+    });
+
+    socket.push(token, 1, 'progress', pushedProgress('running', 20));
+    // One token is one handle: what `track()` hands back is the handle the push adopted, already
+    // carrying what the push said - not a second one starting from nothing.
+    const handle = tw.track(token);
+    expect(handle.progress?.percent).toBe(20);
+
+    socket.push(token, 2, 'progress', pushedProgress('done'));
+    expect(seen).toEqual(['running', 'done']);
+    expect(closed).toBe(1);
+    expect(handle.closed).toBe(true);
+    expect(subscription.snapshot?.progress.state).toBe('done');
+  });
+
+  it('drops a frame it cannot read rather than throwing (TW-CORE-002)', () => {
+    const token = new_token();
+    const handle = tw.track(token);
+    socket.push(token, 1, 'progress', pushedProgress('running', 40));
+
+    // The store is the truth, so no state depends on this frame arriving - and throwing would take
+    // the whole socket out over one bad body.
+    expect(() => socket.push(token, 2, 'progress', { state: 'not-a-state' })).not.toThrow();
+    // `dialog.reply` and `watch` originate with a client and are never pushed to one (TW-CORE-009).
+    expect(() => socket.push(token, 3, 'watch', {})).not.toThrow();
+    expect(handle.progress?.percent).toBe(40);
+    expect(handle.rev).toBe(1);
+  });
+
+  it('detaching unsubscribes: an envelope after it changes nothing', () => {
+    const token = new_token();
+    const handle = tw.track(token);
+    socket.push(token, 1, 'progress', pushedProgress('running', 40));
+
+    tw.detachTransport();
+    expect(socket.feeding).toBe(false);
+
+    socket.push(token, 2, 'progress', pushedProgress('running', 99));
+    expect(handle.progress?.percent).toBe(40);
+    expect(handle.rev).toBe(1);
   });
 });
 

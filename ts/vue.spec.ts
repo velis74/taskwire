@@ -6,8 +6,8 @@ import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { effectScope, isRef } from 'vue';
 
+import { REGISTER_PATH } from './calls';
 import { DEFAULT_BASE_PATH, new_token, type Taskwire, use_taskwire } from './taskwire';
-import { REGISTER_PATH } from './register';
 import { use_operation, use_operations, use_register } from './vue';
 import type { WireObject } from './wire';
 
@@ -216,9 +216,15 @@ describe('the vue composables (§5.5)', () => {
     expect(tw.register).toEqual([]);
   });
 
-  it('the vue subpath is the only file importing vue', () => {
-    // TW-CORE-006 / TW-TS-010: the core must not import Vue, Vuetify or the modal kit outside a
-    // subpath export, and `ts/index.ts` is the core's entry point. This walks what it reaches.
+  it('the core entry reaches no optional peer, and the build keeps every one of them out', () => {
+    // TW-CORE-006 / TW-TS-010: the core must not import Vue, Vuetify, the modal kit, muxws or the
+    // viewset proxy outside a subpath export, and `ts/index.ts` is the core's entry point. Every
+    // one of the five is behind a subpath - `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws` -
+    // so the list is the whole of the policy and each entry is checked three ways: the core does
+    // not reach it, it is not a dependency, and the bundle does not inline it.
+    const PEERS = ['vue', 'vuetify', '@dynamicforms/vuetify-modal-form-kit', 'muxws', '@dynamicforms/fastapi-viewsets'];
+    const forbidden = new RegExp(`^(${PEERS.map((name) => name.replace(/[^\w]/g, '\\$&')).join('|')})$`);
+
     const seen = new Set<string>();
     const queue = ['index.ts'];
     while (queue.length > 0) {
@@ -228,24 +234,33 @@ describe('the vue composables (§5.5)', () => {
       const text = readFileSync(join(HERE, name), 'utf-8');
       const imports = [...text.matchAll(/from\s+'([^']+)'/g)].map((match) => match[1]);
       imports.forEach((specifier) => {
-        expect(specifier).not.toMatch(/^(vue|vuetify|@dynamicforms\/vuetify-modal-form-kit)$/);
+        expect(specifier).not.toMatch(forbidden);
         if (specifier.startsWith('./')) queue.push(`${specifier.slice(2)}.ts`);
       });
     }
     expect(seen.has('taskwire.ts')).toBe(true);
     expect(seen.has('register.ts')).toBe(true);
+    // The three subpath entries, and the reason the walk above is not vacuous: each of them does
+    // import a peer, and none of them is reachable from the core.
     expect(seen.has('vue.ts')).toBe(false);
     expect(seen.has('vuetify.ts')).toBe(false);
+    expect(seen.has('muxws.ts')).toBe(false);
 
-    // The dependency policy that makes the subpath meaningful: none of the three is a dependency.
+    // The dependency policy that makes the subpaths meaningful: not one of them is a dependency.
     const manifest = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf-8'));
     const declared = Object.keys(manifest.dependencies ?? {});
-    expect(declared).not.toContain('vue');
-    expect(declared).not.toContain('vuetify');
-    expect(declared).not.toContain('@dynamicforms/vuetify-modal-form-kit');
-    // They are optional peers, and the build keeps them external.
-    expect(manifest.peerDependenciesMeta.vue.optional).toBe(true);
-    expect(manifest.peerDependenciesMeta.vuetify.optional).toBe(true);
+    PEERS.forEach((name) => {
+      expect(declared).not.toContain(name);
+      expect(manifest.peerDependenciesMeta[name].optional).toBe(true);
+    });
     expect(manifest.exports['./vue']).toBeDefined();
+    expect(manifest.exports['./muxws']).toBeDefined();
+
+    // ...and the build keeps every one of them external. A peer that is bundled instead is a
+    // second copy: an `instanceof` written against the installed package never matches the frozen
+    // one, and the declared version range is bypassed by whatever was installed at build time.
+    const viteConfig = readFileSync(resolve(REPO_ROOT, 'vite.config.ts'), 'utf-8');
+    const external = /external:\s*\[([\s\S]*?)\]/.exec(viteConfig)?.[1] ?? '';
+    PEERS.forEach((name) => expect(external).toContain(`'${name}'`));
   });
 });

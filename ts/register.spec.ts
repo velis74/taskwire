@@ -6,9 +6,11 @@ import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { aggregate } from './aggregate';
+import { REGISTER_PATH } from './calls';
 import type { Operation } from './operation';
-import { mergePrivate, REGISTER_PATH, sortEntries } from './register';
+import { mergePrivate, sortEntries } from './register';
 import {
+  type ClientTransport,
   configure_taskwire,
   DEFAULT_BASE_PATH,
   new_token,
@@ -16,7 +18,18 @@ import {
   Taskwire,
   use_taskwire,
 } from './taskwire';
-import { parseSnapshot, type ProgressState, type WireObject } from './wire';
+import {
+  type Envelope,
+  type EnvelopeKind,
+  parseEnvelope,
+  parseProgress,
+  parseSnapshot,
+  type ProgressState,
+  serializeEnvelope,
+  serializeProgress,
+  WIRE_VERSION,
+  type WireObject,
+} from './wire';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -110,6 +123,32 @@ function summaryWire(token: string, options: EntryOptions = {}): WireObject {
   };
 }
 
+/**
+ * The body of a `progress` push, taken through the parser and the serializer so that the pushed
+ * document and the register row are provably the same document rather than two literals that drift.
+ */
+function progressBody(options: EntryOptions = {}): WireObject {
+  return serializeProgress(parseProgress(progressWire(options))) as WireObject;
+}
+
+/** A socket that never exists: a transport whose pushes the test writes. */
+class FakeTransport implements ClientTransport {
+  private listener: ((envelope: Envelope) => void) | null = null;
+
+  subscribe(onEnvelope: (envelope: Envelope) => void): () => void {
+    this.listener = onEnvelope;
+    return () => {
+      this.listener = null;
+    };
+  }
+
+  /** Through the same serialize/parse pair a real frame crosses, so no test can push a shape the
+   *  wire could not carry. */
+  push(token: string, rev: number, kind: EnvelopeKind, body: WireObject): void {
+    this.listener?.(parseEnvelope(serializeEnvelope({ v: WIRE_VERSION, token, rev, kind, body })));
+  }
+}
+
 class Server {
   readonly requests: Recorded[] = [];
 
@@ -121,6 +160,14 @@ class Server {
 
   /** A server that is down rather than empty: every read fails while this is set. */
   broken = false;
+
+  /**
+   * A read held open, so a test can make something happen while one is in flight.
+   *
+   * The payload is decided before the wait, which is the whole point: a read already on the wire
+   * was answered by the list as it stood when the request went out.
+   */
+  gate: Promise<void> | null = null;
 
   readonly http: AxiosInstance;
 
@@ -141,6 +188,7 @@ class Server {
           throw failure;
         }
         const reply = this.answer(url);
+        if (this.gate !== null) await this.gate;
         if (reply === null) {
           const error: any = new Error('Request failed with status code 404');
           error.isAxiosError = true;
@@ -669,5 +717,217 @@ describe('what the client refuses to do', () => {
     expect(merged).toHaveLength(2);
     expect(merged.find((entry) => entry.token === 't1')?.progress.percent).toBe(90);
     expect(aggregate(merged)?.data.total).toBe(2);
+  });
+});
+
+describe('the register poll while a transport carries the namespace (TW-TS-007)', () => {
+  it('stops asking while one is attached and healthy, and asks again the moment it is lost', async () => {
+    // The exclusivity is the whole point: in socket mode the network tab must show no register GET
+    // every five seconds, or the transport choice proves nothing. The health signal is the whole of
+    // what protects the store's truth while the ladder is suspended.
+    const token = new_token();
+    server.list(summaryWire(token));
+    await poll(2);
+    const before = server.polls(REGISTER_URL).length;
+    expect(before).toBeGreaterThan(0);
+
+    let health: ((healthy: boolean) => void) | null = null;
+    tw.attachTransport({
+      subscribe: () => () => undefined,
+      onHealth: (listener) => {
+        health = listener;
+        return () => {
+          health = null;
+        };
+      },
+    });
+    const report = health as unknown as (healthy: boolean) => void;
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(server.polls(REGISTER_URL)).toHaveLength(before);
+
+    // Back on the base rung rather than wherever the climb had reached: at the ceiling this window
+    // would hold no read at all, and the recovery this exists for would take five seconds to begin.
+    report(false);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(server.polls(REGISTER_URL)).toHaveLength(before + 1);
+
+    report(true);
+    const held = server.polls(REGISTER_URL).length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(server.polls(REGISTER_URL)).toHaveLength(held);
+  });
+
+  it('reads the list once when it starts under one, and then holds', async () => {
+    // A transport carries what CHANGES, and an operation already parked on an open question changes
+    // nothing until it ends: its `dialog.open` was published before this page connected, and the
+    // next envelope it sends is the terminal one. So a page that attached its socket before it first
+    // read `tw.register` would show no operation and no question at all for the life of that socket,
+    // which is the state TW-TS-009 exists to forbid - a question nobody can see is a worker nobody
+    // can free. The store is the truth and one read is the whole of it (TW-CORE-002).
+    const elsewhere = new_token();
+    server.list(summaryWire(elsewhere, { dialog: true }));
+
+    tw.attachTransport(new FakeTransport());
+    await poll(2);
+
+    expect(server.polls(REGISTER_URL)).toHaveLength(1);
+    expect(tokensOf(tw.register)).toEqual([elsewhere]);
+    expect(tw.register[0].dialog?.id).toBe(OPEN_DIALOG.id);
+    expect(tw.aggregate?.state).toBe('waiting_input');
+
+    // One read, not a resumed loop: every rung after the first is the ladder, and the ladder is
+    // what the attach stopped (TW-TS-007).
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(server.polls(REGISTER_URL)).toHaveLength(1);
+  });
+});
+
+describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
+  it('moves the entry, the aggregate and the selection with no read at all', async () => {
+    const token = new_token();
+    server.list(summaryWire(token, { percent: 10 }));
+    await poll(2);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    const reads = server.polls(REGISTER_URL).length;
+
+    socket.push(token, 2, 'progress', progressBody({ percent: 55 }));
+    expect(tw.register[0].progress?.percent).toBe(55);
+    expect(tw.selected?.token).toBe(token);
+    expect(tw.aggregate?.data.running).toBe(1);
+
+    // The aggregate and the order are recomputed from the payload's rows and never from the handles
+    // (TW-REG-016), so a push that moved only the handle would leave the footer showing whatever the
+    // last read said for as long as the socket stayed up.
+    socket.push(token, 3, 'dialog.open', OPEN_DIALOG);
+    expect(tw.register[0].dialog?.id).toBe(OPEN_DIALOG.id);
+    expect(tw.aggregate?.state).toBe('waiting_input');
+    expect(tw.aggregate?.data.waiting_input).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads);
+  });
+
+  it('a terminal push is a departure, and needs no read to be one (TW-REG-007)', async () => {
+    // The server drops a terminal entry in the same step that ends it, so the row has left every
+    // register there is and the envelope that announced the state announced the departure too.
+    const token = new_token();
+    server.list(summaryWire(token));
+    await poll(2);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    const reads = server.polls(REGISTER_URL).length;
+
+    socket.push(token, 4, 'progress', progressBody({ state: 'failed' }));
+    expect(tw.register).toEqual([]);
+    expect(tw.aggregate).toBeNull();
+    expect(tw.selected).toBeNull();
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads);
+  });
+
+  it('reads the register once for a burst of pushes it cannot place', async () => {
+    // A token no handle here knows is a membership change - something started in another tab. One
+    // read of the list answers it for the whole burst, and what appears on screen is the payload's
+    // row rather than anything synthesised out of an envelope.
+    const known = new_token();
+    server.list(summaryWire(known));
+    await poll(2);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    const reads = server.polls(REGISTER_URL).length;
+
+    const strangers = [new_token(), new_token(), new_token()];
+    server.list(summaryWire(known), ...strangers.map((token) => summaryWire(token, { percent: 42 })));
+    strangers.forEach((token) => socket.push(token, 2, 'progress', progressBody({ percent: 99 })));
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads + 1);
+    expect(tokensOf(tw.register)).toEqual([known, ...strangers]);
+    expect(tw.register[1].progress?.percent).toBe(42);
+
+    // And the ladder is still held afterwards: the read was the answer to a question, not a resumed
+    // loop (TW-TS-007).
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads + 1);
+  });
+
+  it('re-issues the read for a push that arrived while one was in flight', async () => {
+    // The read on the wire was issued before the envelope reached the client, so the list it brings
+    // back was written before the token it is being asked about. Dropping the request would leave
+    // that token out of the register until something else happened to push - and for one parked on
+    // a question, the next envelope is the terminal one, by which time it has departed anyway.
+    const known = new_token();
+    const stranger = new_token();
+    server.list(summaryWire(known));
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+
+    let release = (): void => undefined;
+    server.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    void tw.register;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.polls(REGISTER_URL)).toHaveLength(1);
+
+    // The stranger appears on the server and pushes, while the read that cannot see it is open.
+    server.list(summaryWire(known), summaryWire(stranger, { dialog: true }));
+    socket.push(stranger, 2, 'dialog.open', OPEN_DIALOG);
+
+    server.gate = null;
+    release();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(server.polls(REGISTER_URL)).toHaveLength(2);
+    // Attention first, and the whole row comes from the payload rather than from the envelope.
+    expect(tokensOf(tw.register)).toEqual([stranger, known]);
+    expect(tw.register[0].dialog?.id).toBe(OPEN_DIALOG.id);
+  });
+
+  it('a terminal push reaches the subscription of a token the register carries', async () => {
+    // The departure closes the handle this loop adopted, and the document being carried at that
+    // moment is the last one the token will ever have (TW-REG-007). What is left holding the token
+    // afterwards is the subscription, so it is the one that has to be told - over the ladder the
+    // same terminal document arrives as a read and closes it, and the two paths must not differ.
+    const token = new_token();
+    server.list(summaryWire(token, { percent: 40 }));
+    await poll(2);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+
+    const states: string[] = [];
+    let closed = 0;
+    const subscription = tw.subscribe(token);
+    subscription.onSnapshot((snapshot) => states.push(snapshot.progress.state));
+    subscription.onClose(() => {
+      closed += 1;
+    });
+
+    socket.push(token, 5, 'progress', progressBody({ percent: 60 }));
+    socket.push(token, 6, 'progress', progressBody({ state: 'failed' }));
+
+    expect(states).toEqual(['running', 'failed']);
+    expect(closed).toBe(1);
+    expect(subscription.snapshot?.progress.state).toBe('failed');
+    expect(tw.register).toEqual([]);
+  });
+
+  it('detaching unsubscribes: an envelope after it changes nothing', async () => {
+    const token = new_token();
+    server.list(summaryWire(token, { percent: 10 }));
+    await poll(2);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    tw.detachTransport();
+
+    socket.push(token, 2, 'progress', progressBody({ percent: 77 }));
+    expect(tw.register[0].progress?.percent).toBe(10);
   });
 });

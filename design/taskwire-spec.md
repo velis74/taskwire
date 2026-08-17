@@ -92,11 +92,18 @@ adapters to things outside the process, never a capability the core lacks.
   > whose delivery would require taskwire to know about actions, routing, model serialization and
   > per-command authorization, at which point it is the viewset layer with a progress bar bolted on.
   >
-  > It does **not** forbid taskwire's own calls travelling as muxws streams. Those are a closed set
-  > of six; `cancel` is already an envelope kind; and `watch` and `dialog.reply` are already
-  > client→server calls that originate on a stream and never travel as a push. Carrying `collect`,
-  > `dismiss` and the two reads the same way adds no vocabulary the specification does not already
-  > enumerate. A stricter reading of this rule once blocked that work; it should not again.
+  > It does **not** forbid taskwire's own calls travelling as muxws streams. Those are the closed
+  > set of six enumerated in TW-REST-004, and they travel as the viewset's own commands —
+  > `route_viewset` publishes the same six routes over muxws, and `fastapi_viewsets.mux_ws`
+  > dispatches an inbound command stream into them. No taskwire vocabulary is involved and no
+  > envelope kind is added: `{":method": "POST", ":path": "/taskwire/{token}/cancel"}` on a stream is
+  > the viewset layer addressing a resource, not taskwire growing a `command`. `watch` is the one
+  > call that remains taskwire's own stream kind, because it declares per-connection state held on
+  > the Peer and has no `{token}` to hang off (TW-WS-009).
+  >
+  > The line is the set, not the medium. taskwire may carry its own six over any transport it
+  > implements; it may not carry the application's `export` or `recalculate_balances` over any of
+  > them.
 - **TW-CORE-008** `snapshot` is not a seventh kind; it is the four pushed kinds bundled into one
   document and is spelled in `Envelope.kind` only because it arrives on the same path.
 - **TW-CORE-009** No `Envelope` MAY travel client to server. `dialog.reply` and `watch` originate
@@ -608,7 +615,9 @@ adapters to things outside the process, never a capability the core lacks.
 
 - **TW-WS-001** taskwire's required dependency on muxws MUST be exactly two calls:
   `peer.notify(payload)` and `PeerRegistry.peers_for(session=...)`. `open()`, `stream.send()` and
-  `stream.cancel()` MUST NOT be used on the delivery path.
+  `stream.cancel()` MUST NOT be used on the delivery path. The delivery path is server→client; a
+  client opening a stream to *call* the server is a caller, not a delivery, and `MuxwsCalls` reaches
+  `peer.open()` through fastapi-viewsets' proxy rather than through anything this rule governs.
 - **TW-WS-002** taskwire MUST NOT depend on muxws's frame format, stream id space or `Codec`
   selection.
 - **TW-WS-003** `MuxwsTransport.notify()` MUST call `peer.notify(envelope)` once per namespace peer —
@@ -620,13 +629,48 @@ adapters to things outside the process, never a capability the core lacks.
   or store one.
 - **TW-WS-006** Reconnect MUST NOT resume streams and MUST NOT restore anything except by the
   client's next register read.
-- **TW-WS-007** If a socket form of `dialog.reply` is shipped, its handler MUST derive the session
-  with the same `session_resolver` semantics as REST, not from a value cached at handshake time; and
-  a peer whose session tag no longer matches the current identity MUST be closed with `goaway`
-  rather than reused. Both rules apply equally to the `watch` handler.
-- **TW-WS-008** The socket form of `dialog.reply` MUST be optional and off by default. REST MUST be
-  the recommended reply path.
+- **TW-WS-007** Every call arriving on a socket MUST derive the session with the same
+  `session_resolver` semantics as REST, never from a value cached at handshake time; and a peer whose
+  session tag no longer matches the current identity MUST be closed with `goaway` rather than reused
+  (`goaway_if_stale`). The session tag exists to address the peer for fan-out (`peers_for`) and MUST
+  NOT be read as an authorization decision on the way in.
+
+  > **How it holds.** The six calls of TW-REST-004 reach the same context processor on a stream as
+  > on a request: `fastapi_viewsets.mux_ws.process_command` builds a synthetic ASGI request whose
+  > baseline headers are the WebSocket handshake's own, with the stream's headers winning over them,
+  > so `session_resolver` reads the same cookie or `Authorization` header either way and
+  > `X-Taskwire-Connection` arrives when the client states it. Nothing in taskwire branches on how a
+  > call arrived, and nothing may. `watch` is the one handler taskwire writes itself, and it derives
+  > the session the same way rather than reading a namespace off the message.
+- **TW-WS-008** A dialog reply travelling the socket MUST travel as the viewset action it is —
+  `POST {prefix}/{token}/dialogs/{did}` dispatched from a command stream — and MUST reach the same
+  `taskwire.rest` handler REST reaches, so first-answer-wins (TW-DLG-009) is decided in one place
+  regardless of which way the answer arrived. REST MUST remain the default reply path: it is the one
+  that works with no socket at all.
+
+  > **Amended.** This rule previously required the socket form to be a taskwire stream kind that was
+  > optional and off by default (`serve_peer(..., allow_socket_replies=True)`). There is no such
+  > kind and no such flag: the reply is one of the six, published over muxws by the same
+  > `route_viewset` call that publishes it over REST, and a per-call opt-in on the server would
+  > single out one of six routes for a switch the other five do not have.
+  >
+  > What "off by default" protected is now the client's, where the choice actually belongs and is
+  > one call: `useCalls()` decides which transport the six calls take, and REST is what a client
+  > uses until it says otherwise.
 - **TW-WS-009** `watch` MUST have no polling counterpart and needs none.
+- **TW-WS-010** taskwire MUST NOT install the peer's stream handler. A `Peer` has exactly one
+  `on_stream` slot; `register_taskwire_muxws(peer, session)` **returns** its handler and the
+  application composes it behind `fastapi_viewsets.mux_ws.process_command`, which returns `False`
+  having sent nothing when the stream is not a viewset command. A library that took the slot would
+  lock the application out of its own socket. Test:
+  `contrib/muxws_test.py::test_taskwire_leaves_the_peers_single_handler_slot_to_the_application`.
+- **TW-WS-011** Mounting the socket half MUST be **one call per connection**
+  (`register_taskwire_muxws`), the counterpart of `register_taskwire_rest(router)`. It tags the peer
+  and subscribes the process to `twx:{ns}` (TW-BP-004); the application registers the peer and serves
+  it. The tag MUST be set before `PeerRegistry.register`, which indexes a peer under the tags it
+  holds at that instant (WSM-REG-010) — a peer registered untagged is indexed under nothing, receives
+  no push, and looks correct from every other angle. `release_peer` MUST `deregister` the peer and
+  unsubscribe once the process holds no more sockets of that namespace.
 
 ### 2.15 The Redis backplane and reader (`TW-BP-*`)
 
@@ -680,6 +724,12 @@ adapters to things outside the process, never a capability the core lacks.
   | `POST {prefix}/{token}/collect` | `204` result released | `404` unknown token; `409` no uncollected result |
   | `POST {prefix}/{token}/dismiss` | `204` (idempotent) | `404` unknown token; `409` not releasable |
 
+  > **Scope clarified.** These six are the whole request/response surface, and they are the surface
+  > on **every** transport that carries one: `route_viewset` publishes the same six routes over REST
+  > and over muxws from one `register_taskwire_rest(router)` call, with the same validation, the same
+  > middleware chain and the same response models. A client speaking only WebSocket therefore reaches
+  > exactly what a client speaking only HTTP reaches, and there is no second implementation to keep
+  > in step. `register_muxws=False` publishes REST alone; nothing else about the two differs.
 - **TW-REST-005** No endpoint MAY create a token. An unclaimed token MUST simply be unknown.
 - **TW-REST-006** The token handler MUST reject any token that is not a well-formed UUID before
   touching the store, so scanning the token space costs the caller a round trip and the server
@@ -1489,8 +1539,32 @@ function use_register(): { entries: Ref<Operation<unknown>[]>; aggregate: Ref<Ag
   not keys, routing, dedup or removal — MAY depend on `streamId`.
 - **TW-TS-006** The pending dialog MUST hang on its own entry. There MUST be no global `tw.dialog`
   slot, no dialog queue and no policy for "a second question while the first is open".
-- **TW-TS-007** `subscribe()` MUST keep polling at the ceiling interval even with a transport
-  attached. A push resets the poll timer and delivers early.
+- **TW-TS-007** The polling ladder MUST be **suspended** while a transport is attached and healthy,
+  and MUST resume on detach or on loss of the transport, from the **base** rung. A transport that is
+  already unhealthy when it is attached MUST leave the ladder running. This covers every ladder the
+  client owns — the register's and each token's — and a poller created while a healthy transport is
+  attached MUST be born suspended.
+
+  What is suspended is the **ladder**, not the first read. Every loop the client owns MUST issue one
+  read when it starts, attached or not: a transport carries what *changes*, so it can say nothing
+  about the state a namespace or a token was already in — an operation parked on an open question
+  emits nothing between its `dialog.open` and its terminal envelope, and a client that never read
+  would show neither (TW-CORE-002, TW-TS-009). Tests: `client.spec.ts`, `register.spec.ts`.
+
+  > **Amended.** This rule previously required the ladder to keep running at the ceiling interval
+  > with a transport attached, so that a socket which died without saying so cost at most one
+  > ceiling interval. The socket now carries the client's calls as well as the server's pushes
+  > (TW-CORE-007), which makes the two mechanisms alternatives rather than layers: a client polling
+  > beside its own socket issues a request per tab per tick that answers a question the socket
+  > already answered, and no deployment can demonstrate that it is on the socket at all.
+  >
+  > **The recovery guarantee is unchanged and is now explicit.** Loss is reported, not inferred:
+  > `ClientTransport.onHealth` reports `false` on close and on a peer that is already down, and the
+  > ladder resumes on its base rung — 400 ms, not the ceiling — so the worst case after a socket
+  > dies is one base interval, better than the ceiling interval the old rule tolerated. A transport
+  > that does not implement `onHealth` counts as healthy for as long as it is attached, so
+  > `detachTransport()` is the only way back to the ladder for it — one call, and a transport
+  > written without the signal keeps working.
 - **TW-TS-008** The handoff MUST be reactive collections of `Operation` handles, not a
   `show(operation)` callback. Change subscriptions exist for non-reactive consumers and are not the
   documented default.

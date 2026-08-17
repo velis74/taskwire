@@ -14,17 +14,17 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `docs/` | the user-facing VitePress site, and only that |
 | `demo/` + `demo.py` | the one demo. A consumer of taskwire, not part of it |
 | `conformance/wire/` | 28 JSON fixtures read in place by **both** pytest and vitest |
-| `GAPS.md` | decisions taken without the author; 6 still OPEN |
+| `GAPS.md` | decisions taken without the author; 7 still OPEN |
 
 ```bash
-/home/jure/.venv/backchannel/bin/python -m pytest -q     # 282 pass, 13 skip
-npx vitest run                                            # 350 pass
-/home/jure/.venv/backchannel/bin/python -m ruff check taskwire/ demo/ demo.py
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 258 pass, 10 skip
+npx vitest run                                            # 372 pass
+/home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npx eslint ts --fix && npx vue-tsc --noEmit
 python demo.py                                            # both halves, Ctrl-C stops the pair
 ```
 
-Python venv is at `/home/jure/.venv/backchannel/bin/python` — not `.venv` in the repo.
+Python venv is at `/home/jure/.venv/taskwire/bin/python` — not `.venv` in the repo.
 
 ## The architecture, in one paragraph
 
@@ -34,6 +34,12 @@ TypeScript also ships the operating half (`ts/store.ts`, `ts/reporter.ts`, `ts/o
 so a browser-only program is a first-class deployment. `taskwire/rest.py` holds every REST decision
 and imports no framework; the adapters do nothing but translate. That is what let the REST transport
 move onto fastapi-viewsets without touching a decision.
+
+**The two transports share one surface.** `register_taskwire_rest(router)` publishes the six calls of
+TW-REST-004 over REST *and* over muxws — one `route_viewset`, one validation chain, no second
+implementation. What `taskwire/contrib/muxws.py` owns is the push direction plus `watch`, the one
+call with no `{token}` to hang off. On the client, `ts/calls.ts` is the interface those six speak
+through, and `attachMuxws` swaps the implementation under it.
 
 **The workflow**: the front end mints a token and sends it with its own command
 (`X-Taskwire-Token`); the server writes `queued` and hands off; the job reports under that token;
@@ -81,14 +87,18 @@ Two traps found in it, worth remembering:
 
 Milestones M0–M9 are implemented in both languages. RedisStore passes the exported conformance suite
 against a real Redis. The REST path is verified end to end through a real ASGI stack, and the demo
-runs live under uvicorn + Vite.
+runs live under uvicorn + Vite, over either transport — it offers the choice and switches at runtime,
+which is what makes the exclusivity visible in the network tab.
+
+Both halves of the socket are one call each: `register_taskwire_muxws(peer, ns)` on the server, which
+returns a handler the application composes behind `process_command` rather than taking the peer's
+single handler slot, and `attachMuxws(tw, peer)` in the browser, which takes the pushes and moves the
+six calls onto the socket.
 
 **Next, in order** — the detail is in `NEXT.md`:
 
-1. Carry the full API surface over muxws streams, plus one registration function.
-2. Give the TS client a runtime transport choice that suspends polling when a socket is attached.
-3. Amend the remaining spec rules and the user docs (partly done — see `NEXT.md` for what is left).
+1. `wrap_sync_runner` (TW-CELERY-007) — the last hook fastapi-viewsets is owed.
+2. CI and publishing.
 
-**The one seam that has never run**: a real WebSocket with both ends live. Every socket test on both
-sides uses fakes; `serve_peer` and `attachMuxws` have never run together; the `origin_connection`
-round trip is untested; the Vuetify components have never been mounted.
+**The seams that have never run**: the `origin_connection` round trip, and the Vuetify components,
+which have never been mounted.

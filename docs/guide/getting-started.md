@@ -112,3 +112,4 @@ which is the point: a user who starts an import in one tab and switches to anoth
 - [Collectable results](./results.md) — parking something for the user to take.
 - [Several operations](./several-operations.md) — the register, the aggregate, the footer.
 - [Transports](./transports.md) — one protocol, three implementations.
+- [The WebSocket transport](./websockets.md) — one endpoint, one call, and polling stops.

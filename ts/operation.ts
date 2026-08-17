@@ -381,8 +381,29 @@ export class Operation<T> implements PromiseLike<T> {
     // means only "do not touch progress". A `dialog.open` overtaken by a later progress commit must
     // still be applied, or the question never appears (TW-INV-004).
     if (snapshot.dialogs !== undefined) this.#dialogs = [...snapshot.dialogs];
+    // A terminal state withdraws every question the operation still holds (TW-CANCEL-011), and the
+    // terminal document is the ONLY announcement that it did: the withdrawal publishes no
+    // `dialog.close` - that envelope is written on the answered path alone - so a handle waiting for
+    // one would hold an open question forever and the application drawing it would leave a modal on
+    // screen with no operation behind it. It sits here rather than on the push route because a
+    // terminal state read by a poll is the same event and must have the same consequence
+    // (TW-DLG-016).
+    if (isTerminal(snapshot.progress)) this.#withdrawOpenDialogs();
     this.#notify();
     return true;
+  }
+
+  /**
+   * Settle every still-open question to `cancelled`, which is the state the store's own withdrawal
+   * writes - so the read that follows finds the two already agreeing rather than correcting one.
+   *
+   * Only the open ones move: a dialog that has left `open` never goes backwards (TW-REV-007), and
+   * one already `answered` when the operation ended was answered.
+   */
+  #withdrawOpenDialogs(): void {
+    this.#dialogs = this.#dialogs.map((dialog) =>
+      dialog.state === 'open' ? { ...dialog, state: 'cancelled' as const } : dialog,
+    );
   }
 
   /**

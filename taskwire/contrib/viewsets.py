@@ -1,4 +1,4 @@
-"""The REST implementation of the protocol, as a `fastapi-viewsets` ViewSet.
+"""The request/response half of the protocol, as a `fastapi-viewsets` ViewSet.
 
 Imports FastAPI and fastapi-viewsets; nothing in `taskwire/` outside `contrib` may (TW-CORE-006).
 
@@ -15,9 +15,10 @@ One call, and the whole REST surface exists::
     app.include_router(router)
 
 That call registers the context processor taskwire needs, applies `@route_viewset` and mounts six
-endpoints. There is deliberately nothing else to wire: an application that has to remember a second
-call is an application where somebody eventually forgets it, and the failure would be a progress bar
-that never moves with nothing logged.
+endpoints - **on REST and on muxws both**, since `route_viewset` publishes a viewset on the two
+transports at once. There is deliberately nothing else to wire: an application that has to remember a
+second call is an application where somebody eventually forgets it, and the failure would be a
+progress bar that never moves with nothing logged.
 
 ## Why a viewset rather than a hand-rolled router
 
@@ -229,14 +230,36 @@ class TaskwireViewSet:
 _registered: set[int] = set()
 
 
-def register_taskwire_rest(router: APIRouter, base_path: str | None = None) -> type[TaskwireViewSet]:
-    """Mount the whole REST transport on `router`. The only call an application makes.
+def register_taskwire_rest(
+    router: APIRouter,
+    base_path: str | None = None,
+    *,
+    register_muxws: bool | None = None,
+) -> type[TaskwireViewSet]:
+    """Mount the whole request/response surface on `router`. The only call an application makes.
 
     ```python
     router = APIRouter()
     register_taskwire_rest(router)
     app.include_router(router)
     ```
+
+    **The same six endpoints answer over both transports.** `route_viewset` publishes them on REST
+    and - through `fastapi_viewsets.mux_ws` - on muxws, where `process_command` dispatches a stream
+    into the identical routes with the identical validation, middleware chain and response models.
+    A client speaking only WebSocket therefore reaches exactly the surface a client speaking only
+    HTTP does, and there is no second implementation to keep in step.
+
+    `register_muxws` decides whether the muxws half is published: `None` defers to
+    `settings.viewsets_register_muxws` (True unless the application says otherwise), and `False`
+    leaves a deployment with REST alone. It is the only knob, because the two transports differ in
+    nothing else.
+
+    The context processor is **transport-blind**. `process_command` supplies the WebSocket
+    handshake's own headers as the baseline for every command, so `session_resolver` reads the same
+    cookie or `Authorization` header on a stream that it reads on a request, and `CONNECTION_HEADER`
+    arrives the same way - stated on the stream when the client states it. Nothing here branches on
+    how the call arrived, and nothing may.
 
     Idempotent per router: calling it twice mounts one copy, because `route_viewset` registers
     routes as a side effect and a doubly-mounted viewset answers every request twice through two
@@ -253,4 +276,5 @@ def register_taskwire_rest(router: APIRouter, base_path: str | None = None) -> t
         router,
         base_path if base_path is not None else settings.rest_prefix,
         pk_field_name="token",
+        register_muxws=register_muxws,
     )(TaskwireViewSet)

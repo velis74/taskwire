@@ -287,22 +287,19 @@ async def test_serving_a_socket_subscribes_this_process_to_that_namespace(redis_
     polling covers for it well enough that the deployment looks fine - which is the worst shape a
     bug can have.
 
-    `serve_peer` is where a process learns it holds a connection, so that is where the subscription
-    happens.
+    `register_taskwire_muxws` is where a process learns it holds a connection, so that is where the
+    subscription happens.
     """
     import asyncio
 
     import taskwire
 
-    from taskwire.contrib.muxws import serve_peer, tag_peer
+    from taskwire.contrib.muxws import register_taskwire_muxws
     from taskwire.models import Envelope, EnvelopeKind
 
     class Peer:
         def __init__(self) -> None:
             self.tags: dict = {}
-
-        def on_stream(self, handler) -> None:  # noqa: ARG002
-            self.handler = handler
 
     received: list = []
 
@@ -315,8 +312,7 @@ async def test_serving_a_socket_subscribes_this_process_to_that_namespace(redis_
     await taskwire.start_taskwire_reader()
     try:
         peer = Peer()
-        tag_peer(peer, "acct-42")
-        await serve_peer(peer, "acct-42")
+        await register_taskwire_muxws(peer, "acct-42")
         await asyncio.sleep(0.2)  # let the subscription land
 
         writer = RedisStore(redis_url)

@@ -293,3 +293,111 @@ def test_the_schema_endpoint_describes_every_action(http: TestClient) -> None:
     # (TW-CORE-007), and progress is written by the operation and by nothing else (TW-PROG-012).
     assert "post" not in paths["/taskwire"]
     assert set(paths["/taskwire/{token}"]) == {"get"}
+
+
+# ------------------------------------------------------------------ the same six over muxws
+
+
+class CommandStream:
+    """A muxws `Stream` reduced to what `process_command` touches: inbound headers, and a reply."""
+
+    def __init__(self, headers: dict[str, Any]) -> None:
+        self.headers = headers
+        self.payload: Any = None
+        self.reply_headers: dict[str, Any] = {}
+
+    async def reply(self, payload: Any, *, headers: dict[str, Any] | None = None, **_kwargs) -> None:
+        self.payload = payload
+        self.reply_headers = headers or {}
+
+    @property
+    def status(self) -> int:
+        from fastapi_viewsets.mux_ws import STATUS_KEY
+
+        return self.reply_headers[STATUS_KEY]
+
+
+def command(method: str, path: str, *, body: Any = None, user: str = "alice") -> CommandStream:
+    """One inbound command stream, through the real `process_command`.
+
+    `connection=None` because there is no handshake here; the stream states the header itself, which
+    is the layer that wins over the handshake anyway.
+    """
+    from fastapi_viewsets.mux_ws import METHOD_KEY, PATH_KEY, process_command
+
+    stream = CommandStream({METHOD_KEY: method, PATH_KEY: path, USER_HEADER.lower(): user})
+    assert run(process_command(body, stream)) is True, "the stream was not recognised as a command"
+    return stream
+
+
+def test_the_same_six_endpoints_answer_over_a_muxws_stream(http: TestClient) -> None:
+    """One registration, two transports: `route_viewset` publishes the viewset on muxws as well.
+
+    This is the whole reason there is no second implementation of the request/response half. A
+    command stream reaches the identical routes, so validation, the middleware chain, the context
+    processor and the response models are the same objects - not the same intent.
+
+    The `http` fixture is what performs the registration; the calls below go nowhere near it.
+    """
+    token = http.post("/start", headers=HEADERS).json()["token"]
+
+    listing = command("GET", "/taskwire")
+    assert listing.status == 200
+    assert [row["token"] for row in listing.payload["operations"]] == [token]
+    assert listing.payload["poll_after_ms"] > 0
+
+    snapshot = command("GET", f"/taskwire/{token}")
+    assert snapshot.status == 200
+    assert snapshot.payload["progress"]["state"] == "queued"
+
+    cancelled = command("POST", f"/taskwire/{token}/cancel")
+    assert cancelled.status == 202, "TW-CANCEL-003 holds on whichever transport asked"
+    assert command("GET", f"/taskwire/{token}").payload["cancel_requested"] is True
+
+
+def test_the_namespace_over_a_stream_is_the_one_the_resolver_returns(http: TestClient) -> None:
+    """TW-SEC-003: the context processor is transport-blind, and that is what carries the boundary.
+
+    `process_command` hands the handshake's headers on as the baseline for every command, so
+    `session_resolver` decides a stream's namespace exactly as it decides a request's. A token
+    belonging to somebody else answers 404 and never 403 (TW-SEC-002) here too - a socket must not
+    be the oracle the REST endpoint refuses to be.
+    """
+    token = http.post("/start", headers={USER_HEADER: "alice"}).json()["token"]
+
+    assert command("GET", f"/taskwire/{token}", user="alice").status == 200
+    assert command("GET", f"/taskwire/{token}", user="bob").status == 404
+    assert command("GET", "/taskwire", user="bob").payload["operations"] == []
+
+
+def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
+    http: TestClient,
+    store: taskwire.MemoryStore,
+) -> None:
+    """The reply is `POST {token}/dialogs/{did}`, on this transport as on the other.
+
+    There is no bespoke stream kind for it: it is one of the six, it carries a body, and the store
+    is still the single arbiter (TW-STORE-003, TW-DLG-011). A WS-only client therefore answers
+    questions without a REST endpoint in reach, which is what makes the socket a complete transport
+    rather than an accelerator with a hole in it.
+    """
+    token = http.post("/start", headers=HEADERS).json()["token"]
+    key = taskwire.key("ns:alice", token)
+    run(
+        store.put_dialog(
+            key,
+            taskwire.DialogRequest(
+                id="ask-1",
+                dialog_id="acme.overwrite",
+                buttons=[taskwire.Button(id="yes"), taskwire.Button(id="no")],
+            ),
+            3600,
+        )
+    )
+
+    answered = command("POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "yes", "values": {}})
+    assert answered.status == 204
+    assert answered.payload is None, "204 carries no body over a stream either"
+
+    second = command("POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
+    assert second.status == 409, "the store arbitrated, and the second answer lost"

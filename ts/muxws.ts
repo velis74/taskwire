@@ -17,17 +17,17 @@
  *
  * - **pushes down**: `progress`, `dialog.open`, `dialog.close` and `cancel` arrive when they happen,
  *   not when somebody next asks. A question reaches every tab of the namespace in one hop;
- * - **calls up**: `watch` declares this connection's override map and gets the connection id back
- *   (TW-DEL-022), and - optionally, off by default - a `dialog.reply` may travel the same way
- *   (TW-WS-008).
+ * - **calls up**: all six calls of TW-REST-004 travel a stream each (`MuxwsCalls`), and `watch`
+ *   declares this connection's override map and gets the connection id back (TW-DEL-022).
  *
  * ## And why it changes nothing else
  *
- * Attaching this is additive (TW-TR-006, TW-DEL-011). **The store is still the truth**: every state
- * change was written before any envelope left the server, so a dropped, coalesced or suppressed
- * push cannot change what the next read returns (TW-CORE-002). The polling ladder keeps running
- * underneath at its ceiling as a heartbeat and never stops (TW-TS-007) - which is what makes a
- * socket safe to attach, safe to lose, and safe to detach again.
+ * **The store is still the truth** (TW-DEL-011): every state change was written before any envelope
+ * left the server, so a dropped, coalesced or suppressed push cannot change what the next read
+ * returns (TW-CORE-002). Attaching this **suspends** the polling ladder and losing it resumes the
+ * ladder on its base rung (TW-TS-007), so the wire carries one mechanism at a time and the recovery
+ * is one read - which is what makes a socket safe to attach, safe to lose, and safe to detach
+ * again.
  *
  * Reconnect restores **nothing** (TW-WS-006, TW-REG-020). The client re-reads the register and that
  * is the whole of the recovery; it does not replay streams and it does not re-declare the overrides
@@ -36,10 +36,12 @@
  * state the new socket already has.
  */
 
+import { type MuxwsPeerSource, MuxwsProxyImpl } from '@dynamicforms/fastapi-viewsets';
 import type { Peer } from 'muxws';
 
-import type { ClientTransport } from './taskwire';
-import { type Envelope, parseEnvelope } from './wire';
+import type { TaskwireCalls } from './calls';
+import { type ClientTransport, DEFAULT_BASE_PATH } from './taskwire';
+import { type Envelope, parseEnvelope, type Snapshot } from './wire';
 
 /** What a `watch` declaration is answered with (TW-DEL-022). */
 export interface WatchReply {
@@ -91,6 +93,9 @@ export class MuxwsClientTransport implements ClientTransport {
 
   private connectionId: string | null = null;
 
+  /** Who is told when this socket dies and when a new one is established under it (TW-TS-007). */
+  private readonly healthListeners = new Set<(healthy: boolean) => void>();
+
   constructor(options: MuxwsClientOptions) {
     this.peer = options.peer;
     this.onEnvelope = options.onEnvelope ?? null;
@@ -100,6 +105,12 @@ export class MuxwsClientTransport implements ClientTransport {
     this.peer.onStream((payload) => {
       this.deliver(payload);
     });
+
+    // muxws reports both ends of a loss - `onClose` when a socket dies, `onReconnect` once a new one
+    // is established and its identity accepted - and neither handler can be taken off again. So they
+    // are installed once here and `onHealth` fans out to listeners that can come and go.
+    this.peer.onClose(() => this.reportHealth(false));
+    this.peer.onReconnect(() => this.reportHealth(true));
   }
 
   /** Attach a consumer after construction - what `attachTransport()` does. */
@@ -110,14 +121,36 @@ export class MuxwsClientTransport implements ClientTransport {
     };
   }
 
+  /**
+   * Report the socket's health, so the client knows when to poll again (TW-TS-007).
+   *
+   * A reconnect is a health signal and nothing more: it restores no stream, replays nothing and
+   * re-declares no override map (TW-WS-006, TW-REG-020). What comes back with it is the ability to
+   * push, and the client's own recovery is a read.
+   */
+  onHealth(listener: (healthy: boolean) => void): () => void {
+    this.healthListeners.add(listener);
+    // A peer that is already down when the listener arrives has no event left to fire: the loss was
+    // reported before taskwire was watching, and a client that read silence as health would sit
+    // suspended over a dead socket for as long as the page lived.
+    if (!this.peer.isOpen) listener(false);
+    return () => {
+      this.healthListeners.delete(listener);
+    };
+  }
+
+  private reportHealth(healthy: boolean): void {
+    [...this.healthListeners].forEach((listener) => listener(healthy));
+  }
+
   private deliver(payload: unknown): void {
     if (this.onEnvelope === null) return;
     try {
       this.onEnvelope(parseEnvelope(payload));
     } catch {
       // An unparseable push is a dropped push and nothing more (TW-CORE-002). The store is the
-      // truth and the polling ladder is still running underneath, so the next read corrects it -
-      // throwing here would take out the socket over one bad frame.
+      // truth, so no state depends on this frame arriving and the next read of the token corrects
+      // it - while throwing here would take out the socket over one bad frame.
     }
   }
 
@@ -183,7 +216,73 @@ export class MuxwsClientTransport implements ClientTransport {
 }
 
 /**
- * Attach a muxws peer to a taskwire client.
+ * The six calls of TW-REST-004 over one muxws stream each (TW-WS-003).
+ *
+ * `MuxwsProxyImpl` addresses a viewset action the way HTTP/2 does - `:method` and `:path` in the
+ * stream's opening headers - and the server hands the stream to the **same `TaskwireViewSet`** the
+ * REST router mounts. So there is no second routing table, no second set of status codes and no
+ * second place a decision could be made differently; a failure even arrives in axios' own shape,
+ * which is what lets the client keep one rule for a `404` (TW-TS-004).
+ *
+ * The proxy's CRUD half is unused and both reads are written out below instead. taskwire is not a
+ * collection of one type: `list` answers a `Register` while `retrieve` answers a `Snapshot`, and no
+ * generic surface covers both - the same reason `TaskwireViewSet` declares its own routes rather
+ * than inheriting the mixins.
+ */
+export class MuxwsCalls extends MuxwsProxyImpl<string, Snapshot, 'token'> implements TaskwireCalls {
+  constructor(options: { peer: MuxwsPeerSource; basePath?: string }) {
+    super({
+      peer: options.peer,
+      basePath: options.basePath ?? DEFAULT_BASE_PATH,
+      // The token is the pk, and there is no other key anywhere in the system (TW-KEY-001).
+      pkFieldName: 'token',
+    });
+  }
+
+  register(): Promise<unknown> {
+    return this.request('GET', '');
+  }
+
+  snapshot(token: string): Promise<unknown> {
+    return this.request('GET', `/${token}`);
+  }
+
+  cancel(token: string): Promise<void> {
+    return this.request('POST', `/${token}/cancel`);
+  }
+
+  collect(token: string): Promise<void> {
+    return this.request('POST', `/${token}/collect`);
+  }
+
+  dismiss(token: string): Promise<void> {
+    return this.request('POST', `/${token}/dismiss`);
+  }
+
+  replyToDialog(token: string, did: string, button: string, values: Record<string, unknown> = {}): Promise<void> {
+    return this.request('POST', `/${token}/dialogs/${did}`, { body: { button, values } });
+  }
+}
+
+/** What `attachMuxws` needs of a client. `Taskwire` is the only thing that satisfies it. */
+export interface MuxwsAttachable {
+  attachTransport(transport: ClientTransport): void;
+  useCalls?(calls: TaskwireCalls | null): void;
+  readonly basePath?: string;
+}
+
+export interface AttachMuxwsOptions {
+  /**
+   * Whether the six calls travel the socket too. Default `true`: a client whose pushes arrive on a
+   * socket while its reads go out over HTTP is paying for two wires to learn one thing.
+   */
+  routeCalls?: boolean;
+  /** The prefix the viewset is mounted under, when it is not the client's own (TW-REST-003). */
+  basePath?: string;
+}
+
+/**
+ * Attach a muxws peer to a taskwire client: pushes down, and the six calls up the same connection.
  *
  * ```ts
  * import { connect } from 'muxws';
@@ -196,15 +295,25 @@ export class MuxwsClientTransport implements ClientTransport {
  * await socket.announce();          // obtain this socket's connection id
  * ```
  *
- * Everything keeps working if this line is deleted. That is the test of the layering, not a
- * consolation: the polling ladder was already running and continues to, the register still answers,
- * and only the latency changes.
+ * Everything keeps working if this line is deleted, and that is the test of the layering rather
+ * than a consolation: the register still answers and the polling ladder is what carries a client
+ * with no socket - or one whose socket has just died (TW-TS-007).
  */
 export function attachMuxws(
-  client: { attachTransport(transport: ClientTransport): void },
+  client: MuxwsAttachable,
   peer: Peer,
+  options: AttachMuxwsOptions = {},
 ): MuxwsClientTransport {
+  if (options.routeCalls !== false) {
+    client.useCalls?.(new MuxwsCalls({ peer, basePath: options.basePath ?? client.basePath }));
+  }
   const transport = new MuxwsClientTransport({ peer });
   client.attachTransport(transport);
   return transport;
+}
+
+/** Put the six calls back on HTTP and the polling ladder back on its rungs (TW-TS-007). */
+export function detachMuxws(client: MuxwsAttachable & { detachTransport(): void }): void {
+  client.useCalls?.(null);
+  client.detachTransport();
 }

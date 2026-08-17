@@ -2,10 +2,10 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { aggregate, AGGREGATE_TITLE_KEY, entryState, isActiveEntry, selectFifo } from './aggregate';
+import type { TaskwireCalls } from './calls';
 import { Operation } from './operation';
 import { RegisterState, type RegisterClient, type UiPolicy } from './register';
 import {
@@ -96,15 +96,21 @@ function entry(options: EntryOptions = {}): Snapshot {
 // ---------------------------------------------------------------------------------------------
 
 class StubClient implements RegisterClient {
-  readonly basePath = '/taskwire';
-
   payload: Register = parseRegister(fixture('register-empty-null-aggregate'));
 
   private readonly handles = new Map<string, Operation<unknown>>();
 
-  readonly http = {
-    get: async (): Promise<{ data: unknown }> => ({ data: serializeRegister(this.payload) }),
-  } as unknown as AxiosInstance;
+  /** The six calls, of which the register loop makes exactly one. */
+  readonly calls: TaskwireCalls = {
+    register: async () => serializeRegister(this.payload),
+    snapshot: async () => {
+      throw new Error('the register loop never reads a single token (TW-REG-002)');
+    },
+    cancel: async () => undefined,
+    collect: async () => undefined,
+    dismiss: async () => undefined,
+    replyToDialog: async () => undefined,
+  };
 
   /** Feed the loop a set of snapshots without a server. */
   setEntries(snapshots: Snapshot[]): void {

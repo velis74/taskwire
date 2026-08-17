@@ -429,83 +429,102 @@ async def test_a_suppressed_operation_stays_in_the_register_in_full() -> None:
 
 
 class FakeStream:
-    """A muxws `Stream` reduced to the one call this handler makes."""
+    """A muxws `Stream` reduced to the one call this handler makes. `reply` is a coroutine, as the
+    real one is - a handler that forgot to await it would leave the stream open forever."""
 
     def __init__(self) -> None:
         self.replies: list = []
 
-    def reply(self, payload, **_kwargs) -> None:
+    async def reply(self, payload, **_kwargs) -> None:
         self.replies.append(payload)
 
 
 class ServingPeer(FakePeer):
-    """A peer that remembers its stream handler, so a test can drive one through it."""
+    """A peer with the handshake-path calls: `close`, and the single `on_stream` slot.
+
+    The slot records rather than accepts, because the assertion that matters is that taskwire never
+    takes it.
+    """
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
-        self.handler = None
+        self.id = name  # `PeerRegistry` sorts its answers by it
+        self.installed: list = []
         self.closed_with: list = []
 
     def on_stream(self, handler) -> None:
-        self.handler = handler
+        self.installed.append(handler)
+
+    def on_close(self, handler) -> None:
+        """`PeerRegistry.register` hooks this to prune the index when the socket dies."""
+        self.on_close_handler = handler
 
     async def close(self, **kwargs) -> None:
         self.closed_with.append(kwargs)
 
-    async def deliver(self, payload) -> FakeStream:
-        stream = FakeStream()
-        await self.handler(payload, stream)
-        return stream
+
+async def deliver(handler, payload) -> FakeStream:
+    """Drive one inbound stream through the handler taskwire returned."""
+    stream = FakeStream()
+    await handler(payload, stream)
+    return stream
 
 
 async def test_the_socket_carries_watch_up_and_answers_it():
     """Without this handler the socket is half a socket.
 
-    Envelopes push down, but the client's calls back up reach nothing - and `watch` is one of those.
-    A client that cannot `watch` never obtains a connection id, so `origin_connection` stays null, a
-    private operation's progress reaches no socket (TW-PRIV-003), and muting silently does nothing.
+    Envelopes push down, but `watch` reaches nothing. A client that cannot `watch` never obtains a
+    connection id, so `origin_connection` stays null, a private operation's progress reaches no
+    socket (TW-PRIV-003), and muting silently does nothing.
     """
-    from taskwire.contrib.muxws import serve_peer
+    from taskwire.contrib.muxws import register_taskwire_muxws
     from taskwire.delivery import overrides_of
 
     peer = ServingPeer("p")
-    tag_peer(peer, "acct-42")
-    await serve_peer(peer, "acct-42")
+    taskwire_stream = await register_taskwire_muxws(peer, "acct-42")
 
-    reply = (await peer.deliver({"kind": "watch", "overrides": {"tok": False}})).replies[0]
+    assert peer.tags[SESSION_TAG] == "acct-42", "one call tags the peer as well"
+
+    reply = (await deliver(taskwire_stream, {"kind": "watch", "overrides": {"tok": False}})).replies[0]
     assert reply["status"] == 0
     assert isinstance(reply["connection"], str), "the connection id comes back over the socket"
     assert overrides_of(peer) == {"tok": False}, "and the declaration reached the peer's own map"
 
 
-async def test_socket_dialog_replies_are_off_by_default():
-    """TW-WS-008: optional, and off by default.
+async def test_taskwire_leaves_the_peers_single_handler_slot_to_the_application():
+    """A muxws peer has exactly one `on_stream` slot, and taskwire may not be the one holding it.
 
-    REST is the recommended reply path because it is the one that works with no socket at all, and
-    the reply path is the one place where "works everywhere" beats "arrives sooner".
+    The application composes: `process_command` first, taskwire's handler for what it does not
+    claim. Installing the handler here would make it impossible for the six viewset endpoints to be
+    reachable over the same socket at all.
     """
-    from taskwire.contrib.muxws import serve_peer
+    from taskwire.contrib.muxws import register_taskwire_muxws, serve_peer
 
     peer = ServingPeer("p")
-    tag_peer(peer, "acct-42")
-    await serve_peer(peer, "acct-42")
-
-    refused = (await peer.deliver({"kind": "dialog.reply", "token": "t", "id": "d"})).replies[0]
-    assert refused["status"] == 2
-    assert "disabled" in refused["detail"]
+    assert callable(await serve_peer(peer, "acct-42"))
+    assert callable(await register_taskwire_muxws(peer, "acct-42"))
+    assert peer.installed == [], "taskwire took the peer's one handler slot"
 
 
 async def test_an_unknown_kind_is_answered_rather_than_ignored():
-    """TW-CORE-007: the vocabulary is closed, and silence would leave a client waiting on a stream."""
-    from taskwire.contrib.muxws import serve_peer
+    """TW-CORE-007: the vocabulary is closed, and silence would leave a client waiting on a stream.
+
+    A viewset command never gets here - `process_command` answers it and returns True - so what
+    reaches this branch really is a kind nobody serves.
+    """
+    from taskwire.contrib.muxws import register_taskwire_muxws
 
     peer = ServingPeer("p")
-    tag_peer(peer, "acct-42")
-    await serve_peer(peer, "acct-42")
+    taskwire_stream = await register_taskwire_muxws(peer, "acct-42")
 
-    answered = (await peer.deliver({"kind": "command", "do": "something"})).replies[0]
+    answered = (await deliver(taskwire_stream, {"kind": "command", "do": "something"})).replies[0]
     assert answered["status"] == 2
     assert "command" in answered["detail"]
+
+    # `dialog.reply` is not a stream kind: it is POST {token}/dialogs/{did} on the viewset, which
+    # the socket carries like every other call.
+    refused = (await deliver(taskwire_stream, {"kind": "dialog.reply", "token": "t", "id": "d"})).replies[0]
+    assert refused["status"] == 2
 
 
 async def test_a_stale_socket_is_closed_rather_than_retagged():
@@ -528,11 +547,35 @@ async def test_a_stale_socket_is_closed_rather_than_retagged():
     assert peer.tags[SESSION_TAG] == "anon-session", "and NOT retagged"
 
 
-async def test_the_socket_reply_path_derives_the_session_from_the_tag():
-    """TW-WS-007: never from a value the client put in the message.
+async def test_a_released_peer_leaves_the_real_registry():
+    """Against `muxws.PeerRegistry` itself, because the call has to be the one that library has.
+
+    A misspelled deregistration is swallowed - the release path may not raise on a socket that is
+    closing anyway - so the peer would stay indexed, this process would believe it still holds a
+    connection for the namespace, and it would stay subscribed to that channel forever.
+    """
+    from muxws import PeerRegistry
+
+    from taskwire.contrib.muxws import release_peer
+
+    registry = PeerRegistry()
+    staying, leaving = ServingPeer("staying"), ServingPeer("leaving")
+    for peer in (staying, leaving):
+        tag_peer(peer, "acct-42")
+        registry.register(peer)
+
+    await release_peer(leaving, "acct-42", registry)
+
+    assert list(registry.peers_for(**{SESSION_TAG: "acct-42"})) == [staying]
+
+
+async def test_the_socket_handler_never_reads_a_namespace_off_the_message():
+    """TW-WS-007 / TW-SEC-003: the namespace is the handshake's, never the message's.
 
     A client that could name its own namespace over the socket would have found a way around the one
-    authorization scope the system has (TW-SEC-003).
+    authorization scope the system has. `watch` needs no namespace at all - it writes to the peer's
+    own tags - and every other call resolves one from the handshake headers `process_command`
+    carries.
     """
     import inspect
 
@@ -540,6 +583,5 @@ async def test_the_socket_reply_path_derives_the_session_from_the_tag():
 
     source = inspect.getsource(module.serve_peer)
     body = "\n".join(line for line in source.splitlines() if not line.strip().startswith("#"))
-    assert "Client(session=session" in body, "the session comes from the handler's own argument"
-    assert 'payload.get("session")' not in body, "and never from the message"
-    assert 'payload.get("ns")' not in body
+    for smuggled in ('payload.get("session")', 'payload.get("ns")', 'payload.get("token")'):
+        assert smuggled not in body, f"the handler read {smuggled} off the client's own message"

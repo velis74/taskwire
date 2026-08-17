@@ -1,4 +1,4 @@
-"""The three night-batch jobs. Between them they exercise everything taskwire does.
+"""The four night-batch jobs. Between them they exercise everything taskwire does.
 
 Each one is an ordinary async function that happens to hold a `Reporter`. None of them knows what a
 transport is, whether anybody is watching, or whether the answer to a question will arrive over
@@ -9,6 +9,7 @@ HTTP or over a socket - which is the property the whole library exists to provid
 | `reconcile` | dialogs: work stops, a person decides, work resumes. Four times. |
 | `export_blotter` | cancellation, and a collectable download at the end |
 | `revalue` | nested progress: four sector subtasks filling one bar by weight |
+| `hold_the_line` | a question nobody answers, under a deadline that is the application's |
 
 **The pacing is deliberate.** Every job sleeps in small slices rather than doing real work, because
 the point is the reporting, and a demo that pegged a core for forty seconds would be measuring the
@@ -42,6 +43,18 @@ EXPORT_STEP = 0.22
 
 SECTOR_STEP = 0.5
 """Deliberately the slowest, so four sectors visibly interleave rather than finishing in one tick."""
+
+HOLD_STEP = 0.4
+"""Seconds per pre-flight check in `hold_the_line` - three of them, so the question is on screen in
+about a second. The waiting after the question is the demonstration; the work before it is there
+only to show that a job was running when it stopped."""
+
+HOLD_DEADLINE = 15.0
+"""Seconds this application will hold a worker waiting for an answer.
+
+Not a taskwire setting. There is no `settings.dialog_timeout` and `ask()` takes no deadline
+(TW-DLG-005), so the number lives at the layer that knows what the worker costs - here, and in a
+deployment in the queue configuration."""
 
 
 async def reconcile(reporter: Reporter) -> None:
@@ -228,9 +241,78 @@ async def revalue(reporter: Reporter) -> None:
     )
 
 
+async def hold_the_line(reporter: Reporter) -> None:
+    """Ask a question, then let the worker's own deadline expire before anybody answers it.
+
+    **Start it, watch the question arrive, and then leave it alone.** Fifteen seconds later the
+    question disappears from every tab of the namespace and the operation leaves the register,
+    `failed` with a `TimeoutError`; a tab that was part-way through answering gets 410 while the
+    document is still there and 404 once it is dropped, and closes its modal without a word either
+    way (TW-DLG-011).
+
+    Those fifteen seconds belong to **this function**. `ask()` has no timeout and must never grow
+    one (TW-DLG-005), so a deadline has to be written where the cost of waiting is actually known:
+    around the call, by the application. Here that is `asyncio.wait_for`, because the demo is a
+    single asyncio process with no Celery anywhere in it. In a deployment it is the worker's own
+    execution limit killing the task instead (TW-CELERY-010), which `contrib/celery.py` renders as
+    `failed` with code `dialog_timeout` and `retryable: true`. What happens to the operation is the
+    same in both: one terminal write, which withdraws every open dialog in the same step
+    (TW-CANCEL-011), so no question is ever left on screen pointing at a worker that is gone.
+
+    Answer inside the fifteen seconds and the job finishes normally and parks its decision. Both
+    endings are the demonstration - taskwire holds the worker for exactly as long as the user takes,
+    and how long that may be is the application's sentence to finish.
+    """
+    checks = (
+        t("demo.hold.balances", text="Matching cash balances"),
+        t("demo.hold.instructions", text="Building settlement instructions"),
+        t("demo.hold.channel", text="Opening the custodian channel"),
+    )
+    await reporter.set(
+        title=t("demo.hold.title", text="Releasing the settlement file"),
+        percent=0,
+        data={"deadline_seconds": HOLD_DEADLINE},
+    )
+
+    for index, check in enumerate(checks):
+        await asyncio.sleep(HOLD_STEP)
+        # The last quarter of the bar is the decision, so a reader can see the job stop short of
+        # finishing rather than at a round 100 %.
+        await reporter.set(percent=100 * (index + 1) / (len(checks) + 1), label=check)
+
+    # The deadline is the application's, applied from outside `ask()` and known to nothing inside
+    # taskwire. When it expires, `wait_for` cancels the pending `ask()` and raises; the exception
+    # walks out of `operation()`, which writes `failed` and withdraws this dialog on the way.
+    answer = await asyncio.wait_for(
+        reporter.ask(
+            "demo.release_window",
+            buttons=[
+                Button(id="release", label=t("demo.hold.release", text="Release now")),
+                Button(id="hold", label=t("demo.hold.wait", text="Hold until morning")),
+            ],
+            params={"deadline_seconds": HOLD_DEADLINE, "instructions": total_trades()},
+            text=t(
+                "demo.release_window.text",
+                text=f"Release tonight's settlement file? This worker waits {HOLD_DEADLINE:.0f} s.",
+            ),
+        ),
+        HOLD_DEADLINE,
+    )
+
+    await reporter.set(percent=100, label=t("demo.hold.decided", text="Decision recorded"))
+    await reporter.set_result(
+        Result.panel(
+            "demo.release_decision",
+            value={"decision": answer.button, "instructions": total_trades()},
+            label=t("demo.hold.done", text=f"Settlement file: {answer.button}"),
+        )
+    )
+
+
 JOBS: dict[str, Any] = {
     "reconcile": reconcile,
     "export": export_blotter,
     "revalue": revalue,
+    "hold": hold_the_line,
 }
 """What the frontend may start, by name. An unknown name is a 404 rather than an import."""

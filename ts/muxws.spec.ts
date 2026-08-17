@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import axios from 'axios';
 import { describe, expect, it, vi } from 'vitest';
 
-import { attachMuxws, MuxwsClientTransport } from './muxws';
-import { WIRE_VERSION } from './wire';
-import type { Envelope } from './wire';
+import { attachMuxws, MuxwsCalls, MuxwsClientTransport } from './muxws';
+import { new_token, Taskwire } from './taskwire';
+import { type ProgressState, serializeDialogRequest, serializeProgress, WIRE_VERSION } from './wire';
+import type { Envelope, WireObject } from './wire';
 
 /**
  * `taskwire/muxws`, browser side (M5's client half, M8's client half).
@@ -23,16 +25,61 @@ import type { Envelope } from './wire';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** A muxws `Peer` reduced to the two calls taskwire uses (TW-WS-001). */
+/** One outgoing stream: the status in the leading reply headers, then one body (TW-WS-003). */
+class FakeStream {
+  readonly replyHeadersArrived = Promise.resolve();
+
+  readonly replyHeaders: Record<string, unknown>;
+
+  constructor(
+    private readonly body: unknown,
+    status: number,
+  ) {
+    this.replyHeaders = { ':status': status };
+  }
+
+  async result(): Promise<unknown> {
+    return this.body;
+  }
+}
+
+interface Opened {
+  payload: unknown;
+  headers: Record<string, unknown>;
+}
+
+/** A muxws `Peer` reduced to what taskwire uses of one (TW-WS-001). */
 class FakePeer {
   handler: ((payload: unknown) => void) | null = null;
 
   requests: unknown[] = [];
 
+  /** Every stream the calls proxy opened, in order: its addressing headers and its body. */
+  opened: Opened[] = [];
+
   reply: unknown = { v: 1, status: 0, connection: 'conn-1' };
+
+  /** What `open()` answers with. A test that needs a document replaces it. */
+  response: unknown = {};
+
+  status = 200;
+
+  isOpen = true;
+
+  closeHandlers: ((reason: unknown) => void)[] = [];
+
+  reconnectHandlers: ((attempt: number) => void)[] = [];
 
   onStream(handler: (payload: unknown) => void): void {
     this.handler = handler;
+  }
+
+  onClose(handler: (reason: unknown) => void): void {
+    this.closeHandlers.push(handler);
+  }
+
+  onReconnect(handler: (attempt: number) => void): void {
+    this.reconnectHandlers.push(handler);
   }
 
   async request(payload: unknown): Promise<unknown> {
@@ -40,14 +87,58 @@ class FakePeer {
     return this.reply;
   }
 
+  open(payload?: unknown, options?: { headers?: Record<string, unknown> }): FakeStream {
+    this.opened.push({ payload, headers: options?.headers ?? {} });
+    return new FakeStream(this.response, this.status);
+  }
+
   /** Stand in for the server pushing one envelope down one stream. */
   push(payload: unknown): void {
     this.handler?.(payload);
   }
+
+  /** The socket died; `willRetry` is muxws's business and taskwire reads only the fact. */
+  die(): void {
+    this.isOpen = false;
+    this.closeHandlers.forEach((handler) => handler({ willRetry: true }));
+  }
+
+  reconnect(): void {
+    this.isOpen = true;
+    this.reconnectHandlers.forEach((handler) => handler(1));
+  }
+}
+
+/** `${method} ${path}`, which is the whole of how a viewset action is addressed (TW-WS-002). */
+function addressed(peer: FakePeer): string[] {
+  return peer.opened.map((stream) => `${String(stream.headers[':method'])} ${String(stream.headers[':path'])}`);
 }
 
 function envelope(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return { v: WIRE_VERSION, token: 'tok', rev: 7, kind: 'progress', body: { state: 'running' }, ...overrides };
+}
+
+/** One `Snapshot` as it travels, for the stream that answers a `GET {prefix}/{token}`. */
+function snapshotWire(token: string): WireObject {
+  return {
+    v: WIRE_VERSION,
+    token,
+    rev: 1,
+    progress: {
+      state: 'running',
+      percent: null,
+      data: {},
+      result_kind: 'acme.report',
+      origin_session: 'account:42',
+      origin_connection: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    },
+    dialogs: [],
+    cancel_requested: false,
+    server_time: '2026-01-01T00:00:00.000Z',
+    poll_after_ms: 400,
+  };
 }
 
 describe('the muxws client transport', () => {
@@ -64,8 +155,8 @@ describe('the muxws client transport', () => {
   });
 
   it('treats an unparseable push as a dropped push and stays alive (TW-CORE-002)', () => {
-    // The store is the truth and the polling ladder is still running underneath, so the next read
-    // corrects it. Throwing here would take out the socket over one bad frame.
+    // The store is the truth, so no state depends on this frame arriving and the next read corrects
+    // it. Throwing here would take out the socket over one bad frame.
     const peer = new FakePeer();
     const seen: Envelope[] = [];
     new MuxwsClientTransport({ peer: peer as never, onEnvelope: (e) => seen.push(e) });
@@ -167,27 +258,200 @@ describe('the muxws client transport', () => {
     });
   });
 
-  it('attaches to a client additively (TW-TR-006)', () => {
+  it('reports the socket dying and coming back, so the client knows when to poll (TW-TS-007)', async () => {
+    // The smallest signal that makes a loss observable, and the whole of what suspends and resumes
+    // the ladder. A reconnect restores nothing (TW-WS-006) - what comes back with it is the ability
+    // to push, and the client's own recovery is a read.
+    const peer = new FakePeer();
+    const transport = new MuxwsClientTransport({ peer: peer as never });
+
+    const seen: boolean[] = [];
+    const stop = transport.onHealth((healthy) => seen.push(healthy));
+    expect(seen).toEqual([]);
+
+    peer.die();
+    peer.reconnect();
+    expect(seen).toEqual([false, true]);
+
+    stop();
+    peer.die();
+    expect(seen).toEqual([false, true]);
+
+    // A listener that arrives after the socket is already down has no event left to fire, so it is
+    // told at once: a client that read silence as health would sit suspended over a dead socket.
+    const late: boolean[] = [];
+    transport.onHealth((healthy) => late.push(healthy));
+    expect(late).toEqual([false]);
+  });
+
+  it('attaches to a client without taking anything away from it (TW-TR-006)', () => {
     // Everything keeps working if this line is deleted. That is the test of the layering: the
-    // polling ladder was already running and continues to, and only the latency changes.
+    // register still answers, and the ladder is what carries a client whose socket has just died.
     const peer = new FakePeer();
     const attached: unknown[] = [];
-    const client = { attachTransport: (t: unknown) => attached.push(t) };
+    const routed: unknown[] = [];
+    const client = {
+      attachTransport: (t: unknown) => attached.push(t),
+      useCalls: (c: unknown) => routed.push(c),
+      basePath: '/taskwire',
+    };
 
     const transport = attachMuxws(client, peer as never);
     expect(attached).toEqual([transport]);
     expect(transport).toBeInstanceOf(MuxwsClientTransport);
+    // Both halves in one call: the six calls go up the socket and the pushes come down it.
+    expect(routed[0]).toBeInstanceOf(MuxwsCalls);
+
+    // ...and a client that wants only the pushes says so.
+    const pushesOnly = attachMuxws(client, peer as never, { routeCalls: false });
+    expect(attached).toEqual([transport, pushesOnly]);
+    expect(routed).toHaveLength(1);
+  });
+});
+
+describe('a client carried by nothing but pushes', () => {
+  it('replays the demo hold job over one attached socket and ends with no question on screen', async () => {
+    // The sequence is the live one, in order: `queued`, `running`, `dialog.open`, and then a
+    // terminal `progress` carrying `failed`. There is NO `dialog.close` in it - `withdraw_dialogs`
+    // publishes none - so that terminal envelope is the only announcement a client ever gets that
+    // the question is gone (TW-CANCEL-011), and a client that ignored it would leave a modal on
+    // screen pointing at a worker that no longer exists.
+    //
+    // The axios instance throws, so any read at all fails this rather than passing unnoticed: what
+    // moves the handle here is the socket and only the socket (TW-TS-007).
+    vi.useFakeTimers();
+    try {
+      const http = axios.create({
+        adapter: async () => {
+          throw new Error('this client speaks the socket');
+        },
+      });
+      const client = new Taskwire('/taskwire', http);
+      const peer = new FakePeer();
+      const token = new_token();
+      attachMuxws(client, peer as never);
+
+      const handle = client.track(token);
+      const stamp = '2026-01-01T00:00:00.000Z';
+      const progress = (state: ProgressState, percent: number | null): WireObject =>
+        serializeProgress({
+          state,
+          percent,
+          data: {},
+          resultKind: 'demo.hold',
+          originSession: 'account:42',
+          originConnection: null,
+          createdAt: stamp,
+          updatedAt: stamp,
+        }) as WireObject;
+      const push = (rev: number, kind: string, body: WireObject): void =>
+        peer.push({ v: WIRE_VERSION, token, rev, kind, body });
+
+      push(1, 'progress', progress('queued', null));
+      expect(handle.progress?.state).toBe('queued');
+
+      [2, 3, 4].forEach((rev) => push(rev, 'progress', progress('running', rev * 10)));
+      expect(handle.progress?.percent).toBe(40);
+
+      push(
+        5,
+        'dialog.open',
+        serializeDialogRequest({
+          id: 'ed2c0f0e-2222-4a7d-9c2e-5f5b6a7c8d90',
+          dialogId: 'demo.release',
+          buttons: [{ id: 'release' }, { id: 'hold' }],
+          inputs: [],
+          state: 'open',
+          createdAt: stamp,
+        }) as WireObject,
+      );
+      expect(handle.dialog?.dialogId).toBe('demo.release');
+
+      push(6, 'progress', progress('failed', 40));
+      expect(handle.progress?.state).toBe('failed');
+      expect(handle.dialog).toBeNull();
+      expect(handle.dialogs[0].state).toBe('cancelled');
+
+      // Not one request went out, in either direction: no stream was opened and no HTTP call made.
+      expect(peer.opened).toEqual([]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(peer.opened).toEqual([]);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('the six calls over a stream each (TW-REST-004, TW-WS-003)', () => {
+  it('addresses every one of them the way the viewset declares it', async () => {
+    // The same `TaskwireViewSet` serves both transports, so there is no second routing table here -
+    // only `:method` and `:path` in the opening headers of one stream per call.
+    const peer = new FakePeer();
+    const calls = new MuxwsCalls({ peer: peer as never, basePath: '/taskwire' });
+
+    await calls.register();
+    await calls.snapshot('tok');
+    await calls.cancel('tok');
+    await calls.collect('tok');
+    await calls.dismiss('tok');
+    await calls.replyToDialog('tok', 'd1', 'ok', { reason: 'newer' });
+
+    expect(addressed(peer)).toEqual([
+      'GET /taskwire',
+      'GET /taskwire/tok',
+      'POST /taskwire/tok/cancel',
+      'POST /taskwire/tok/collect',
+      'POST /taskwire/tok/dismiss',
+      'POST /taskwire/tok/dialogs/d1',
+    ]);
+    // The reply is the one call with a body, and it is the REST body verbatim (TW-DLG-011).
+    expect(peer.opened[5].payload).toEqual({ button: 'ok', values: { reason: 'newer' } });
+    // A token is never a query parameter, on any transport (TW-CELERY-011).
+    expect(peer.opened.every((stream) => stream.headers[':query'] === undefined)).toBe(true);
   });
 
-  it('is a subpath the package entry point never reaches (TW-CORE-006)', () => {
-    // An application that only ever polls must not load a socket library it does not use. The core
-    // may not import muxws, and index.ts may not reach this module transitively.
+  it('is what a client reads through once its calls are routed here', async () => {
+    // The seam is the point: the client issues its six calls through one interface and knows
+    // nothing about which wire answered. The axios instance is rigged to throw, so a single HTTP
+    // request would fail this rather than pass unnoticed.
+    vi.useFakeTimers();
+    try {
+      const http = axios.create({
+        adapter: async () => {
+          throw new Error('this client speaks the socket');
+        },
+      });
+      const client = new Taskwire('/taskwire', http);
+      const peer = new FakePeer();
+      const token = new_token();
+      peer.response = snapshotWire(token);
+      client.useCalls(new MuxwsCalls({ peer: peer as never, basePath: '/taskwire' }));
+
+      const handle = client.track(token);
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(addressed(peer)).toEqual([`GET /taskwire/${token}`]);
+      expect(handle.progress?.state).toBe('running');
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('what the core is allowed to reach (TW-CORE-006)', () => {
+  it('is a subpath the package entry point never reaches', () => {
+    // An application that only ever polls must not load a socket library it does not use, nor the
+    // viewset proxy that addresses its streams. The core may import neither, and index.ts may not
+    // reach this module transitively.
     const seen = new Set<string>();
     const walk = (name: string): void => {
       if (seen.has(name)) return;
       seen.add(name);
       const source = readFileSync(resolve(HERE, `${name}.ts`), 'utf-8');
       expect(source, `${name}.ts imports muxws`).not.toMatch(/from '(muxws|\.\/muxws)'/);
+      expect(source, `${name}.ts imports the viewset proxy`).not.toMatch(/from '@dynamicforms\/fastapi-viewsets'/);
       for (const match of source.matchAll(/from '\.\/([a-z-]+)'/g)) walk(match[1]);
     };
     walk('index');

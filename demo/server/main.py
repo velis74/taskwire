@@ -1,11 +1,22 @@
-"""The demo's FastAPI app: one taskwire registration, three job endpoints, and a fake artefact.
+"""The demo's FastAPI app: one taskwire registration, four job endpoints, and a fake artefact.
 
 ## What taskwire costs this application
 
-Two lines. `register_taskwire_rest(router)` mounts the whole REST transport, and `configure(...)`
-tells taskwire where the store is and how to derive a namespace. Everything else in this file is the
+Three lines. `register_taskwire_rest(router)` publishes the six calls - on REST and on muxws, since
+`route_viewset` publishes a viewset on both at once; `register_taskwire_muxws(peer, session)` mounts
+the push half and `watch` on a connection this application accepted; and `configure(...)` tells
+taskwire where the store is and how to derive a namespace. Everything else in this file is the
 application's own - the jobs, the book, the browser session - and none of it imports a transport or
 knows one exists.
+
+## Both transports, at once
+
+The same six calls answer over HTTP and over the one WebSocket at `/ws`, because `route_viewset`
+publishes the viewset on both and `process_command` dispatches a stream into the same routes
+(TW-REST-004). The socket adds two things HTTP cannot do: envelopes pushed the instant a state
+changes, and `watch`, which declares this connection's override map and hands back its connection id
+(TW-DEL-022). The browser chooses between them at runtime and the jobs never learn which one is in
+use - the store is the truth on either (TW-CORE-002), so the choice costs latency and nothing else.
 
 ## The workflow this demonstrates
 
@@ -38,11 +49,16 @@ import logging
 import os
 import uuid
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from typing import Any
+
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import PlainTextResponse
+from fastapi_viewsets.mux_ws import process_command
+from muxws import accept, PeerRegistry, Stream
 
 import taskwire
 
+from taskwire.contrib.muxws import MuxwsTransport, register_taskwire_muxws, release_peer
 from taskwire.contrib.viewsets import register_taskwire_rest
 
 from .jobs import JOBS
@@ -56,16 +72,23 @@ PORT = int(os.environ.get("TASKWIRE_DEMO_PORT", "8030"))
 SESSION_COOKIE = "taskwire_demo_session"
 
 
-def resolve_session(request: Request) -> str | None:
+def resolve_session(connection: Request | WebSocket) -> str | None:
     """The namespace, from a cookie this app sets on the first request it serves.
 
     taskwire never learns how a namespace is derived - only what this returns (TW-AMB-008). A real
     application would return an account id, a tenant, or an account plus a tenant.
+
+    **One resolver, both transports** (TW-WS-007). It reads only `headers` and `cookies`, which a
+    `Request` and a `WebSocket` both carry, so the handshake is resolved by exactly the code that
+    resolves a POST - and a command arriving over a stream is resolved by it again, since
+    `process_command` builds its synthetic request on the handshake's own headers. A second resolver
+    for the socket would be a second place the namespace could be decided differently, which is the
+    one difference between the transports nobody would find by reading either.
     """
     # The header wins over the cookie, so a second namespace can be driven from `curl` without a
     # second cookie jar. That ordering is the demo's own convenience and not a taskwire pattern -
     # a real resolver reads whatever its authentication already established.
-    return request.headers.get("X-Demo-Session") or request.cookies.get(SESSION_COOKIE)
+    return connection.headers.get("X-Demo-Session") or connection.cookies.get(SESSION_COOKIE)
 
 
 #: The one process-wide store. `MemoryStore` is enough because the demo is one process; a deployment
@@ -77,11 +100,19 @@ store = taskwire.MemoryStore()
 #: an ordinary application's own housekeeping.
 running: set[asyncio.Task] = set()
 
+#: Every live socket, indexed by the tags it carries. taskwire fans an envelope out over
+#: `peers_for(session=...)` and touches nothing else on it (TW-WS-001), so the registry stays the
+#: application's: it decides which connections exist, and joining the fan-out is `register()`.
+registry = PeerRegistry()
+
 
 def create_app() -> FastAPI:
     taskwire.configure(
         store=store,
-        transport=taskwire.NullTransport(),
+        # The push half. With no socket open this fans out to nobody and the browser learns from its
+        # own polling; with one open the same envelopes arrive the instant they are written. Nothing
+        # in `jobs.py` reads differently either way (TW-TR-001).
+        transport=MuxwsTransport(registry),
         session_resolver=resolve_session,
     )
 
@@ -102,8 +133,51 @@ def create_app() -> FastAPI:
     app = FastAPI(title="taskwire demo", docs_url="/api-docs", redoc_url=None, lifespan=lifespan)
 
     router = APIRouter()
-    register_taskwire_rest(router)  # <- the entire REST transport
+    register_taskwire_rest(router)  # <- the six calls, on REST and on the socket both
     app.include_router(router)
+
+    @app.websocket("/ws")
+    async def socket(websocket: WebSocket) -> None:
+        """One WebSocket, carrying the pushes down and the six calls back up.
+
+        muxws performs the upgrade itself, because only it knows which `muxws.v1.<codec>`
+        subprotocol to select - so `websocket.accept()` is never called here and calling it would
+        raise. What comes back is a peer that is not yet reading.
+
+        A peer has exactly one handler slot and it belongs to the application, so the two dispatchers
+        are composed here: a viewset command goes into the same routes the REST router mounts, and
+        only a stream `process_command` declines reaches taskwire's own, which answers `watch` and
+        nothing else (TW-DEL-006, TW-DEL-016).
+
+        The order is load-bearing. `register_taskwire_muxws` tags the peer with its namespace, and
+        `PeerRegistry.register` indexes a peer under the tags it holds **at that moment**: registered
+        first, it would be indexed under nothing and receive no push, with everything else about the
+        deployment looking correct.
+        """
+        peer = await accept(websocket)
+        session = resolve_session(websocket)
+        if session is None:
+            # Nothing to tag the socket with, and a socket that is not tagged is one no envelope can
+            # reach. The browser has been served a cookie by now in every ordinary case; closing is
+            # honest about the one where it has not (TW-AMB-008).
+            await peer.close(reason="taskwire demo: no session yet; reload once")
+            return
+
+        taskwire_stream = await register_taskwire_muxws(peer, session)
+        registry.register(peer)
+
+        async def on_stream(payload: Any, stream: Stream) -> None:
+            if await process_command(payload, stream, connection=websocket):
+                return
+            await taskwire_stream(payload, stream)
+
+        peer.on_stream(on_stream)
+        try:
+            await peer.serve()
+        finally:
+            # A vanished watcher never affects the operation itself (TW-REG-008): this unsubscribes
+            # the process from a namespace it no longer holds a socket for, and cancels nothing.
+            await release_peer(peer, session, registry)
 
     demo = APIRouter(prefix="/demo")
 

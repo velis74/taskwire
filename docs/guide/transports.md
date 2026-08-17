@@ -20,7 +20,7 @@ framework is imported.
 |---|---|---|---|
 | **local** | the process itself — no wire, no socket, no serialization | none | nothing |
 | **REST** | request/response polling; the baseline everywhere | `contrib.fastapi`, `contrib.asgi` | nothing in core |
-| **WS** | one push per envelope, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
+| **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
 
 ## The store is the truth
 
@@ -58,63 +58,36 @@ deployment rather than a degraded one.
 
 ## Mounting the socket
 
-Two calls, one at handshake and one on the client. **Both halves are needed**: without the server
-handler, envelopes still push down but the client's calls back up reach nothing — and `watch` is one
-of those. A client that cannot `watch` never obtains a connection id, so a private operation's
-progress reaches no socket and muting silently does nothing.
+One endpoint and one call on the server, one call in the browser:
 
 ```python
-# server, once per connection
-from muxws import PeerRegistry
-from taskwire.contrib.muxws import MuxwsTransport, serve_peer, tag_peer
-
-registry = PeerRegistry()
-taskwire.configure(store=..., transport=MuxwsTransport(registry), session_resolver=session_resolver)
-
-async def on_socket(peer, request):
-    ns = session_resolver(request)      # the same resolver REST uses
-    tag_peer(peer, ns)
-    registry.add(peer)
-    await serve_peer(peer, ns)          # also subscribes this process to twx:{ns}
-
-async def on_socket_closed(peer, ns):
-    await release_peer(peer, ns, registry)
+taskwire_stream = await register_taskwire_muxws(peer, ns)   # server, per connection
 ```
 
-`serve_peer` is also where this process learns it holds a connection for that namespace, so its
-Redis reader subscribes to `twx:{ns}` there. **A reader that was never told which namespaces to
-watch is subscribed to nothing**: the backplane is connected and silent, no envelope arrives, and
-polling covers for it well enough that the deployment looks fine. `release_peer` unsubscribes once
-this process holds no more sockets of that namespace.
+```ts
+const socket = attachMuxws(tw, await connect('wss://example.test/ws'));   // client, once
+```
+
+The socket carries the pushes down and the same six calls up, so a client that has one needs no
+second wire, and polling suspends while it is healthy. [The WebSocket transport](./websockets.md)
+has the whole of it: how the handler composes with the application's own streams, why the tag
+precedes registration, and what a lost socket costs.
 
 A vanished watcher never affects the operation itself. A disconnect is not a statement of intent:
 nothing is cancelled, deleted or shortened, and a 90,000-row import keeps running with nobody
 looking at it.
-
-```ts
-// client, once
-import { connect } from 'muxws';
-import { attachMuxws } from 'taskwire/muxws';
-
-const socket = attachMuxws(tw, await connect('wss://example.test/ws'));
-await socket.announce();               // obtain this socket's connection id
-```
-
-After a login or a `migrate_namespace`, a socket whose tag names the old namespace is **closed with
-`goaway`, never retagged** — `goaway_if_stale(peer, current_ns)` does it. Retagging would leave a
-socket authorised for a namespace nobody re-checked, and the client's next register read under the
-new namespace is the whole of the recovery.
-
-Replying to a dialog over the socket is **optional and off by default**
-(`serve_peer(..., allow_socket_replies=True)`). REST is the recommended reply path: it is the one
-that works with no socket at all, and the reply path is the one place where "works everywhere" beats
-"arrives sooner".
 
 ## Polling, and why the client can only be slowed down
 
 The cadence: 400 ms base while anything is `queued` or `running`; ×1.5 on no change up to a 5 s
 ceiling; back to base on any change; the ceiling while a dialog is open and as an idle heartbeat
 that never stops; ±20 % jitter so restored tabs do not synchronise.
+
+The ladder is suspended while a transport is attached and healthy, and comes back on its base rung
+the moment one is lost or detached — so the two mechanisms alternate rather than run together, and
+the worst a dead socket costs is one 400 ms interval. What is suspended is the ladder and not the
+first read: every loop reads once when it starts, because a socket announces what changes and can
+say nothing about what was already happening when it arrived.
 
 The server advertises `poll_after_ms`, and it may only ever **slow a client down**: the effective
 interval is `max(poll_after_ms, the client's own ladder)`. Without that clamp a miscomputed or

@@ -75,8 +75,13 @@ export type Draw = () => number;
  *
  * The order of the four branches is the rule's own order and matters. A dialog open outranks
  * everything - a human is deciding, and hammering the server changes nothing about how fast they
- * decide. Idle is the heartbeat, at the ceiling, and it **never stops**: a client that stops polling
- * when nothing is active never learns that something started.
+ * decide. Idle is the heartbeat, at the ceiling, and there is no branch that returns nothing: a
+ * client that stopped asking because nothing was active would never learn that something started.
+ *
+ * Whether the scheduler sleeps this number or none at all is not the ladder's decision. A push
+ * transport that is attached and healthy suspends the loop entirely, and losing it resumes from the
+ * base rung (TW-TS-007) - which is why `PollLadder.reset()` exists and why the state this function
+ * takes has no way to express "stopped".
  */
 export function ladderInterval(state: PollLadderState, settings: PollSettings = DEFAULT_POLL_SETTINGS): number {
   const { baseIntervalMs, backoffFactor, ceilingMs } = settings;
@@ -200,7 +205,7 @@ export class PollLadder {
     return nextDelay(full, this.draw, this.settings);
   }
 
-  /** Back to the base interval - what a push does when a transport is attached (TW-TS-007). */
+  /** Back to the base interval - what a loop resuming from a suspension does (TW-TS-007). */
   reset(): void {
     this.previous = null;
   }

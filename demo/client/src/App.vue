@@ -15,23 +15,33 @@
  * 3. **Start "Export blotter" and cancel it.** Nothing in that job's loop is written for
  *    cancellation - `set()` raises by default (TW-CANCEL-002), so a loop that reports progress
  *    stops when asked.
- * 4. **Start all three at once.** The summary line carries counts and a dominated state, and
- *    deliberately no percentage: there is no unit in which three operations' self-reported
+ * 4. **Start all four at once.** The summary line carries counts and a dominated state, and
+ *    deliberately no percentage: there is no unit in which four operations' self-reported
  *    percentages are commensurable, so any figure across them would be invented (TW-REG-011).
  * 5. **Let one finish.** It parks its result and stays in the list until you collect or dismiss it.
  *    Reload the page first if you like - the store is the truth, so the row is still there.
+ * 6. **Start "Release settlement file" and answer nothing.** The worker's own deadline expires, the
+ *    operation ends `failed`, and the question is withdrawn from every tab in the same step
+ *    (TW-CANCEL-011) - the modal closes by itself and says nothing, because nothing failed *here*.
+ * 7. **Switch the wire to WebSocket.** The same six calls now travel one socket instead of HTTP,
+ *    envelopes arrive when they happen, and the polling ladder stops (TW-TS-007) - there is no
+ *    periodic `GET` in the network tab while it reads *WebSocket*. The rows hold still while it
+ *    does, because the client applies no envelope to a handle; switching back is one read and the
+ *    page is current again, which is what "the store is the truth" buys (TW-CORE-002, TW-CORE-005).
  *
  * ## What this file does NOT do
  *
  * It does not poll, retry, back off, de-duplicate, or reconcile a push against a read. All of that
- * is the library's. What is left is what an application actually writes: a button, a table, and a
- * decision about how a question should look.
+ * is the library's. What is left is what an application actually writes: a button, a table, a
+ * decision about how a question should look, and which wire to dial.
  */
 
 import axios from 'axios';
+import { connect, type Peer } from 'muxws';
 import { computed, onMounted, onScopeDispose, ref, shallowRef } from 'vue';
 
 import { DialogAdoption, type Operation, taskwireConfig, use_taskwire } from 'taskwire';
+import { attachMuxws, detachMuxws } from 'taskwire/muxws';
 import { use_register } from 'taskwire/vue';
 
 interface Position {
@@ -47,6 +57,7 @@ const JOBS = [
   { name: 'reconcile', label: 'Reconcile positions', hint: 'stops to ask, four times' },
   { name: 'export', label: 'Export blotter', hint: 'long, and cancellable' },
   { name: 'revalue', label: 'Revalue portfolio', hint: 'four sector subtasks, one bar' },
+  { name: 'hold', label: 'Release settlement file', hint: 'asks, and gives up after 15 s' },
 ] as const;
 
 const tw = use_taskwire();
@@ -71,6 +82,89 @@ function start(name: string): void {
     resultKind: `demo.${name}`,
   });
 }
+
+// ------------------------------------------------------------------------------------------------
+// Which wire this page speaks
+// ------------------------------------------------------------------------------------------------
+
+type Wire = 'http' | 'websocket';
+
+const wire = ref<Wire>('http');
+const dialling = ref(false);
+const socketError = ref<string | null>(null);
+const connection = ref<string | null>(null);
+const socketHealthy = ref(true);
+
+const peer = shallowRef<Peer | null>(null);
+let dropHealth: (() => void) | null = null;
+
+/** Same origin as the page, so the socket carries the session cookie Vite's proxy forwards. */
+const socketUrl = (): string => {
+  const url = new URL('/ws', window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+};
+
+/**
+ * Back to HTTP: the six calls return to axios and every polling ladder resumes on its base rung.
+ *
+ * The socket is closed **here** and not by the library. taskwire never dialled it, and a library
+ * that closed a connection it did not open would take an application's socket away from it
+ * (TW-WS-001) - which is also why `detachMuxws` is a separate call from `peer.close()`.
+ */
+function useHttp(): void {
+  dropHealth?.();
+  dropHealth = null;
+  detachMuxws(tw);
+  const dialled = peer.value;
+  peer.value = null;
+  connection.value = null;
+  socketHealthy.value = true;
+  wire.value = 'http';
+  void dialled?.close();
+}
+
+/**
+ * Choose the wire. **Exclusive**, and that is the whole point of the switch (TW-TS-007).
+ *
+ * A socket that pushes the instant a state changes and a ladder that asks again every few seconds
+ * are two answers to one question, so `attachMuxws` suspends the ladder rather than adding to it -
+ * open the network tab and there is no periodic `GET /taskwire/operations` while this reads
+ * *WebSocket*. What comes back on a loss is the ladder, because the store is the truth and one read
+ * is the whole of the recovery (TW-CORE-005).
+ *
+ * The application dials; the library is handed a peer that is already connected.
+ */
+async function chooseWire(next: Wire): Promise<void> {
+  if (next === wire.value || dialling.value) return;
+  if (next === 'http') {
+    useHttp();
+    return;
+  }
+  dialling.value = true;
+  socketError.value = null;
+  try {
+    const dialled = await connect(socketUrl());
+    peer.value = dialled;
+    const transport = attachMuxws(tw, dialled);
+    dropHealth = transport.onHealth((healthy) => {
+      socketHealthy.value = healthy;
+    });
+    wire.value = 'websocket';
+    // One `watch` with an empty declaration. It restores nothing - it asserts exactly the state the
+    // new socket already has - and its reply is how this connection learns its id (TW-REG-020).
+    connection.value = await transport.announce();
+  } catch (error) {
+    socketError.value = error instanceof Error ? error.message : String(error);
+    useHttp();
+  } finally {
+    dialling.value = false;
+  }
+}
+
+onScopeDispose(() => {
+  if (wire.value === 'websocket') useHttp();
+});
 
 // ------------------------------------------------------------------------------------------------
 // The question on screen
@@ -144,11 +238,24 @@ async function answer(button: string): Promise<void> {
   }
 }
 
+/**
+ * The question's own facts, rendered as they arrive.
+ *
+ * `params` is free-form and its keys are the application's own (TW-TXT-003) - taskwire copies the
+ * bag through and interpolates nothing. Two of these four jobs ask about entirely different things,
+ * so the modal below reads the bag rather than a shape: markup written against one question's keys
+ * renders the other's as blanks and `NaN`.
+ */
 const question = computed(() => {
   const dialog = asking.value?.dialog;
   if (!dialog) return null;
-  const params = (dialog.params ?? {}) as Record<string, string | number>;
-  return { dialog, params, title: asking.value?.title?.text ?? 'A decision is needed' };
+  const params = (dialog.params ?? {}) as Record<string, unknown>;
+  const rows = Object.entries(params).map(([key, value]) => ({
+    key,
+    label: key.replace(/_/g, ' ').replace(/^./, (first) => first.toUpperCase()),
+    value: typeof value === 'number' ? fmt.format(value) : String(value),
+  }));
+  return { dialog, rows, title: asking.value?.title?.text ?? 'A decision is needed' };
 });
 
 // ------------------------------------------------------------------------------------------------
@@ -174,11 +281,35 @@ function resultText(entry: Operation<unknown>): string | null {
     <header>
       <h1>Night batch</h1>
       <p class="lede">
-        Three back-office jobs over one book. Everything below the buttons &mdash; the bar, the
+        Four back-office jobs over one book. Everything below the buttons &mdash; the bar, the
         question, the parked result &mdash; is taskwire; the jobs and the table are the
         application&rsquo;s.
       </p>
     </header>
+
+    <!-- One wire at a time. Choosing WebSocket routes the six calls over the socket and stops the
+         polling ladder; choosing HTTP puts both back (TW-TS-007). -->
+    <section class="wire">
+      <span class="label">Wire</span>
+      <button type="button" :class="{ on: wire === 'http' }" :disabled="dialling" @click="chooseWire('http')">
+        HTTP
+      </button>
+      <button
+        type="button"
+        :class="{ on: wire === 'websocket' }"
+        :disabled="dialling"
+        @click="chooseWire('websocket')"
+      >
+        WebSocket
+      </button>
+      <small v-if="dialling">dialling&hellip;</small>
+      <small v-else-if="socketError" class="warn">{{ socketError }}</small>
+      <small v-else-if="wire === 'websocket' && !socketHealthy" class="warn">
+        socket lost &mdash; polling again until it is back
+      </small>
+      <small v-else-if="wire === 'websocket'">connection {{ connection ?? 'unnamed' }}</small>
+      <small v-else>polling, 400&nbsp;ms to 5&nbsp;s</small>
+    </section>
 
     <section class="jobs">
       <button v-for="job in JOBS" :key="job.name" type="button" @click="start(job.name)">
@@ -260,12 +391,12 @@ function resultText(entry: Operation<unknown>): string | null {
          sentence, and this markup is where the wording actually happens. -->
     <div v-if="question" class="scrim">
       <div class="dialog" role="dialog" aria-modal="true">
-        <h3>{{ question.params.symbol }} &mdash; {{ question.params.name }}</h3>
+        <h3>{{ question.title }}</h3>
         <p>{{ question.dialog.dialogId }}</p>
-        <dl>
-          <div><dt>Our book</dt><dd>{{ fmt.format(Number(question.params.ours)) }}</dd></div>
-          <div><dt>Custodian</dt><dd>{{ fmt.format(Number(question.params.custodian)) }}</dd></div>
-          <div><dt>Difference</dt><dd>{{ fmt.format(Number(question.params.difference)) }}</dd></div>
+        <dl v-if="question.rows.length">
+          <div v-for="row in question.rows" :key="row.key">
+            <dt>{{ row.label }}</dt><dd>{{ row.value }}</dd>
+          </div>
         </dl>
         <div class="buttons">
           <button
@@ -305,6 +436,15 @@ main { max-width: 60rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; }
 h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
 h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .lede { color: var(--muted); margin: 0 0 1.75rem; max-width: 46rem; }
+
+.wire { display: flex; gap: .5rem; align-items: center; margin-bottom: 1.25rem; }
+.wire .label { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.wire button { font: inherit; font-size: .85rem; padding: .3rem .8rem; border: 1px solid var(--line);
+  border-radius: .35rem; background: transparent; color: inherit; cursor: pointer; }
+.wire button.on { border-color: var(--accent); color: var(--accent); }
+.wire button:disabled { opacity: .5; cursor: default; }
+.wire small { color: var(--muted); font-size: .8rem; }
+.wire small.warn { color: var(--warn); }
 
 .jobs { display: flex; gap: .75rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
 .jobs button { display: flex; flex-direction: column; align-items: flex-start; gap: .15rem;

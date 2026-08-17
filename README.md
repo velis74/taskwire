@@ -43,7 +43,7 @@ the only place that framework is imported.
 |---|---|---|---|
 | **local** | the process itself — no wire, no socket, no serialization | none | nothing |
 | **REST** | request/response polling; the baseline everywhere | `contrib.fastapi`, `contrib.asgi` | nothing in core |
-| **WS** | one push per envelope, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
+| **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
 
 Swapping one for another changes latency and nothing else — no feature, no state, no document.
 Both languages ship all of it, so a browser-only application and a back-end-only service are the

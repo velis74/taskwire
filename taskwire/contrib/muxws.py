@@ -3,6 +3,12 @@
 Imports `muxws`; nothing in `taskwire/` outside `contrib` may (TW-CORE-006), and M0-M4 keep passing
 with it not installed.
 
+**What travels here is the push direction, plus `watch`.** The six request/response calls of
+TW-REST-004 are the viewset's on this transport as much as on REST: `route_viewset` publishes them
+over muxws too, and `fastapi_viewsets.mux_ws.process_command` dispatches an inbound command stream
+into the same routes. `watch` is the one call that stays here, because it declares per-connection
+state held on the Peer rather than acting on a resource - there is no `{token}` it could hang off.
+
 **taskwire's required dependency on muxws is exactly two calls** (TW-WS-001):
 `PeerRegistry.peers_for(session=...)` and `peer.notify(payload)`. Not `open()`, not `stream.send()`,
 not `stream.cancel()`, and nothing about muxws's frame format, stream id space or codec selection
@@ -26,6 +32,7 @@ import asyncio
 import contextlib
 import logging
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from muxws import PeerRegistry
@@ -225,75 +232,106 @@ def prune_override(peers: list[Any], token: str) -> None:
 # --------------------------------------------------------------------------- the server handler
 
 
-async def serve_peer(peer: Any, session: str, *, allow_socket_replies: bool = False) -> None:
-    """Mount taskwire on one connected muxws peer. **Call this once, at handshake.**
+StreamHandler = Callable[[Any, Any], Awaitable[None]]
+"""What taskwire hands back for the application to compose: `(payload, stream) -> None`."""
 
-    Without it the socket is half a socket: envelopes still push *down*, but the client's calls back
-    *up* reach nothing - and `watch` is one of those. A client that cannot `watch` never obtains a
-    connection id, and without a connection id `origin_connection` stays null, so a **private
-    operation's progress reaches no socket at all** (TW-PRIV-003) and `progress_delivery` falls back
-    to the predicate alone. Muting would silently do nothing.
+
+async def serve_peer(peer: Any, session: str) -> StreamHandler:
+    """Subscribe this process to `session` and **return** taskwire's stream handler.
+
+    It is returned rather than installed, because a muxws peer has exactly one handler slot and
+    taskwire is not entitled to it. The application owns that slot and composes into it - taskwire's
+    six calls arrive as viewset commands through `process_command`, and only what that leaves
+    unhandled is taskwire's own:
 
     ```python
-    from muxws import PeerRegistry
-    from taskwire.contrib.muxws import MuxwsTransport, serve_peer, tag_peer
-
-    registry = PeerRegistry()
-    taskwire.configure(store=..., transport=MuxwsTransport(registry), session_resolver=...)
-
-    async def on_socket(peer):
-        ns = session_resolver(request)          # the same resolver REST uses (TW-WS-007)
-        tag_peer(peer, ns)
-        registry.add(peer)
-        await serve_peer(peer, ns)
+    async def on_stream(payload, stream):
+        if await process_command(payload, stream, connection=websocket):
+            return
+        await taskwire_stream(payload, stream)
     ```
 
+    Without this the socket is half a socket: envelopes still push *down*, but `watch` reaches
+    nothing. A client that cannot `watch` never obtains a connection id, and without a connection id
+    `origin_connection` stays null, so a **private operation's progress reaches no socket at all**
+    (TW-PRIV-003) and `progress_delivery` falls back to the predicate alone. Muting would silently
+    do nothing.
+
+    `watch` is the only kind the returned handler answers, and the only one that can never be a
+    viewset endpoint: it declares per-connection state held on the Peer, not an action on a resource
+    (TW-DEL-006, TW-DEL-016). Everything else - both reads, cancel, collect, dismiss and a dialog
+    reply - is one of the six endpoints of TW-REST-004, reachable over the socket like every other
+    call.
+
     `session` is the value `session_resolver` returned for this socket, and it is the only
-    authorization scope this handler has (TW-SEC-003). It is **not** re-derived from anything the
-    client sent: a namespace that crossed a boundary travels as inert data (TW-AMB-008).
-
-    `allow_socket_replies` is **off by default** (TW-WS-008). REST is the recommended reply path
-    because it is the one that works with no socket at all, and the reply path is the one place where
-    "works everywhere" beats "arrives sooner".
+    authorization scope on this path (TW-SEC-003). It is **not** re-derived from anything the client
+    sent: a namespace that crossed a boundary travels as inert data (TW-AMB-008).
     """
-    from ..delivery import Client
-    from ..rest import reply_to_dialog
 
-    async def on_stream(payload: Any, stream: Any) -> None:
+    async def taskwire_stream(payload: Any, stream: Any) -> None:
         kind = (payload or {}).get("kind") if isinstance(payload, dict) else None
 
         if kind == "watch":
             # TW-DEL-007: this reads no store, in either direction. An override for a token that
             # does not exist is accepted and inert - putting a per-tab display preference on the
             # path of every socket's first message would be a poor trade.
-            stream.reply(handle_watch(peer, payload))
-            return
-
-        if kind == "dialog.reply":
-            if not allow_socket_replies:
-                stream.reply({"v": 1, "status": 2, "detail": "socket replies are disabled"})
-                return
-            # The session is derived the same way REST derives it, from the tag this handler was
-            # given - never from a value the client put in the message (TW-WS-007).
-            status, body = await reply_to_dialog(
-                Client(session=session, connection=connection_id(peer), peer=peer),
-                str(payload.get("token", "")),
-                str(payload.get("id", "")),
-                {"button": payload.get("button"), "values": payload.get("values") or {}},
-            )
-            stream.reply({"v": 1, "status": status, "detail": body})
+            await stream.reply(handle_watch(peer, payload))
             return
 
         # TW-CORE-007: the wire vocabulary is closed. An unknown kind is answered rather than
         # ignored, so a client learns immediately instead of waiting on a stream nobody will end.
-        stream.reply({"v": 1, "status": 2, "detail": f"unknown kind {kind!r}"})
-
-    peer.on_stream(on_stream)
+        await stream.reply({"v": 1, "status": 2, "detail": f"unknown kind {kind!r}"})
 
     # TW-BP-004: this process now holds a connection for `session`, so its reader subscribes to that
     # namespace's channel. A no-op in a single-process deployment, and the difference between a
     # working backplane and a silent one in a cross-process deployment.
     await watch_namespace(session)
+    return taskwire_stream
+
+
+async def register_taskwire_muxws(peer: Any, session: str) -> StreamHandler:
+    """Mount taskwire on one connected muxws peer. **Call this once, at handshake.**
+
+    The counterpart of `register_taskwire_rest(router)`: one call, and the socket half is wired. It
+    tags the peer with its namespace so `peers_for` can fan out to it, subscribes this process to
+    that namespace's channel, and returns the handler to compose behind `process_command`.
+
+    ```python
+    from fastapi_viewsets.mux_ws import process_command
+    from muxws import accept, PeerRegistry
+    from taskwire.contrib.muxws import MuxwsTransport, register_taskwire_muxws
+
+    registry = PeerRegistry()
+    taskwire.configure(store=..., transport=MuxwsTransport(registry), session_resolver=...)
+
+    @app.websocket("/ws")
+    async def socket(websocket):
+        peer = await accept(websocket)
+        ns = configured.session_resolver(websocket)   # the same resolver REST uses (TW-WS-007)
+        taskwire_stream = await register_taskwire_muxws(peer, ns)
+        registry.register(peer)                       # after the tag, never before
+
+        async def on_stream(payload, stream):
+            if await process_command(payload, stream, connection=websocket):
+                return
+            await taskwire_stream(payload, stream)
+
+        peer.on_stream(on_stream)
+        try:
+            await peer.serve()
+        finally:
+            await release_peer(peer, ns, registry)
+    ```
+
+    The order is load-bearing: `PeerRegistry.register` indexes a peer under the tags it holds **at
+    that moment** (WSM-REG-010), so a peer registered before it is tagged is indexed under nothing
+    and receives no push - with everything else about the deployment looking correct.
+
+    The registry stays the application's: it is the one taskwire was configured with, and joining the
+    fan-out is its business rather than this call's.
+    """
+    tag_peer(peer, session)
+    return await serve_peer(peer, session)
 
 
 async def goaway_if_stale(peer: Any, current_session: str | None) -> bool:
@@ -328,7 +366,7 @@ async def release_peer(peer: Any, session: str, registry: Any = None) -> None:
     """
     if registry is not None:
         with contextlib.suppress(Exception):
-            registry.remove(peer)
+            registry.deregister(peer)
         if registry.peers_for(**{SESSION_TAG: session}):
             return  # this process still holds another socket of that namespace
     await unwatch_namespace(session)

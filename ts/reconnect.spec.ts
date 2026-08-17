@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { REGISTER_PATH } from './register';
+import { REGISTER_PATH } from './calls';
 import { type ClientTransport, DEFAULT_BASE_PATH, new_token, Taskwire } from './taskwire';
 import type { Envelope, WireObject } from './wire';
 

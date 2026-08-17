@@ -31,6 +31,14 @@
  * client reads the register and rebuilds from the payload; the visible collection, the selection and
  * the overrides all start empty, because there is nowhere for them to have come back from.
  *
+ * **A push moves the same handles a read moves, and nothing else** (TW-CORE-002). `applyEnvelope`
+ * routes one envelope to the `Operation` member the equivalent read would have called, then re-states
+ * the payload's own row from that handle so the order, the aggregate and the selection follow -
+ * `merge()` recomputes all three from the snapshots, so a push that moved only a handle would leave
+ * a footer showing whatever the last read said for as long as the ladder is held (TW-TS-007). An
+ * envelope that cannot be applied is dropped: the store is the truth and the next read is the whole
+ * of the correction (TW-CORE-005).
+ *
  * The cadence is `poll.ts`'s ladder, unforked (TW-REST-011) - the register poll and the single-token
  * poll are the same ladder, and a second copy of it drifts. What this file decides is only the ladder
  * *state*, and it decides it on the **derived** entry state (TW-REG-004, TW-PROG-010): an operation
@@ -39,12 +47,25 @@
  * for the ceiling - and poll a blocked worker twelve times a second per tab.
  */
 
-import type { AxiosInstance } from 'axios';
-
 import { aggregate as computeAggregate, isActiveEntry, selectFifo } from './aggregate';
+import type { TaskwireCalls } from './calls';
 import type { Operation } from './operation';
 import { PollLadder, type PollLadderState, registerLadderState, revsOf } from './poll';
-import { type Aggregate, needsAttention, parseRegister, type Register, type Snapshot } from './wire';
+import {
+  type Aggregate,
+  type DialogRequest,
+  type Envelope,
+  isTerminal,
+  needsAttention,
+  parseDialogReply,
+  parseDialogRequest,
+  parseProgress,
+  parseRegister,
+  parseSnapshot,
+  type Register,
+  type Snapshot,
+  type WireObject,
+} from './wire';
 
 /** §8.3's client UI policy, as this module needs to read it. `taskwire.ts` owns the values. */
 export interface UiPolicy {
@@ -59,8 +80,8 @@ export interface UiPolicy {
  * without the two files forming a cycle, and a test can drive the loop with a stub.
  */
 export interface RegisterClient {
-  readonly basePath: string;
-  readonly http: AxiosInstance;
+  /** The six calls of TW-REST-004, over whichever transport the client currently speaks. */
+  readonly calls: TaskwireCalls;
   /** §8.3, read at the moment of the event rather than captured, so `configure_taskwire` is live. */
   uiPolicy(): Readonly<UiPolicy>;
   /** The handle for this token if one already exists - a `run()`, `track()` or `subscribe()` handle. */
@@ -72,16 +93,6 @@ export interface RegisterClient {
 }
 
 export type OperationsListener = (operations: Operation<unknown>[]) => void;
-
-/**
- * The one endpoint an ordinary client polls (TW-REG-001): **the base path itself**.
- *
- * The register is the collection, so it lives at the collection's URL and carries no extra segment.
- * That is what removes TW-REST-006's hazard by construction: with nothing literal after the prefix
- * there is no path a token could ever be mistaken for, and the ordering of route declarations stops
- * being load-bearing.
- */
-export const REGISTER_PATH = '';
 
 /**
  * TW-REG-005: `needsAttention` first, then `createdAt` ascending. There is no third key.
@@ -113,6 +124,25 @@ export function mergePrivate(shared: readonly Snapshot[], own: readonly Snapshot
   return [...merged.values()];
 }
 
+/**
+ * The dialog a `dialog.close` body settles, or `null` when this client never saw the question open.
+ *
+ * The body is an id, the state the store arbitrated and the reply that won - not a whole
+ * `DialogRequest` - so what is applied is the document already in hand with those put on it. A close
+ * for a question nobody here saw is dropped rather than reconstructed: the body carries no buttons
+ * and no inputs, and a synthesised dialog would be an unanswerable one. `state` is read rather than
+ * assumed, because a withdrawal settles `cancelled` and an answer settles `answered` (TW-DLG-012),
+ * and a client that guessed would tell a user their question was answered when it was withdrawn.
+ */
+function settledDialog(dialogs: readonly DialogRequest[], body: WireObject): DialogRequest | null {
+  const existing = dialogs.find((dialog) => dialog.id === body.id);
+  if (existing === undefined) return null;
+  const state = body.state;
+  if (state !== 'answered' && state !== 'cancelled') return null;
+  const reply = body.reply === null || body.reply === undefined ? existing.reply : parseDialogReply(body.reply);
+  return { ...existing, state, reply };
+}
+
 /** The state of the visible collection is one of these; §4.3's table is what moves between them. */
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -126,6 +156,18 @@ export class RegisterState {
   private running = false;
 
   private stopped = false;
+
+  /** No timer while this holds: a transport is attached and healthy (TW-TS-007). */
+  private suspended = false;
+
+  /** Whether a read is in flight, so suspending and resuming across one cannot double the timer. */
+  private reading = false;
+
+  /** A read taken off the ladder, already scheduled. One per burst, never one per envelope. */
+  private oneOff: Timer | null = null;
+
+  /** A read owed because one was already in flight when it was asked for; issued when that lands. */
+  private owed = false;
 
   /** The last payload, by token. Never merged with the private half - that happens on the way out. */
   private shared: Snapshot[] = [];
@@ -222,6 +264,11 @@ export class RegisterState {
    * Begin polling the register. Idempotent, and lazy: a page that never reads `tw.register` never
    * asks the server for it, which is the only reason an application using nothing but `run()` does
    * not poll a second endpoint forever.
+   *
+   * A held ladder still reads the list once (TW-CORE-002). A transport carries what *changes*, and
+   * an operation already parked on an open question changes nothing until it ends - so a page that
+   * attached its socket before it first read `tw.register` would show an empty footer and no
+   * question at all for the life of that socket, which is the state TW-TS-009 exists to forbid.
    */
   start(): void {
     if (this.running || this.stopped) return;
@@ -229,10 +276,34 @@ export class RegisterState {
     // The private half is knowable without a round trip, so the first read of `tw.register` already
     // has this tab's own operations in it rather than an empty list for one base interval.
     this.merge();
-    this.schedule(this.ladderState(null));
+    if (this.suspended) this.readOnce();
+    else this.schedule(this.ladderState(null));
   }
 
-  /** A per-token poll delivered something, or a handle went away: the merged view moved. */
+  /**
+   * Hold the register poll while a transport carries the namespace, and let it go again on detach
+   * or on loss (TW-TS-007).
+   *
+   * Resuming starts from the base rung rather than from wherever the climb had reached: the
+   * suspension says nothing about how often the register is changing, and returning to a five
+   * second ceiling because that is where the ladder was when a socket arrived would make the
+   * recovery this exists for take five seconds to begin.
+   */
+  setSuspended(suspended: boolean): void {
+    if (this.suspended === suspended || this.stopped) return;
+    this.suspended = suspended;
+    if (suspended) {
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = null;
+      return;
+    }
+    this.ladder.reset();
+    // A read still in flight schedules the next rung itself; scheduling here as well would leave
+    // two timers running with only the second reachable.
+    if (this.running && this.timer === null && !this.reading) this.schedule(this.ladderState(null));
+  }
+
+  /** A per-token poll delivered, a push landed, or a handle went away: the merged view moved. */
   refresh(): void {
     if (!this.running || this.stopped) return;
     this.merge();
@@ -244,6 +315,9 @@ export class RegisterState {
     this.running = false;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
+    if (this.oneOff !== null) clearTimeout(this.oneOff);
+    this.oneOff = null;
+    this.owed = false;
     [...this.delays.values()].forEach((timer) => clearTimeout(timer));
     this.delays.clear();
     [...this.lingers.values()].forEach((timer) => clearTimeout(timer));
@@ -274,13 +348,13 @@ export class RegisterState {
   private async tick(): Promise<void> {
     if (this.stopped) return;
     let payload: Register | null = null;
+    this.reading = true;
     try {
-      const response = await this.client.http.get(
-        REGISTER_PATH === '' ? this.client.basePath : `${this.client.basePath}/${REGISTER_PATH}`,
-      );
-      payload = parseRegister(response.data);
+      payload = parseRegister(await this.client.calls.register());
     } catch {
       // Read again on the next rung. There is nothing here a client could usefully be told.
+    } finally {
+      this.reading = false;
     }
     if (this.stopped) return;
 
@@ -289,7 +363,18 @@ export class RegisterState {
       this.revs = revsOf(payload);
       this.apply(payload);
     }
-    this.schedule(state);
+    // A read asked for while this one was in flight was asked about something this payload cannot
+    // contain: it was issued before the envelope that raised the question reached the client, so it
+    // was answered by a list written before the token existed. `readOnce` re-issues it, and the
+    // rung it would have scheduled is scheduled by the read it starts.
+    if (this.owed) {
+      this.owed = false;
+      this.readOnce();
+      return;
+    }
+    // A read that landed after the ladder was suspended is applied and not followed up: the
+    // transport is carrying the namespace now, and the next rung is what resuming produces.
+    if (!this.suspended) this.schedule(state);
   }
 
   /**
@@ -321,6 +406,149 @@ export class RegisterState {
       handle.setProgressDelivery(entry.progressDelivery);
     });
     this.merge();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Pushes
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Apply one pushed envelope to the handle it names, and let the merged view follow.
+   *
+   * The five kinds a server may send (`PUSHED_KINDS`) are the pushed half of the documents a read
+   * carries, so each one goes to the `Operation` member the equivalent read would have moved and to
+   * no path of its own. Nothing here fetches anything: an envelope that does not parse, names a
+   * question this client never saw, or arrives at a `rev` already passed is dropped, because the
+   * store is the truth and a push is an accelerator (TW-CORE-002).
+   *
+   * @returns whether it landed on a handle - a dropped push is not an update, and the client uses
+   * this to decide whether the token's own poller has anything to re-state.
+   */
+  applyEnvelope(envelope: Envelope): boolean {
+    if (this.stopped) return false;
+    const handle = this.client.handle(envelope.token);
+    if (handle === null) {
+      // A token no handle here knows is a membership change - something started in another tab, or
+      // this client's own copy of who is in the register is older than the push. The register is
+      // what says who is in it (TW-REG-006), so one read answers it; synthesising a row out of one
+      // envelope's body would put an entry on screen carrying whatever that kind happened to carry.
+      this.readOnce();
+      return false;
+    }
+    try {
+      return this.route(envelope, handle);
+    } catch {
+      // A body that does not parse is a dropped push and nothing more. Throwing here would take the
+      // whole socket out over one bad frame, and no state depends on this frame having arrived.
+      return false;
+    }
+  }
+
+  private route(envelope: Envelope, handle: Operation<unknown>): boolean {
+    const { rev, body } = envelope;
+    switch (envelope.kind) {
+      // Both document kinds report whether they landed, and a `false` is a revision already passed:
+      // dropped whole rather than merged, because a merge of two revisions is a third that never
+      // existed on the server (TW-REV-006).
+      case 'progress':
+        // A progress body is a `Progress` document and carries NO dialogs array. `applySnapshot`
+        // replaces the dialogs only when the key is present, which is what keeps a progress push
+        // from blanking a question no other envelope will mention again.
+        if (!handle.applySnapshot({ rev, progress: parseProgress(body) })) return false;
+        break;
+      case 'snapshot':
+        if (!handle.applySnapshot(parseSnapshot(body))) return false;
+        break;
+      case 'dialog.open':
+        handle.applyDialog(parseDialogRequest(body));
+        break;
+      case 'dialog.close': {
+        const settled = settledDialog(handle.dialogs, body);
+        if (settled === null) return false;
+        handle.applyDialog(settled);
+        break;
+      }
+      // `cancel` says only that a cancel was REQUESTED (TW-CANCEL-001), and the handle holds no such
+      // flag: what a view draws is the operation's own state, and that arrives as the `progress`
+      // envelope the cancelled worker's terminal write publishes. Applying it twice would be
+      // harmless - it is idempotent (TW-REV-006) - and applying it at all would be applying nothing.
+      //
+      // `dialog.reply` and `watch` originate with the client and are never pushed to one
+      // (TW-CORE-009), so an envelope claiming either is a dropped push.
+      default:
+        return false;
+    }
+
+    const progress = handle.progress;
+    if (progress !== null && isTerminal(progress)) this.depart(envelope.token);
+    else this.restate(envelope.token, handle);
+    this.refresh();
+    return true;
+  }
+
+  /**
+   * Re-state the payload's row for a token from the handle a push has just moved.
+   *
+   * From the handle rather than from the envelope, so that the `rev` gate and dialog identity are
+   * decided once, in `Operation`: by the time this runs the handle has already dropped a stale
+   * revision or refused to reopen a settled question, and a second reading of the same body could
+   * only disagree with the first. A token with no row is a private operation, whose only copy is the
+   * one its own poller holds (TW-PRIV-002) - there is nothing here to re-state.
+   */
+  private restate(token: string, handle: Operation<unknown>): void {
+    const progress = handle.progress;
+    if (progress === null) return;
+    this.shared = this.shared.map((snapshot) =>
+      snapshot.token === token
+        ? { ...snapshot, rev: handle.rev ?? snapshot.rev, progress, dialogs: [...handle.dialogs] }
+        : snapshot,
+    );
+  }
+
+  /**
+   * A terminal state is a departure (TW-REG-007): the server drops the entry in the same step that
+   * ends it, so the row has left every register there is and no read has to say so.
+   *
+   * Dropping it here is what lets the aggregate and the selection follow a push while the ladder is
+   * held. The visible collection is unaffected: `failureLinger` holds its own last copy of a row it
+   * saw depart, in that collection alone (TW-REG-015).
+   */
+  private depart(token: string): void {
+    this.shared = this.shared.filter((snapshot) => snapshot.token !== token);
+  }
+
+  /**
+   * Read the register once, off the ladder.
+   *
+   * Two callers and one need. A push naming a token no handle here can place is a membership
+   * change, and a loop that starts under an attached transport has never read the list at all;
+   * either way the register is what says who is in it (TW-REG-006) and one read is the answer.
+   *
+   * One read per burst rather than one per envelope: a socket that delivers a queued push for each
+   * of ten tokens another tab just started hands them over in a single turn, and ten reads of one
+   * list would answer the same question ten times. The zero-delay timer is exactly that horizon,
+   * and the pending rung is dropped rather than left to fire beside the read it starts - `tick()`
+   * schedules the next one itself, and two timers would leave one ladder climbing twice.
+   *
+   * A read already in flight cannot be the answer: it was issued before the envelope that asks
+   * arrived, so the payload it will bring back was written before the token it is being asked
+   * about. So the request is **owed rather than dropped** - `tick()` re-issues it on the way out,
+   * because while the ladder is held nothing else ever would, and the envelope that asked is
+   * routinely the last one a token ever sends.
+   */
+  private readOnce(): void {
+    if (this.stopped || !this.running) return;
+    if (this.reading) {
+      this.owed = true;
+      return;
+    }
+    if (this.oneOff !== null) return;
+    this.oneOff = setTimeout(() => {
+      this.oneOff = null;
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = null;
+      void this.tick();
+    }, 0);
   }
 
   // ---------------------------------------------------------------------------------------------

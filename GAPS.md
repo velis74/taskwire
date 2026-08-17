@@ -536,6 +536,79 @@ does not point at it, so TypeScript cannot resolve its types while respecting `e
 packaging bug in that library. taskwire declares the two members it calls locally rather than
 deep-importing the file, which would break the moment they fix it. Worth reporting upstream.
 
+---
+
+## `conformance/` — the corpus does not do what it says it does — OPEN
+
+**What the documents claim**: `conformance/README.md` and the headers of `models_test.py` and
+`wire.spec.ts` present the corpus as the thing that keeps the two languages from drifting apart, and
+TW-PKG-002 forbids a copy step on that basis.
+
+**What it actually does**, measured rather than argued:
+
+- Rename a wire field in Python symmetrically — in `to_dict` *and* `from_dict`, so Python stays
+  self-consistent — and **TypeScript stays 350/350 green**. Neither suite ever reads the other's
+  output; both read the fixtures. It is a per-language check against a written-down spelling, not a
+  cross-language instrument. What catches two halves that have genuinely stopped speaking is
+  `demo.py`, which is also the only thing that has ever caught one.
+- Of the four Python failures that rename produced, two came from the corpus and two from
+  `rest_test.py` and `viewsets_test.py`, which assert over real JSON bodies and caught it
+  independently.
+- Skipping the whole `describe('the golden corpus')` block — 63 of 350 TypeScript tests — leaves
+  `wire.ts` statement, line and function coverage **unchanged** (99.26 / 99.26 / 98.33) and drops
+  branch coverage 93.82 → 89.44. On the Python side the equivalent drops `models.py` from 99 % to
+  96 %, twelve statements of 314.
+- What it does give, and nothing else in the repository does: add a key to a fixture and **both**
+  suites go red at once. That is a real ratchet for pushing a protocol change through both halves.
+
+**Why it was left alone**: four consumers read the fixtures, not two — `models_test.py`,
+`contrib/schema_test.py` (the pydantic mirrors against the normative parsers), `wire.spec.ts` and
+`aggregate.spec.ts`, which pulls four documents by name. Inlining them per language means three
+copies inside one repository, which is a worse trade than the one the directory already makes.
+
+**What still needs deciding**: whether the corpus keeps its top-level standing and TW-PKG-002's
+prohibition on the strength of a branch-coverage matrix and a ratchet, or is demoted to ordinary
+per-language test data with the cross-language claim struck from all four headers. Either way the
+claim as written is false and should not survive into the user documentation.
+
+**Three loose ends found alongside it**:
+
+- `toCamel`, `toSnake`, `convertKeys` and `OPAQUE_KEYS` (`ts/wire.ts:389-428`) have **no caller**
+  outside the export list in `index.ts` and their own tests. The `snake_case` → `camelCase` mapping
+  is done explicitly and per field inside each `parseX`, fused with the validation that has to
+  happen anyway (`resultKind: optionalString(wire.result_kind, …)`), so the generic converter is
+  never on a code path. This is the "which public symbol does nothing but a test call?" question
+  answering yes.
+- `conformance/sequences/` is empty but for `.gitkeep`, and `ts/packaging.spec.ts` asserts that the
+  empty directory exists. `taskwire-spec.md:130` and three briefs reference
+  `conformance/sequences/out-of-order-dialog.json`, which was never written. The behaviour it was to
+  cover (TW-REV-006) is implemented at `ts/operation.ts:377` and tested in `client.spec.ts` and
+  `vuetify.spec.ts`, so nothing is uncovered — only promised.
+- A wire mismatch is not always loud. Required fields throw with the field path, but
+  `optionalString` reads absent and `null` alike (TW-CORE-010), and for `result_kind` `null` *means*
+  private — so a dropped or misspelled `result_kind` does not raise, it silently unshares the
+  operation and removes it from the register.
+
+---
+
+## taskwire-spec.md §2.14 — two rule ids the author did not mint
+
+Carrying the six calls over the socket settled three rules the specification already had —
+TW-CORE-007's scope, TW-TS-007's pause/resume, TW-WS-008's dropped `allow_socket_replies` — and left
+two facts with no rule to hang off. Both are constraints an implementer breaks by accident and pays
+for in a way that looks like something else, which is what a rule is for:
+
+- **TW-WS-010** taskwire must not install the peer's stream handler. A `Peer` has one `on_stream`
+  slot and it is the application's; taskwire returns a handler to compose behind `process_command`.
+  Taking the slot locks the application out of its own socket.
+- **TW-WS-011** mounting is one call per connection, and the session tag must be set before
+  `PeerRegistry.register` — the registry indexes a peer under the tags it holds at that instant, so a
+  peer registered untagged receives no push while every other symptom says the deployment is correct.
+
+They are written in the section's own voice and cite the muxws rule (WSM-REG-010) the second depends
+on. If the author would rather have facts of this kind live in the module docstring alone, delete
+them; nothing else references the two ids.
+
 ## Coverage of the two languages
 
 Python 202 tests (5 skipped: they drive an injected clock, and Redis owns its own expiry).
