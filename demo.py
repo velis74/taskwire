@@ -8,10 +8,9 @@ The server listens on 127.0.0.1:8030 (override with `TASKWIRE_DEMO_PORT`) and th
 5174, which proxies `/taskwire` and `/demo` to it - so neither half needs a CORS story, a second
 origin, or a cross-site cookie.
 
-**This demo speaks REST only.** The WebSocket transport carries the pushes but not yet the whole
-call surface, so a demo that offered the choice today would offer one option that half worked. When
-it lands, the switch belongs here and nothing in `demo/server/jobs.py` changes by a line - that
-being the claim the two transports exist to support.
+**The demo offers both transports and switches between them at runtime.** Nothing in
+`demo/server/jobs.py` differs by a line either way - that being the claim the two transports exist
+to support.
 
 This file is a *consumer* of taskwire, not part of it. Nothing under `taskwire/` imports it, no
 library test depends on it, and it is absent from both published artefacts:
@@ -52,6 +51,7 @@ printed a banner saying the server is up.
 
 
 def check_imports() -> None:
+    """Refuse to start when a `REQUIRED_IMPORTS` package is absent, naming all the missing ones."""
     import importlib.util
 
     missing = [(name, why) for name, why in REQUIRED_IMPORTS if importlib.util.find_spec(name) is None]
@@ -93,6 +93,7 @@ def start_client() -> subprocess.Popen:
 
 
 def main() -> None:
+    """Check both halves are installed, start Vite unless `--server-only`, then run uvicorn."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--server-only", action="store_true", help="skip the Vite dev server")
     parser.add_argument("--reload", action="store_true", help="restart the server when its code changes")

@@ -124,7 +124,8 @@ describe('the vue composables (§5.5)', () => {
     expect(bound.progress.value?.percent).toBe(25);
     expect(bound.isRunning.value).toBe(true);
     expect(bound.isDone.value).toBe(false);
-    // M3b fills this in. It hangs on the entry and there is no global slot for it (TW-TS-006).
+    // The dialog hangs on the entry and there is no global slot for it (TW-TS-006). This document
+    // carries no open question, so the ref reads null.
     expect(bound.dialog.value).toBeNull();
 
     server.documents.set(token, snapshotWire(token, { rev: 2 }, { state: 'done', percent: 100 }));
@@ -132,7 +133,8 @@ describe('the vue composables (§5.5)', () => {
     expect(bound.isDone.value).toBe(true);
     expect(bound.isRunning.value).toBe(false);
 
-    // The inert halves exist with their final signatures so no call site moves in M3b or M6.
+    // Both writes go out through the entry. With no open question `answer` sends nothing, and a
+    // cancel is a request that resolves without moving any state (TW-CANCEL-003).
     await expect(bound.answer('yes', { overwrite: true })).resolves.toBeUndefined();
     await expect(bound.cancel()).resolves.toBeUndefined();
 
@@ -201,7 +203,8 @@ describe('the vue composables (§5.5)', () => {
     await vi.advanceTimersByTimeAsync(1200);
     expect(register.selected.value?.token).toBe(second);
 
-    // Inert until M7 and M8, with the signatures they will keep.
+    // The three writes the register exposes, each delegating to the entry. `collect` rejects
+    // locally when the entry holds no uncollected result, before any call goes out.
     const entry = register.entries.value[0];
     await expect(register.collect(entry)).rejects.toThrow(/uncollected result/);
     await expect(register.dismiss(entry)).resolves.toBeUndefined();

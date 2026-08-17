@@ -69,6 +69,7 @@ export interface ReporterSettings {
   raiseOnCancel: boolean;
 }
 
+/** §8.1's published defaults. `operation({ settings })` overrides them one field at a time. */
 export const DEFAULT_SETTINGS: ReporterSettings = {
   activeTtl: 3600,
   resultTtl: 604800,
@@ -83,12 +84,13 @@ export function keepalivePeriod(settings: ReporterSettings): number {
 }
 
 /**
- * The part of the store port (§5.3, TW-STORE-001) the operating half calls: six of the fourteen
- * methods - `commit`, `snapshot`, `touch`, `isCancelled`, `publish` and `drop`.
+ * The part of the store port (§5.3, TW-STORE-001) the operating half calls: eight of the fourteen
+ * methods - `commit`, `snapshot`, `touch`, `isCancelled`, `publish`, `drop`, `putDialog` and
+ * `awaitDialog`.
  *
  * Derived from `TaskwireStore` rather than restated, so the two can never disagree about a
  * signature, and narrowed rather than used whole so that a caller with a purpose-built store hands
- * in six methods instead of stubbing eight it will never be asked for. `MemoryStore` satisfies it by
+ * in eight methods instead of stubbing six it will never be asked for. `MemoryStore` satisfies it by
  * being a `TaskwireStore`, which is all `operation({ store })` asks of its argument.
  *
  * The import is type-only: nothing in this module depends on a store implementation at runtime, and
@@ -192,12 +194,6 @@ function yieldToHost(): Promise<void> {
 }
 
 /**
- * What an operation writes its commentary through.
- *
- * One reporter per operation in M1; `subtask()` and `split()` arrive in M2. The reporter never
- * touches a transport (TW-CORE-003): it writes to the store and calls `store.publish()`.
- */
-/**
  * TW-CANCEL-005: its own type.
  *
  * Never a bare `Error` - callers must be able to catch precisely this - and never something the
@@ -258,6 +254,12 @@ function expandButtons(buttons: Array<string | Button>): Button[] {
   );
 }
 
+/**
+ * What an operation writes its commentary through.
+ *
+ * One reporter per operation; `subtask()` and `split()` hand out sub-ranges of it. The reporter never
+ * touches a transport (TW-CORE-003): it writes to the store and calls `store.publish()`.
+ */
 export class Reporter {
   readonly key: string;
 
@@ -289,18 +291,18 @@ export class Reporter {
   private cancelledValue = false;
 
   /**
-   * Nesting (M2). `notifyParent` is the whole of a subtask's relationship to its parent, and it does
-   * not tell the child its own range: TW-NEST-001 says the callee MUST NOT be able to learn it. A
-   * child reports a *local* 0-100 and the parent does the mapping, which is also why TW-NEST-002's
-   * recursive composition needs no arithmetic of its own.
+   * `notifyParent` is the whole of a subtask's relationship to its parent, and it does not tell the
+   * child its own range: TW-NEST-001 says the callee MUST NOT be able to learn it. A child reports a
+   * *local* 0-100 and the parent does the mapping, which is also why TW-NEST-002's recursive
+   * composition needs no arithmetic of its own.
    */
   private readonly notifyParent: ((local: number | null, force: boolean) => Promise<void>) | null;
 
   /**
    * TW-NEST-004 / TW-INV-010: one entry per child handed out, never a last-written percent, and each
-   * commit rewrites exactly one entry. The bug this prevents survives a monotonicity property test -
-   * four equal siblings where whichever finishes last reports first pin a last-write-wins bar at
-   * 100% for three quarters of the work.
+   * commit rewrites exactly one entry. With a last-written percent instead, four equal siblings whose
+   * completion order differs from their reporting order would pin the bar at 100% for three quarters
+   * of the work.
    */
   private readonly contribution = new Map<number, number>();
 
@@ -408,8 +410,8 @@ export class Reporter {
   /**
    * A clean finish. `operation()`'s exit is the one that calls this in practice (TW-PROG-011).
    *
-   * A subtask's `done()` will fill its contribution and will not touch the operation state
-   * (TW-NEST-008, M2).
+   * A subtask's `done()` fills its contribution and does not touch the operation state
+   * (TW-NEST-008).
    */
   async done(): Promise<void> {
     // TW-NEST-008: a subtask's `done()` fills its contribution to its full width and does NOT put
@@ -441,17 +443,14 @@ export class Reporter {
     return this.commit(state);
   }
 
-  // -------------------------------------------------------------- later milestones
+  // -------------------------------------------------------------- results and dialogs
 
   /**
-   * TW-RES-001/003. The mechanism is M7's; the guard that makes it write-once is there too.
+   * Park a result for later collection. Root reporter only, and at most once (TW-RES-001, TW-RES-003).
    *
-   * These four throw rather than quietly doing nothing. A `setResult()` that no-opped would let an
-   * application ship a result nobody can collect, and the failure would surface as a missing
+   * The guards below throw rather than quietly doing nothing: a `setResult()` that no-opped would let
+   * an application ship a result nobody can collect, and the failure would surface as a missing
    * download weeks later rather than as an error at the call site.
-   */
-  /**
-   * Park a result for later collection. Root reporter only, and at most once.
    *
    * **This is emphatically not an `ask()`** (TW-RES-005). The task has finished; only the *record*
    * waits. The reporter writes the result and the state and the caller returns - an implementation
@@ -492,7 +491,12 @@ export class Reporter {
     return this.resultParked;
   }
 
-  /** TW-DLG-*: no timeout, no default answer. M3. */
+  /**
+   * Ask the namespace a question and block until it is answered or withdrawn.
+   *
+   * No timeout and no default outcome (TW-DLG-005): it returns only when the store arbitrated a
+   * reply (TW-DLG-007). A withdrawal throws `OperationCancelled` instead (TW-DLG-012).
+   */
   async ask(request: {
     dialogId: string;
     buttons: Array<string | Button>;
@@ -559,7 +563,10 @@ export class Reporter {
     return { button: reply.button, values: reply.values };
   }
 
-  /** M2. */
+  /**
+   * A child reporter owning `[start, end]` of this one's range. The child reports a local 0-100 and
+   * never learns its width (TW-NEST-001).
+   */
   subtask(start: number, end: number): Reporter {
     const childKey = ++this.childSeq;
     const width = end - start;
@@ -592,7 +599,10 @@ export class Reporter {
     });
   }
 
-  /** M2. */
+  /**
+   * One `subtask()` per weight, dividing this reporter's range in proportion. The weights are
+   * relative and need not add up to anything; a non-positive total throws.
+   */
   split(...weights: number[]): Reporter[] {
     const total = weights.reduce((sum, weight) => sum + weight, 0);
     if (total <= 0) throw new RangeError('taskwire: split() needs at least one positive weight');
@@ -697,13 +707,6 @@ export class Reporter {
   }
 
   /**
-   * Write, then publish, in that order and never the other (TW-CORE-001, TW-INV-001).
-   *
-   * A client that saw a push whose state a later read contradicts has no way to recover: it is
-   * entitled to current state only (TW-CORE-005), and current state just disagreed with what it was
-   * told.
-   */
-  /**
    * TW-CANCEL-002: by default the NEXT progress-reporting call throws.
    *
    * This single behaviour is the whole argument for the throwing default. A loop containing no
@@ -721,6 +724,13 @@ export class Reporter {
     throw new OperationCancelled(`taskwire: operation ${this.token} was cancelled`);
   }
 
+  /**
+   * Write, then publish, in that order and never the other (TW-CORE-001, TW-INV-001).
+   *
+   * A client that saw a push whose state a later read contradicts has no way to recover: it is
+   * entitled to current state only (TW-CORE-005), and current state just disagreed with what it was
+   * told.
+   */
   private async commit(state?: ProgressState): Promise<number> {
     if (state !== undefined) this.progress.state = state;
     this.progress.updatedAt = nowIso();
@@ -755,6 +765,9 @@ export class Reporter {
  *
  * Silent, not permissive: `set({ state })` and an oversized `data` are rejected here exactly as they
  * are in production, because code that would fail with a namespace must not pass without one.
+ *
+ * `ask()` is the one call that does not answer. With no store there is nothing to arbitrate a reply,
+ * and returning a made-up one would hand the caller a choice nobody made, so it throws.
  */
 export class InertReporter extends Reporter {
   constructor(settings: ReporterSettings = DEFAULT_SETTINGS) {

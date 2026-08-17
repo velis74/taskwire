@@ -8,7 +8,7 @@ import { Operation, type OperationHost } from './operation';
 import type { DialogRequest, Progress } from './wire';
 
 /**
- * The shipped UI deliverables (M7b) and the client half of dialogs (M3b).
+ * The shipped UI deliverables and the client half of dialogs.
  *
  * The rule this file exists to protect is TW-REG-013: **the footer draws one selected operation's
  * own percentage and never an aggregate one.** There is no unit in which two operations'
@@ -166,7 +166,7 @@ describe('answer() (TW-DLG-011)', () => {
   });
 });
 
-describe('the shipped UI deliverables (M7b)', () => {
+describe('the shipped UI deliverables', () => {
   it('draws one selected operation percentage and never an aggregate one (TW-REG-013)', () => {
     // The single most natural thing for somebody to add later is a bar over the aggregate. There is
     // no honest number to put in it: one operation is 40% through a row count, the other 40%

@@ -65,10 +65,13 @@ from ..rest import collect_result, dismiss_result, get_operations, get_snapshot,
 from ..settings import configured, settings
 from . import schema
 
+# The two keys the context processor contributes. Namespaced, because the context dict is shared
+# with every other processor the application has configured.
 SESSION_KEY = "taskwire_session"
+"""Where the namespace `session_resolver` returned sits in the context."""
+
 CONNECTION_KEY = "taskwire_connection"
-"""The two keys the context processor contributes. Namespaced, because the context dict is shared
-with every other processor the application has configured."""
+"""Where the value of `CONNECTION_HEADER`, or `None`, sits in the context."""
 
 
 async def taskwire_context_processor(request: Request, _viewset: Any = None) -> dict[str, Any]:
@@ -250,8 +253,8 @@ def register_taskwire_rest(
     A client speaking only WebSocket therefore reaches exactly the surface a client speaking only
     HTTP does, and there is no second implementation to keep in step.
 
-    `register_muxws` decides whether the muxws half is published: `None` defers to
-    `settings.viewsets_register_muxws` (True unless the application says otherwise), and `False`
+    `register_muxws` decides whether the muxws half is published: `None` defers to fastapi-viewsets'
+    own `viewsets_register_muxws` (True unless the application says otherwise), and `False`
     leaves a deployment with REST alone. It is the only knob, because the two transports differ in
     nothing else.
 

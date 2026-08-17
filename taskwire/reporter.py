@@ -1,6 +1,6 @@
 """`Reporter`, `operation()` and the lifecycle writes.
 
-Three things in this module are easy to get plausibly wrong, and each has a rule and a test:
+Three rules govern this module:
 
 **The throttle is inline, never a background task** (TW-THR-002). `set()` reads an injected clock
 and commits when the window has elapsed. The natural implementation - a task holding a timer - fails
@@ -113,8 +113,8 @@ def _expand_buttons(buttons: list[str] | list[Button]) -> list[Button]:
 class Reporter:
     """What an operation writes its commentary through.
 
-    One reporter per operation in M1; `subtask()` and `split()` arrive in M2. The reporter never
-    touches a transport (TW-CORE-003): it writes to the store and calls `store.publish()`.
+    One reporter per operation, plus the children `subtask()` and `split()` hand out. The reporter
+    never touches a transport (TW-CORE-003): it writes to the store and calls `store.publish()`.
     """
 
     def __init__(
@@ -143,7 +143,7 @@ class Reporter:
         self._cancelled = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # --- nesting (M2) -------------------------------------------------
+        # --- nesting ------------------------------------------------------
         # `_parent` and `_notify_parent` are the whole of a subtask's relationship to its parent, and
         # neither of them tells it its own range: TW-NEST-001 says the callee MUST NOT be able to
         # learn it. A child reports a *local* 0-100 and the parent does the mapping, which is also
@@ -151,9 +151,8 @@ class Reporter:
         self._parent = parent
         self._notify_parent = notify_parent
         # TW-NEST-004 / TW-INV-010: one entry per child handed out, never a last-written percent.
-        # Each commit rewrites exactly the one entry. The bug this prevents passes a monotonicity
-        # property test - four equal siblings where the last to finish finishes first pin the bar at
-        # 100% for three quarters of the work.
+        # Each commit rewrites exactly the one entry. With a last-written percent, four equal
+        # siblings whose fastest finishes first pin the bar at 100% for three quarters of the work.
         self._contribution: dict[int, float] = {}
         self._child_seq = 0
         self._own_percent: float | None = None
@@ -170,6 +169,7 @@ class Reporter:
 
     @property
     def token(self) -> str:
+        """The operation's address. A UUIDv4, minted by the caller."""
         return self._token
 
     @property
@@ -213,7 +213,11 @@ class Reporter:
         throttling window and its own merge semantics against this one.
 
         An omitted keyword leaves its field untouched; `data=` replaces the bag wholesale
-        (TW-PROG-003).
+        (TW-PROG-003). `raise_on_cancel=` sets this reporter's policy from here on, overriding the
+        per-action and global defaults (TW-CANCEL-003).
+
+        Raises `ValueError` on `state=`, which no caller may write (TW-PROG-012), and `TypeError` on
+        any other unrecognised keyword.
         """
         if "state" in forbidden:
             raise ValueError(
@@ -498,14 +502,13 @@ class Reporter:
 
         **There is no timeout** (TW-DLG-005). No `timeout` parameter, no `settings.dialog_timeout`,
         no `timeout_at`, no declared default outcome, no `DialogTimeout` and no `expired` state.
-        Their absence is the design, not an omission: a deadline would need a default answer, and
-        there is no answer a library can invent on a user's behalf. A programmer who wants one
-        implements it at whatever level suits them.
+        A deadline would need a default answer, and there is no answer a library can invent on a
+        user's behalf; a programmer who wants one implements it at whatever level suits them.
 
-        The consequence is stated plainly rather than softened (TW-DLG-006): **an unanswered dialog
-        blocks its worker** until Celery's own execution timeout kills the task, at which point the
-        operation becomes `failed` with code `dialog_timeout` and `retryable: true` and its open
-        dialogs are withdrawn. The general problem of a blocked worker is deliberately unsolved.
+        The consequence (TW-DLG-006): **an unanswered dialog blocks its worker** until Celery's own
+        execution timeout kills the task, at which point the operation becomes `failed` with code
+        `dialog_timeout` and `retryable: true` and its open dialogs are withdrawn. The general
+        problem of a blocked worker is deliberately unsolved.
 
         `ask()` MUST NOT be called while holding a database transaction (TW-DLG-017). It waits for a
         human. A transaction held across it holds its locks for as long as the user takes to answer,
@@ -610,6 +613,10 @@ class InertReporter(Reporter):
     Two situations produce one: `operation(token=None)`, and a `session_resolver` that returned
     `None` - an application opting a request out of taskwire entirely. Neither is an error, and
     neither should force `if reporter is not None:` through the calling code.
+
+    The display fields, the nesting and the terminal writes are inert. `ask()` and `set_result()`
+    are not: an inert reporter has no store, so there is nobody to answer a question and nothing to
+    park a result on, and both raise `ValueError`.
     """
 
     def __init__(self) -> None:
@@ -628,6 +635,14 @@ class InertReporter(Reporter):
             raise ValueError("taskwire: Reporter.set() has no `state` keyword (TW-PROG-012)")
         return None
 
+    async def ask(self, dialog_id: str, **kwargs: Any) -> DialogAnswer:  # noqa: ARG002
+        """A question with nobody to arbitrate it, named as such.
+
+        Progress an inert reporter drops is progress nobody asked for; a question it dropped would
+        be a worker waiting for an answer that no store can ever record.
+        """
+        raise ValueError(f"taskwire: ask({dialog_id!r}) needs an operation, and this reporter has none")
+
     async def _tick(self) -> None:
         return None
 
@@ -639,6 +654,7 @@ class InertReporter(Reporter):
         return InertReporter()
 
     def split(self, *weights: float) -> tuple[Reporter, ...]:
+        """One inert reporter per weight, so a split reads the same with no namespace bound."""
         return tuple(InertReporter() for _ in weights)
 
     def __enter__(self) -> Reporter:

@@ -1,15 +1,16 @@
 /**
- * `Taskwire` - the client (§5.5). Polling, and in M1b polling is the whole of it.
+ * `Taskwire` - the client (§5.5). One poller per token, one register loop, and a push transport that
+ * holds both while it is attached.
  *
  * Five rules shape this file, and four of them are about what it refuses to do.
  *
  * **It persists nothing** (TW-REG-018, TW-INV-016). Not the register, not the token list, not a tab
  * id, not a delivery preference. There is no `sessionStorage`, no `localStorage`, no IndexedDB and no
  * cookie anywhere in the package, and `client.spec.ts` spies on all four to keep it that way. Exactly
- * three things live in memory (TW-REG-019): the tokens **this page** minted, the override map this
- * socket last declared, and the connection id its `watch` reply carried - and in M1b only the first
- * of the three has anything in it. A client that crashed while silencing something must not come back
- * permanently silent, and the only way to guarantee that is to have nothing to come back to.
+ * three things live in memory (TW-REG-019): the tokens **this page** minted, the per-token override
+ * map, and the connection id a `watch` reply carried. A client that crashed while silencing something
+ * must not come back permanently silent, and the only way to guarantee that is to have nothing to
+ * come back to.
  *
  * **It can never be talked into polling faster** (TW-REST-014). The cadence is `poll.ts`, a pure
  * function; the loop here is a `setTimeout` around it and adds no policy of its own. `poll_after_ms`
@@ -17,7 +18,7 @@
  *
  * **The tab id never leaves the browser** (TW-TAB-001, TW-PROG-007). There is no `X-Taskwire-Tab`
  * header, no `origin_tab` field and no tab id in this file at all. The two headers that do travel are
- * `X-Taskwire-Token` and, once a socket exists in M8, `X-Taskwire-Connection` - both headers, never
+ * `X-Taskwire-Token` and, once a socket has declared one, `X-Taskwire-Connection` - both headers, never
  * query parameters (TW-CELERY-011), because a token in a URL lands in every access log and proxy
  * cache between here and the application.
  *
@@ -25,15 +26,10 @@
  * with `synchronous: true` so that it runs inside the `http.get(...)` call rather than a microtask
  * later, which is what makes `run(() => api.start())` work at all. It still cannot survive an `await`
  * before the request, and that is why `fn` also *receives* the token: `run(token => ...)` is the
- * always-correct form, and `client.spec.ts::callback that awaits before requesting sends no header`
- * demonstrates the hazard rather than papering over it (TW-TS-003).
+ * always-correct form, and a callback that awaits before requesting sends no header (TW-TS-003).
  *
  * **Identity is the token** (TW-TS-005). One token is one handle and one poller, whether it arrived
  * through `run()`, `track()` or `subscribe()`.
- *
- * The register, the aggregate, the visible collection and the Vue bindings are M1c; dialogs M3b;
- * every transport M5. The members those milestones fill in exist here now, with their final
- * signatures and inert bodies, so nothing they touch has to be rewritten at a call site.
  */
 
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
@@ -65,8 +61,11 @@ export const TOKEN_HEADER = 'X-Taskwire-Token';
 /** TW-REST-002: one header serving two purposes - the private scope, and the delivery decision. */
 export const CONNECTION_HEADER = 'X-Taskwire-Connection';
 
+/** What `use_taskwire()` takes, and the pair a client is keyed by. */
 export interface TaskwireOptions {
+  /** The prefix the viewset is mounted under (TW-REST-003); `/taskwire` when absent. */
   basePath?: string;
+  /** The instance the two headers are written on; the module-level `axios` when absent. */
   axiosInstance?: AxiosInstance;
 }
 
@@ -74,12 +73,15 @@ export interface RunOptions {
   title?: Text;
   /** Absent = a **private** operation, in nobody's register, reachable only by its token (TW-PRIV-001). */
   resultKind?: string;
-  /** M1c: opt this call out of the visible collection only. */
+  /** Keep this operation out of this tab's visible collection; it stays awaitable and in `tw.register`. */
   progressUi?: false;
 }
 
+/** What `track()` takes. No `progressUi`: a tracked operation becomes visible through `show()` only. */
 export interface TrackOptions {
+  /** Client-supplied, until a `progress.title` from the server replaces it. */
   title?: Text;
+  /** What the handle reports until a document arrives; `progress.resultKind` then wins. */
   resultKind?: string;
 }
 
@@ -128,7 +130,7 @@ export interface ClientTransport {
    * then the only way back to the ladder.
    */
   onHealth?(listener: (healthy: boolean) => void): () => void;
-  /** M8: declare this connection's per-token overrides. */
+  /** Declare this connection's whole per-token override map, never a delta (TW-DEL-006). */
   watch?(overrides: Record<string, boolean>): void;
   close?(): void;
 }
@@ -137,8 +139,14 @@ export interface ClientTransport {
 // configure_taskwire - §8.3
 // -------------------------------------------------------------------------------------------
 
+/** §8.3's policy, whole: what `taskwireConfig()` answers and what `configure_taskwire()` writes. */
 export interface TaskwireUiConfig {
+  /**
+   * The visible collection's policy: how old a `startedHere` operation must be to appear, and how
+   * long a failed one is held after it ends. `false` turns the collection off wholesale.
+   */
   progressUi: { delay: number; failureLinger: number } | false;
+  /** How long a question goes unadopted before another tab may present it (TW-TAB-005). */
   dialogAdoptDelay: number;
 }
 
@@ -158,7 +166,7 @@ let uiConfig: TaskwireUiConfig = { ...DEFAULT_UI_CONFIG };
  * Module-level UI policy, kept under its Python name (TW-TS-011).
  *
  * `progressUi: false` turns the visible collection off wholesale; `{ delay }` moves the age at which
- * a `startedHere` operation becomes visible. M1c and M7b are what read this; M1b only stores it.
+ * a `startedHere` operation becomes visible.
  */
 export function configure_taskwire(options: {
   progressUi?: { delay?: number; failureLinger?: number } | false;
@@ -177,7 +185,7 @@ export function configure_taskwire(options: {
   if (options.dialogAdoptDelay !== undefined) uiConfig.dialogAdoptDelay = options.dialogAdoptDelay;
 }
 
-/** What `configure_taskwire` last left behind. Read by M1c and M7b. */
+/** What `configure_taskwire` last left behind: the visible collection's policy and the adopt delay. */
 export function taskwireConfig(): Readonly<TaskwireUiConfig> {
   return uiConfig;
 }
@@ -608,6 +616,16 @@ class PollSubscription implements Subscription {
 // Taskwire
 // -------------------------------------------------------------------------------------------
 
+/**
+ * One namespace, read through one base path and one axios instance.
+ *
+ * It owns the handles, a poller per token and the register loop, and it is the only thing in the
+ * package that issues a call: a handle asks it to write, and `register.ts` asks it to read. Which
+ * wire those calls travel is `useCalls()`, and whether anything pushes is `attachTransport()`.
+ *
+ * `use_taskwire()` is how an application obtains one; constructing a second for the same pair would
+ * poll the same tokens twice.
+ */
 export class Taskwire implements OperationHost, RegisterClient {
   readonly basePath: string;
 
@@ -625,7 +643,10 @@ export class Taskwire implements OperationHost, RegisterClient {
   /** TW-REG-019, item one: the tokens **this page** minted. Drives `startedHere`. In memory only. */
   private readonly minted = new Set<string>();
 
-  /** TW-REG-019, item two: the override map this socket last declared. M8 sends it; M1b only holds it. */
+  /**
+   * TW-REG-019, item two: this client's per-token override map, written by `mute`, `unmute` and
+   * `clearOverride`. In memory only, and distinct from the map a `MuxwsClientTransport` declares.
+   */
   private readonly overrides = new Map<string, boolean>();
 
   /** TW-REG-019, item three: the connection id this socket's `watch` reply carried. In memory only. */
@@ -672,10 +693,10 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // The register (M1c). `register.ts` holds the loop; these are its four windows and two hooks.
+  // The register. `register.ts` holds the loop; these are its four windows and two hooks.
   //
   // Reading any of the register-facing members starts the poll, and nothing else does: an
-  // application that only ever calls `run()` polls its own tokens and never `{prefix}/operations`.
+  // application that only ever calls `run()` polls its own tokens and never `{prefix}`.
   // `operations` deliberately does not start it - this tab's visible subset is local policy over
   // handles this tab already has, and is never populated from the register (TW-REG-021).
   // ---------------------------------------------------------------------------------------------
@@ -989,14 +1010,17 @@ export class Taskwire implements OperationHost, RegisterClient {
     this.registerState.noteWrite();
   }
 
+  /** Record `false` for this token in this client's override map: suppress its progress (TW-DEL-006). */
   mute(token: string): void {
     this.overrides.set(token, false);
   }
 
+  /** Record `true` for this token: revive it whatever the server's predicate says (TW-DEL-006). */
   unmute(token: string): void {
     this.overrides.set(token, true);
   }
 
+  /** Drop this token's entry, so the server's `push_filter` decides for it again (TW-DEL-006). */
   clearOverride(token: string): void {
     this.overrides.delete(token);
   }

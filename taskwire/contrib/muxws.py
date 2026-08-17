@@ -1,7 +1,7 @@
 """`MuxwsTransport` - the WebSocket implementation of the protocol.
 
-Imports `muxws`; nothing in `taskwire/` outside `contrib` may (TW-CORE-006), and M0-M4 keep passing
-with it not installed.
+Imports `muxws`; nothing in `taskwire/` outside `contrib` may (TW-CORE-006). Core installs and runs
+with it absent.
 
 **What travels here is the push direction, plus `watch`.** The six request/response calls of
 TW-REST-004 are the viewset's on this transport as much as on REST: `route_viewset` publishes them
@@ -17,9 +17,8 @@ without touching this file, and what lets an application replace muxws entirely 
 lines against `TaskwireTransport`.
 
 **One envelope becomes one `peer.notify()`** - one stream opened and ended in a single frame
-(TW-WS-003). A long-lived per-session stream MUST NOT be used: a ten-minute import would leave a
-stream open for ten minutes, and the acceptance test for this milestone is that it leaves zero open
-streams behind.
+(TW-WS-003). A long-lived per-session stream MUST NOT be used: a ten-minute import would hold a
+stream open for ten minutes, where this leaves none open behind it.
 
 Swapping `NullTransport` for this changes latency and nothing else. The store is still the truth, the
 REST endpoints still answer, and a client that only polls still sees every state - which is what
@@ -60,8 +59,7 @@ class MuxwsTransport(TaskwireTransport):
     """Push one envelope to every live peer of a namespace.
 
     A transport that knows about individual connections MUST fan out over all of them (TW-TR-005);
-    the per-connection judgement M8 adds is the only one it may make, and until then every peer of
-    the namespace gets everything the namespace is entitled to.
+    the per-connection delivery decision applied at the last hop is the only judgement it may make.
     """
 
     def __init__(self, registry: PeerRegistry) -> None:

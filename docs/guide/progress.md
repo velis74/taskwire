@@ -19,7 +19,7 @@ dialogs and uncollected result. A caller who could write the state could park an
 ## Throttling, and what it guarantees
 
 Commits are coalesced latest-wins on `settings.progress_interval` (0.25 s). `set()` checks the clock
-**inline** rather than relying on a background flush task, which matters more than it looks:
+**inline** rather than relying on a background flush task:
 
 ```python
 for row in rows:            # no `await` of the loop's own
@@ -27,7 +27,7 @@ for row in rows:            # no `await` of the loop's own
 ```
 
 A timer task never runs in that loop, so a background-flush implementation reports 0 % for the whole
-phase and never writes its final value either. The inline check does not have that problem.
+phase and never writes its final value either.
 
 What you may rely on between forced flushes: **the value visible after a burst is one of that
 burst's values.** The burst's *last* value is guaranteed only at the next forced flush — a terminal
@@ -66,8 +66,7 @@ await asyncio.gather(load_a(a), load_b(b), load_c(c))
 
 The parent keeps a **contribution map** with one entry per child rather than a last-written percent.
 That is what makes the right form correct: four equal siblings where whichever finishes last happens
-to report first would otherwise pin the bar at 100 % for three quarters of the work — and a
-monotonicity check would not notice.
+to report first would otherwise pin the bar at 100 % for three quarters of the work.
 
 A child reporting `percent=None` **freezes** its contribution rather than dropping it to zero. Going
 indeterminate is not un-doing the work.

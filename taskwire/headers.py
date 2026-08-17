@@ -1,9 +1,8 @@
 """The two HTTP header names, in one place.
 
-They were spelled out in four modules before this one existed - `contrib.celery`, `contrib.fastapi`,
-`contrib.asgi` and `contrib.viewsets` - which is three chances for a typo that fails silently: a
-misspelled header is simply an absent header, so the operation runs, reports nothing to the socket
-that asked for it, and logs nothing anywhere.
+Four modules read these names: `contrib.celery`, `contrib.fastapi`, `contrib.asgi` and
+`contrib.viewsets`. A misspelled header is simply an absent header - the operation runs, reports
+nothing to the socket that asked for it, and logs nothing anywhere - so the spelling exists once.
 
 Core, not `contrib`, because they are strings and cost no dependency, and because the integration
 layer that wraps every viewset action needs to read them without importing a Celery adapter to do it.

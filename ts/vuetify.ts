@@ -1,5 +1,5 @@
 /**
- * `taskwire/vuetify` - the shipped UI deliverables (M7b).
+ * `taskwire/vuetify` - the shipped UI deliverables.
  *
  * **This module and `taskwire/vue` are the only ones that may import a UI library** (TW-CORE-006,
  * TW-TS-010). `ts/index.ts` must not reach either, and a test walks its transitive imports to keep
@@ -49,8 +49,10 @@ import type { DialogRequest, Text } from './wire';
  */
 export type Translate = (text: Text | null | undefined, fallback?: string) => string;
 
+/** `text`, else `key`, else the fallback. No catalogue and no guessing. */
 export const defaultTranslate: Translate = (text, fallback = '') => text?.text ?? text?.key ?? fallback;
 
+/** What `useTaskwireDialogs` is configured with. Every field has a default. */
 export interface DialogAdapterOptions {
   client?: Taskwire;
   translate?: Translate;

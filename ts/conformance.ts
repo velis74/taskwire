@@ -1,25 +1,25 @@
 /**
- * The exported store conformance suite (TW-STORE-012).
+ * The store conformance suite (TW-STORE-012).
  *
- * Import this and run it against your own `TaskwireStore`:
+ * `runConformance` takes a factory for the store under test and runs every check against it. It is
+ * reached from this file - the package publishes no `./conformance` entry point, so a store written
+ * outside this repository runs the suite from a checkout of it:
  *
  * ```ts
- * import { runConformance } from 'taskwire';
- * import { MemoryStore } from 'taskwire';
+ * import { runConformance } from './ts/conformance';
  *
  * await runConformance((options) => new MyStore(options));
  * ```
  *
- * Every shipped store passes it unchanged - that is the point of exporting it. A store is judged by
- * the same standard whichever language it is written in (TW-SYM-002): this file is the mirror of
- * `taskwire/conformance.py`, check for check, and neither copy may be weakened alone. If a rule here
- * cannot be satisfied by a real backend, the rule is wrong and the specification changes, not the
- * suite.
+ * Every shipped store passes it unchanged. A store is judged by the same standard whichever language
+ * it is written in (TW-SYM-002): this file is the mirror of `taskwire/conformance.py`, check for
+ * check, and neither copy may be weakened alone. If a rule here cannot be satisfied by a real
+ * backend, the rule is wrong and the specification changes, not the suite.
  *
- * It is **plain code, not a vitest file**. It ships, an application imports it, and the test runner
- * must not collect it - which is why it asserts through `ok()` rather than through `expect()`, and
- * why nothing here is named `describe`, `it` or `test`. `store.spec.ts` is the file that drives
- * these checks against `MemoryStore`, one vitest test each.
+ * It is **plain code, not a vitest file**. The test runner must not collect it - which is why it
+ * asserts through `ok()` rather than through `expect()`, and why nothing here is named `describe`,
+ * `it` or `test`. `store.spec.ts` is the file that drives these checks against `MemoryStore`, one
+ * vitest test each.
  */
 
 import { key as makeKey, type TaskwireStore } from './store';

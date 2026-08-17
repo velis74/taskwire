@@ -9,7 +9,7 @@ from taskwire.store import MemoryStore
 await run_conformance(MemoryStore)
 ```
 
-Every shipped store passes it unchanged - that is the point of exporting it. `RedisStore` (M4) does
+Every shipped store passes it unchanged - that is the point of exporting it. `RedisStore` does
 not get its own weakened copy; if a rule here cannot be satisfied by a real backend, the rule is
 wrong and the specification changes, not the suite.
 

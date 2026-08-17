@@ -23,7 +23,7 @@ current state, and asking for it is always enough.
 
 ## One protocol, three implementations
 
-The layering is deliberate and is the shape of the source tree, not just of the prose:
+The layering is the shape of the source tree:
 
 ```
              protocol            documents, envelopes, the six kinds, the state
@@ -42,12 +42,13 @@ the only place that framework is imported.
 | Implementation | Carries the protocol over | Adapter | Needs |
 |---|---|---|---|
 | **local** | the process itself — no wire, no socket, no serialization | none | nothing |
-| **REST** | request/response polling; the baseline everywhere | `contrib.fastapi`, `contrib.asgi` | nothing in core |
+| **REST** | request/response polling; the baseline everywhere | `contrib.viewsets`, `contrib.fastapi`, `contrib.asgi` | nothing in core |
 | **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
 
 Swapping one for another changes latency and nothing else — no feature, no state, no document.
-Both languages ship all of it, so a browser-only application and a back-end-only service are the
-same deployment seen from two sides.
+Both languages ship the protocol and the operating half, so a browser-only application runs
+operations rather than only watching them; the adapters, the Redis store and the Celery entry are
+Python's, and the polling client and the register are TypeScript's.
 
 ## Install
 
@@ -71,7 +72,7 @@ pip install -e ".[fastapi,viewsets,demo]" && npm install
 python demo.py                       # then open http://127.0.0.1:5174
 ```
 
-A night batch over one book: three back-office jobs that between them exercise progress, nested
+A night batch over one book: four back-office jobs that between them exercise progress, nested
 progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](demo/README.md).
 
 ## Status

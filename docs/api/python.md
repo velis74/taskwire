@@ -9,19 +9,26 @@ from taskwire import (
     OperationCancelled, DialogVanished,
     mark_queued, mark_failed, settings,
     MemoryStore, NullTransport, LocalTransport,
+    start_taskwire_reader, stop_taskwire_reader, check_taskwire_readers,
+    TOKEN_HEADER, CONNECTION_HEADER,
+    Client, OperationRef,
 )
 ```
 
 ### `configure(...)`
 
 ```python
-def configure(*, store, transport, session_resolver, push_filter=..., result_released=None) -> None
+def configure(*, store=None, transport=None, session_resolver=None,
+              push_filter=None, result_released=None) -> None
 ```
 
-Wires the library to its store, its transport and the application's callables. `session_resolver` is
-the only producer of a namespace; return the account when a user is logged in and the session
-otherwise. Returning `None` is legal and means "no taskwire for this caller at all" — every
-operation becomes a no-op and the REST layer answers 404.
+Wires the library to its store, its transport and the application's callables. **Every argument is
+optional and `None` means "leave this one as it is"**, so a test or an application can replace one
+thing without restating the rest; there is no way to clear a value by passing `None`.
+
+`session_resolver` is the only producer of a namespace; return the account when a user is logged in
+and the session otherwise. Returning `None` is legal and means "no taskwire for this caller at all" —
+every operation becomes a no-op and the REST layer answers 404.
 
 ### `operation(...)`
 
@@ -29,14 +36,25 @@ operation becomes a no-op and the REST layer answers 404.
 def operation(token: str | None, *, session: str | None = None,
               title: Text | None = None, icon: str | None = None,
               data: dict | None = None, result_kind: str | None = None,
-              raise_on_cancel: bool | None = None) -> OperationScope
+              raise_on_cancel: bool | None = None, connection: str | None = None,
+              store: Any = None, clock: Callable[[], float] | None = None) -> OperationScope
 ```
 
 An **async and synchronous** context manager. Entering writes `running`; leaving writes exactly one
 terminal state and drops the entry in the same step. It re-raises in every failure case.
 
+The one exception to "one terminal state" is a parked result: an operation whose body called
+`set_result()` leaves in `waiting_input` holding the result, and the release is what ends it
+(TW-RES-004, see [Collectable results](../guide/results.md)).
+
 `session` is an already-resolved namespace **string** — never a user, a request or an identity
-object. `token=None` yields a live-looking but inert reporter, so callers never branch.
+object. `token=None` yields a live-looking but inert reporter, so callers never branch; `set()` and
+`done()` write nothing on it, while `ask()` and `set_result()` raise `ValueError`, because there is
+nobody to arbitrate a question and nothing to park a result on.
+
+`connection` fixes `origin_connection` for the operation's whole life, which is the whole of a
+private operation's push scope (TW-PRIV-001). `store` runs the operation against a store other than
+the configured one, and `clock` replaces the monotonic clock the throttle reads.
 
 The synchronous form runs a private event loop it owns for that thread, which is what makes it
 usable from a Celery worker; `reporter.sync` runs each coroutine on that loop.
@@ -45,18 +63,24 @@ usable from a Celery worker; `reporter.sync` runs each coroutine on that loop.
 
 ```python
 async def mark_queued(token, *, session, title=None, icon=None, data=None,
-                      result_kind=None, connection=None) -> None
-async def mark_failed(token, *, session, error: BaseException | Error) -> None
+                      result_kind=None, connection=None, store=None) -> None
+async def mark_failed(token, *, session, error: BaseException | Error, store=None) -> None
 ```
 
 The web side's writes. `mark_queued` fixes `result_kind` and `origin_connection` for the operation's
 whole life; the worker that later enters `operation()` inherits them and cannot change them.
 
-### `migrate_namespace(from_ns, to_ns)`
+### `migrate_namespace(...)`
+
+```python
+async def migrate_namespace(from_ns: str, to_ns: str) -> int
+```
+
 
 The **only** way operations change namespace, and the application is the only caller — on login,
 move the anonymous session's operations onto the account with one call, the same shape as merging a
-shopping cart. Idempotent, publishes nothing, and is not reachable over REST.
+shopping cart. Returns how many were re-keyed (`0` when no store is configured). Idempotent,
+publishes nothing, and is not reachable over REST.
 
 ## `Reporter`
 
@@ -65,12 +89,14 @@ async def set(*, percent=..., title=..., label=..., icon=..., data=...,
               raise_on_cancel=None) -> None      # NO state= keyword
 async def ask(dialog_id, *, buttons, inputs=None, params=None,
               title=None, text=None) -> DialogAnswer   # no timeout, no default
+async def set_result(result: Result) -> None
 async def done() -> None
 async def fail(code: str, message: Text, retryable: bool = False) -> None
 def name_error(code: str, message: Text, retryable: bool = False) -> None
 async def flush() -> None
 def subtask(start: float, end: float) -> Reporter
 def split(*weights: float) -> tuple[Reporter, ...]
+@property token -> str
 @property cancelled -> bool                      # last known, free to poll
 async def was_aborted() -> bool                  # forces a store read
 @property sync -> SyncReporter
@@ -78,6 +104,72 @@ async def was_aborted() -> bool                  # forces a store read
 
 `fail()` writes; `name_error()` only decides what the one terminal write of `operation()` will say,
 for an exception already on its way out of the block.
+
+`set_result()` is the root reporter's and may be called at most once. It raises `ValueError` on a
+subtask, when the operation declared no `result_kind` — a private operation has nothing to collect
+and there is no promotion path — and when a result is already parked. `Result.kind` is the
+application's own string and taskwire never validates it.
+
+**What `set()` raises.** `state=` raises `ValueError` — the state comes from the lifecycle and there
+is no keyword for it. Any other unexpected keyword raises `TypeError`, as an ordinary Python call
+would. `data` beyond `settings.max_data_bytes` raises `ValueError` naming the encoded size; nothing
+is ever truncated, and the same cap applies to dialog `params` and to a `Result`.
+
+`raise_on_cancel` on `set()` is **sticky**: it replaces the reporter's value for every later call,
+and a subtask made after it inherits it. It falls back to `settings.raise_on_cancel`.
+
+## Who is asking: `push_filter`, `Client`, `OperationRef`
+
+```python
+def push_filter(client: Client, operation: OperationRef) -> bool
+```
+
+The application's own predicate, consulted for each pushed envelope. `Client` carries `session`,
+`connection` and exactly one of `peer` / `request`; `OperationRef` carries `token`, `progress` and the
+`data` and `result_kind` shorthands a predicate almost always keys on.
+
+Two properties are load-bearing. **An exception out of the predicate is treated as `True`**: it is a
+display optimisation, and a broken one must degrade to sending more rather than less. And it is
+**not access control** — it runs after the namespace has already decided what the caller may read, so
+neither it nor a client's own override can raise the ceiling.
+
+A client's declared overrides win over the predicate: `false` suppresses, `true` revives what the
+predicate would have suppressed, and an absent entry defers to it. The map is bounded by
+`settings.max_overrides`, and a declaration above the bound is rejected whole, leaving the previous
+map in force.
+
+## The reader lifecycle
+
+```python
+await start_taskwire_reader()     # during startup, in every web process
+await stop_taskwire_reader()      # during shutdown
+check_taskwire_readers()          # warns if a reader is owed and none is running
+```
+
+A store with a backplane — `RedisStore` — publishes to a channel, and **the reader is the only thing
+in a process that calls `transport.notify()`**. Without one the deployment looks healthy: the socket
+is connected, the store is correct, and no envelope ever arrives, because polling covers for it.
+`MemoryStore` publishes in process and needs none, so calling this is harmless everywhere.
+
+A web process subscribes only to the namespaces it currently holds connections for, per *process*
+and never per token or per tab. `register_taskwire_muxws` does that subscribing for the connections
+it registers.
+
+## The REST surface
+
+```python
+from taskwire.contrib.viewsets import register_taskwire_rest
+
+register_taskwire_rest(router, base_path=None, *, register_muxws=None)
+```
+
+Mounts the six calls of TW-REST-004 on `router` — over REST, and over muxws when the viewset layer's
+socket half is installed. `base_path` defaults to `settings.rest_prefix`. Registering twice on one
+router is a no-op rather than a duplicate mount.
+
+`taskwire.contrib.fastapi.router(prefix=None)` returns a hand-rolled `APIRouter` with the same six
+routes, and `taskwire.contrib.asgi.app(prefix=None)` serves them from a framework-free ASGI callable.
+Every REST decision lives in `taskwire.rest`, which imports no framework at all.
 
 ## The Celery worker entry
 
@@ -91,12 +183,12 @@ def import_rows(self, reporter, *, rows): ...
 run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)   # a viewset action
 ```
 
-`taskwire_task` decorates the body and receives the reporter as an argument; `token` and `session`
-arrive as task kwargs. `wrap_sync_runner` is for a caller that already drives a loop — the
-fastapi-viewsets Celery server — and it wraps that runner rather than the task: it consumes
-`_taskwire_token` and `_taskwire_session` from the kwargs, returns the kwargs without them, and runs
-whatever the runner is given inside an `operation()`. The action declares no reporter parameter and
-reports through the ambient one.
+`taskwire_task` decorates the body and passes the reporter **by keyword**, so the parameter must be
+named `reporter`; `token` and `session` arrive as task kwargs. `wrap_sync_runner` is for a caller that
+already drives a loop — the fastapi-viewsets Celery server — and it wraps that runner rather than the
+task: it consumes `_taskwire_token` and `_taskwire_session` from the kwargs, returns the kwargs
+without them, and runs whatever the runner is given inside an `operation()`. The action declares no
+reporter parameter and reports through the ambient one.
 
 Both close the operation **before** the caller publishes the task's result. That ordering is the
 whole reason Celery's `task_prerun` / `task_postrun` signals are unusable here: `postrun` fires after
@@ -104,6 +196,31 @@ the result has been pushed, so a client could see the answer while the operation
 
 A call carrying no token runs unwrapped. Reporting is an accelerator, and an application that opted
 this caller out of taskwire did not opt out of the work.
+
+Two more entries the web and worker sides use:
+
+```python
+await dispatch(task, *, token, session, connection=None, result_kind=None,
+               title=None, data=None, **task_kwargs)   # web side: write queued, then send
+configure_worker(store)                                # worker side: this store, and NullTransport
+```
+
+`dispatch` writes `queued` and hands off; if the broker refuses, it writes `failed` so the token the
+caller is already watching does not hang. `configure_worker` gives the worker a store and a
+`NullTransport`: **a worker never pushes**, because the web process's reader is already delivering
+every envelope the worker's writes produce.
+
+## Headers
+
+```python
+TOKEN_HEADER = "X-Taskwire-Token"
+CONNECTION_HEADER = "X-Taskwire-Connection"
+```
+
+The front end mints a token and sends it with **its own** command under `X-Taskwire-Token`; taskwire
+never carries the command itself. `X-Taskwire-Connection` names the connection, and it serves two
+purposes with no second header: delivery scope on a read, and `origin_connection` on the request that
+starts an operation. There is no tab header, and there must not be one.
 
 ## Ports
 
@@ -129,10 +246,20 @@ class TaskwireTransport(ABC):
     async def is_online(self, session: str) -> bool
 ```
 
+Every per-operation method takes an **already-namespaced key**, `f"{ns}:{token}"`; `list_operations`
+and `publish` take a bare namespace. There is no code path to the store without a namespace, because
+the namespace is the only authorization scope and the token is an address inside it.
+
+`RedisStore(url="redis://127.0.0.1:6379/0", *, client=None)` is the cross-process store: it holds the
+same documents under `tw:{ns}:{token}:…`, keeps one sorted-set index per namespace, publishes to
+`twx:{ns}`, and hands out its reader through `make_reader()`. `await store.aclose()` releases the
+connection.
+
 Writing your own store? Run the exported suite against it:
 
 ```python
 from taskwire.conformance import run_conformance
+
 await run_conformance(MyStore)
 ```
 
@@ -151,9 +278,10 @@ rule is wrong and the specification changes — not the suite.
 | `max_overrides` | 64 | per-connection override map bound |
 | `raise_on_cancel` | `True` | global default |
 | `rest_prefix` | `/taskwire` | mount point |
+| `keepalive_period` | `active_ttl / 4` | derived, not configurable: how often a long silent phase touches the TTL |
 
-`terminal_ttl` and `dialog_timeout` are **absent by design**: a terminal operation with nothing to
-collect is dropped rather than aged out, and a dialog has no deadline at all.
+There is no `terminal_ttl` and no `dialog_timeout`: a terminal operation with nothing to collect is
+dropped rather than aged out, and a dialog has no deadline at all.
 
 ## REST
 

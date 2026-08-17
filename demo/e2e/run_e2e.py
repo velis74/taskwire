@@ -69,6 +69,9 @@ def free_port() -> int:
 
 
 def wait_for_server(base: str, process: subprocess.Popen) -> None:
+    """Poll `/demo/book` until it answers. Raises once `STARTUP_TIMEOUT` passes, or as soon as the
+    server process exits - a dead server is worth saying so about rather than waiting out.
+    """
     deadline = time.monotonic() + STARTUP_TIMEOUT
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -170,6 +173,10 @@ def stop_server(process: subprocess.Popen) -> None:
 
 
 def main() -> int:
+    """Build the client, start a server of this run's own, and drive both halves against it.
+
+    Returns 0 when every assertion of every half passed.
+    """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-build", action="store_true", help="trust the bundle in dist/ as it stands")
     parser.add_argument("--protocol-only", action="store_true", help="the first half alone")

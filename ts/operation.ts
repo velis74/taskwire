@@ -2,11 +2,10 @@
  * `Operation<T>` - the client-side handle on one operation (§5.5).
  *
  * **It is a `PromiseLike<T>`, not a `Promise`** (TW-TS-001). `then`, `catch` and `finally` delegate
- * to one internal promise and return whatever that promise's own methods return. `extends Promise`
- * looks tidier for about a minute: every `.then()` on a `Promise` subclass calls the species
- * constructor, which would mint a second `Operation` with no token, no host and no poller behind it,
- * and hand that back to the caller. Delegation has no such trapdoor, and `run(fn).then(x => x)`
- * yields a plain promise exactly as TW-TS-002 requires.
+ * to one internal promise and return whatever that promise's own methods return. Every `.then()` on
+ * a `Promise` subclass calls the species constructor, which would mint a second `Operation` with no
+ * token, no host and no poller behind it, and hand that back to the caller. Delegation has no such
+ * trapdoor, and `run(fn).then(x => x)` yields a plain promise exactly as TW-TS-002 requires.
  *
  * **Identity is the token** (TW-TS-005). Not `streamId`, which exists for correlating log lines with
  * a muxws stream and for nothing else - no key, no route, no dedup and no removal may read it. Two
@@ -91,10 +90,10 @@ function lostTheRace(raised: unknown): boolean {
 export interface OperationHost {
   /** Stop polling this token and forget the handle. Called by `close()`, once. */
   release(token: string): void;
-  /** M1c: this tab's visible collection, purely local. */
+  /** This tab's visible collection (§4.3), purely local. */
   show(token: string): void;
   hide(token: string): void;
-  /** M8: the override map this connection last declared (TW-REG-019). */
+  /** This client's per-token override map (TW-REG-019, TW-DEL-006). */
   mute(token: string): void;
   unmute(token: string): void;
   clearOverride(token: string): void;
@@ -131,12 +130,19 @@ export interface OperationInit<T> {
 /** A `rev` lower than any the wire can carry, so the first document always applies. */
 const NO_REV = Number.NEGATIVE_INFINITY;
 
+/**
+ * One operation, addressed by its token, for as long as this client is watching it.
+ *
+ * It is what `run()`, `track()` and the register hand back, and it is awaitable, readable and
+ * writable: `progress` and `dialog` are the last document read, and `answer`, `cancel`, `collect`
+ * and `dismiss` go out through the host that made it.
+ */
 export class Operation<T> implements PromiseLike<T> {
   readonly token: string;
 
   /**
-   * Logs only (TW-TS-005). Written by the muxws transport in M5 and read by nothing that matters:
-   * not a key, not a route, not a dedup and not a removal.
+   * For correlating log lines with a muxws stream, and for nothing else (TW-TS-005): not a key, not
+   * a route, not a dedup and not a removal. `setStreamId` is the only writer and nothing calls it.
    */
   streamId?: number;
 
@@ -277,7 +283,7 @@ export class Operation<T> implements PromiseLike<T> {
     return this.#startedHere;
   }
 
-  /** M8 decides this per reading client; until then every operation delivers progress. */
+  /** Whether progress reaches *this* reading client; the register payload decides it (TW-DEL-014). */
   get progressDelivery(): boolean {
     return this.#progressDelivery;
   }
@@ -296,7 +302,7 @@ export class Operation<T> implements PromiseLike<T> {
     return this.#closed;
   }
 
-  /** For non-reactive consumers; M1c binds Vue's reactivity on top of the same signal (TW-TS-008). */
+  /** For non-reactive consumers; `taskwire/vue` binds reactivity on top of this signal (TW-TS-008). */
   onChange(callback: (operation: Operation<T>) => void): () => void {
     this.#listeners.add(callback);
     return () => {
@@ -305,7 +311,7 @@ export class Operation<T> implements PromiseLike<T> {
   }
 
   // -------------------------------------------------------------------------------------------
-  // Later milestones, inert with their final signatures
+  // The four writes, the local view controls, and close()
   // -------------------------------------------------------------------------------------------
 
   /**
@@ -422,24 +428,27 @@ export class Operation<T> implements PromiseLike<T> {
     this.#notify();
   }
 
-  /** M1c. */
+  /** Put this operation into this tab's visible collection (§4.3); invisible to every other tab. */
   show(): void {
     this.#host?.show(this.token);
   }
 
+  /** Take it back out. It stays in `tw.register` and stays awaitable. */
   hide(): void {
     this.#host?.hide(this.token);
   }
 
-  /** M8. */
+  /** Record `false` for this token in this client's override map: suppress its progress (TW-DEL-006). */
   mute(): void {
     this.#host?.mute(this.token);
   }
 
+  /** Record `true`: revive it whatever the server's predicate says (TW-DEL-006). */
   unmute(): void {
     this.#host?.unmute(this.token);
   }
 
+  /** Drop the entry, so the server's `push_filter` decides for this token again (TW-DEL-006). */
   clearOverride(): void {
     this.#host?.clearOverride(this.token);
   }
@@ -517,12 +526,12 @@ export class Operation<T> implements PromiseLike<T> {
     this.#notify();
   }
 
-  /** @internal TW-DEL-014: effective delivery for *this reading client*, decided in M8. */
+  /** @internal TW-DEL-014: effective delivery for *this reading client*, as the register reports it. */
   setProgressDelivery(value: boolean): void {
     this.#progressDelivery = value;
   }
 
-  /** @internal M5 writes it; nothing keys off it (TW-TS-005). */
+  /** @internal The only writer of `streamId`, called by nothing; nothing keys off it (TW-TS-005). */
   setStreamId(value: number): void {
     this.streamId = value;
   }

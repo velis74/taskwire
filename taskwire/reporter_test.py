@@ -1,4 +1,4 @@
-"""Acceptance tests for `taskwire.reporter` (brief M1, tests 13-28).
+"""Acceptance tests for `taskwire.reporter` (brief §7, tests 13-28).
 
 Three properties are asserted here that nothing else in the suite can assert, and each of them is
 one careless refactor away from being lost:
@@ -707,7 +707,7 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
             f"{prefix}/migrate",
             f"{prefix}/migrate_namespace",
             f"{prefix}/migrate/{anonymous}/{account}",
-            f"{prefix}/operations/migrate",
+            f"{prefix}/migrate/all",
         ):
             status = await _asgi_status(application, method, path)
             assert status == 404, f"{method} {path} answered {status}"
@@ -739,10 +739,9 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
 
 
 # --------------------------------------------------------------------- surfaces the brief declares
-# but does not exercise: the lifecycle writes that happen *outside* an operation block, and the
-# methods later milestones fill in. These are cheap and they pin two things: that a stub is a stub
-# rather than a silent no-op, and that the write-from-outside paths drop their entry exactly as
-# `operation()`'s exit does.
+# but does not exercise: the lifecycle writes that happen *outside* an operation block. These are
+# cheap and they pin two things: that a misused surface is loud rather than a silent no-op, and that
+# the write-from-outside paths drop their entry exactly as `operation()`'s exit does.
 
 
 async def test_was_aborted_forces_a_store_read():
@@ -791,17 +790,14 @@ async def test_set_writes_icon_and_takes_a_per_call_raise_on_cancel():
 
 
 async def test_a_misused_surface_raises_rather_than_silently_doing_nothing():
-    """A stub must be loud. TW-STORE-001 requires the methods to *exist*; nothing requires them to lie.
+    """TW-RES-003: `set_result()` is the root reporter's, and a subtask calling it raises.
 
-    A `set_result()` that quietly did nothing would let an application ship a result nobody can
-    collect, and the failure would surface as a missing download weeks later rather than as an
-    import-time error.
+    A refusal that quietly did nothing would let an application ship a result nobody can collect,
+    and the failure would surface as a missing download weeks later rather than at the call site.
     """
     store = MemoryStore()
     async with operation(new_token(), session="ns", result_kind="k", store=store) as reporter:
-        # Every surface this test used to guard is now implemented; their assertions moved to the
-        # nesting section below, to dialogs_test.py, to cancel_test.py and to results_test.py rather
-        # than being deleted. What remains worth asserting is that a *misuse* is still loud.
+        # Parking a result is the root reporter's alone; a subtask asking for it is a misuse.
         with pytest.raises(ValueError, match="root reporter's"):
             await reporter.subtask(0, 50).set_result(taskwire.Result(kind="k"))
 

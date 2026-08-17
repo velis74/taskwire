@@ -59,6 +59,10 @@ failures: list[str] = []
 
 
 def check(label: str, ok: bool, detail: str = "") -> bool:
+    """Print one PASS/FAIL line and record the failures. Every assertion in this file goes through it.
+
+    Returns `ok`, so a caller can skip what a failed precondition makes meaningless.
+    """
     print(f"{'PASS' if ok else 'FAIL'}  {label}{(' - ' + detail) if detail else ''}")
     if not ok:
         failures.append(f"{label}: {detail}" if detail else label)
@@ -121,6 +125,7 @@ class Pushes:
 
 
 def state_of(envelope: dict[str, Any]) -> str | None:
+    """The `state` a progress envelope carries, or `None` when its body has none."""
     body = envelope.get("body")
     return body.get("state") if isinstance(body, dict) else None
 
@@ -261,7 +266,7 @@ async def check_export_and_cancel(peer: Any, http: httpx.AsyncClient, pushes: Pu
 
 
 async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes, connection: str | None) -> None:
-    """The sequence this milestone is about: `queued`, `running`, `dialog.open`, `failed`.
+    """The sequence: `queued`, `running`, `dialog.open`, `failed`.
 
     Nobody answers, so the deadline in `jobs.py` expires - taskwire has none to offer and must never
     grow one (TW-DLG-005). The terminal write withdraws the question in the same step (TW-CANCEL-011)
@@ -323,6 +328,7 @@ async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes
 
 
 async def main() -> int:
+    """Run every check against a demo that is already listening. Returns 0 when all of them pass."""
     base, socket_url = endpoints()
     print(f"driving {base} and {socket_url}\n")
     pushes = Pushes()

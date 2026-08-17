@@ -39,6 +39,8 @@ SYMBOLS: tuple[tuple[str, str, float], ...] = (
     ("SAGE", "Sagewater Utilities", 95.05),
     ("TIDE", "Tidewater Marine", 38.75),
 )
+"""The universe, as `(symbol, name, reference price)`. Every other figure in this module is derived
+from one of these symbols."""
 
 SECTORS: dict[str, tuple[str, ...]] = {
     "Industrials": ("ACME", "BOLT", "IRON", "JUNO", "PIER", "QUAR", "TIDE"),
@@ -50,6 +52,7 @@ SECTORS: dict[str, tuple[str, ...]] = {
 nested-progress arithmetic visible rather than merely implemented."""
 
 DEFAULT_SEED = 1_234_567
+"""The seed every generator is built from, so two runs of the demo produce the same book."""
 
 
 def _rng(symbol: str, purpose: str) -> random.Random:
@@ -126,4 +129,5 @@ def blotter_rows(symbol: str) -> list[dict[str, object]]:
 
 
 def total_trades() -> int:
+    """Blotter rows across the whole universe. The export's denominator for its percentage."""
     return sum(trades_for(symbol) for symbol, _, _ in SYMBOLS)

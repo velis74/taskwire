@@ -2,10 +2,10 @@
 
 Two constructions recur here and both are deliberate.
 
-**`needs_attention` is built from the uncollected-result cause, never from a written state.** M1 has
-no dialogs, so TW-PROG-013's other cause - a `result` sitting on a non-terminal document - is the
-only one available, and it is also the honest one: no code path may write `waiting_input` directly
-(TW-PROG-012), so a test that did would be asserting against a shape the library never produces.
+**`needs_attention` is built from the uncollected-result cause, never from a written state.** Of
+TW-PROG-013's two causes, a `result` sitting on a non-terminal document is the one these tests use:
+no code path may write `waiting_input` directly (TW-PROG-012), so a test that did would be asserting
+against a shape the library never produces.
 
 **Nothing here sleeps.** The clock the reporter throttles against is injected, and the register is a
 pure function of the snapshots handed to it.
@@ -91,8 +91,8 @@ def _snap(
 ) -> Snapshot:
     """One register entry, built directly.
 
-    `result` on a non-terminal document is the M1-reachable cause of `needs_attention`
-    (TW-PROG-013): an uncollected result holds nothing at all, and it is derived rather than written.
+    `result` on a non-terminal document is one of TW-PROG-013's two causes of `needs_attention`:
+    an uncollected result holds nothing at all, and it is derived rather than written.
     """
     return Snapshot(
         token=token,

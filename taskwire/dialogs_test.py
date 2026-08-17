@@ -1,6 +1,6 @@
-"""Acceptance tests for dialogs (M3, TW-DLG-*, TW-STORE-003/004).
+"""Acceptance tests for dialogs (TW-DLG-*, TW-STORE-003/004).
 
-Three of these are named in the specification and later milestones grep for them.
+Three of these are named in the specification, and cannot be renamed without amending it.
 `test_resolve_dialog_accepts_exactly_once` is the one that matters most: first-answer-wins is
 arbitrated in exactly one place, and its return value is the ONLY signal any caller may trust about
 who won. A caller that decided by reading the document instead would be reading it *after* the race

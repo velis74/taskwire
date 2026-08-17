@@ -26,7 +26,7 @@ def _header(scope: dict[str, Any], name: bytes) -> str | None:
 
 
 def app(prefix: str | None = None) -> Callable[..., Any]:
-    """An ASGI application serving the two polling endpoints under `prefix`."""
+    """An ASGI application serving the six endpoints of TW-REST-004 under `prefix`."""
     mount = prefix if prefix is not None else settings.rest_prefix
 
     async def _body(receive: Any) -> dict[str, Any]:
@@ -68,13 +68,12 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
             status, payload = 404, {"detail": "not_found"}
         else:
             rest = path[len(mount) :].strip("/")
-            # TW-REST-006: `operations` is tested first, so it can never be read as a token.
-            if rest == "operations":
-                status, payload = await get_operations(client)
-            elif rest:
+            # The register is the collection and lives at the collection's own URL (TW-REST-004), so
+            # the prefix with nothing after it is the whole of the test.
+            if rest:
                 status, payload = await get_snapshot(client, rest)
             else:
-                status, payload = 404, {"detail": "not_found"}
+                status, payload = await get_operations(client)
 
         body = json.dumps(payload or {}).encode("utf-8")
         await send(

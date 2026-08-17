@@ -271,7 +271,8 @@ class RedisStore(TaskwireStore):
                 created_ms,
             ],
         )
-        # TW-STORE-014: the flag came back with the rev, so the reporter needs no second round trip.
+        # TW-STORE-014: the script returns the cancellation flag alongside the rev, in the one round
+        # trip. This holds what the latest commit saw.
         self._last_cancel_flag = bool(int(cancelled))
         return int(rev)
 
@@ -490,6 +491,7 @@ class RedisStore(TaskwireStore):
         return RedisReader(self)
 
     async def aclose(self) -> None:
+        """Close the Redis connection this store was built with."""
         await self._redis.aclose()
 
 
@@ -512,12 +514,14 @@ class RedisReader:
         self._namespaces: set[str] = set()
 
     async def start(self) -> None:
+        """Open the pubsub connection and begin consuming. Idempotent: a started reader stays as is."""
         if self._task is not None:
             return
         self._pubsub = self._store._redis.pubsub()
         self._task = asyncio.get_running_loop().create_task(self._run())
 
     async def stop(self) -> None:
+        """Cancel the consumer task and close the pubsub connection. The watched set is left alone."""
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -526,11 +530,22 @@ class RedisReader:
             self._pubsub = None
 
     async def watch(self, ns: str) -> None:
+        """Subscribe this process to `twx:{ns}`.
+
+        Per **process**, never per token or per tab (TW-BP-004): a process subscribes to a namespace
+        because it holds a connection for it, and one subscription serves every connection it holds.
+        """
         self._namespaces.add(ns)
         if self._pubsub is not None:
             await self._pubsub.subscribe(f"twx:{ns}")
 
     async def unwatch(self, ns: str) -> None:
+        """Unsubscribe this process from `twx:{ns}`.
+
+        Called once the process holds no more connections for the namespace (TW-BP-004). Skipping it
+        costs no correctness - the envelopes reach nobody - and leaves every process subscribed to
+        every namespace it ever saw.
+        """
         self._namespaces.discard(ns)
         if self._pubsub is not None:
             await self._pubsub.unsubscribe(f"twx:{ns}")

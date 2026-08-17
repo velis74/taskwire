@@ -1,7 +1,7 @@
 """Acceptance tests for the delivery decision and for the two shipped in-core transports.
 
 The centrepiece is `test_only_reader_calls_notify`: a static assertion over the package's own source
-that every later milestone depends on and that no runtime test can replace.
+that no runtime test can replace.
 """
 
 from __future__ import annotations
@@ -100,7 +100,8 @@ def test_only_reader_calls_notify():
       `ast.FunctionDef` and is never an `Attribute`, so the transport **definitions** in
       `transport.py` (the ABC, `NullTransport`, `LocalTransport`) and the stub in `conformance.py`
       are allowed - as is `LocalTransport` calling its subscribers, which is not a transport call.
-    * textually, `.notify(` - the same grep the milestone's done-when checklist runs.
+    * textually, `.notify(` - a plain grep over the source with comments and string literals
+      blanked out, as a second opinion on the AST pass.
     """
     sources = _package_sources()
     assert len(sources) > 5, f"the scan found only {len(sources)} source files; the glob is wrong"
@@ -151,12 +152,13 @@ def test_only_reader_calls_notify():
     assert ast_offenders["reader.py"], "reader.py must still be the one module that calls notify()"
 
 
-def test_effective_delivery_is_true_in_m1(clean_configuration):  # noqa: ARG001 - fixture is state, not data
-    """TW-DEL-019: the default is "send" on both halves, so every entry delivers in M1.
+def test_effective_delivery_is_true_by_default(clean_configuration):  # noqa: ARG001 - fixture is state, not data
+    """TW-DEL-019: the shipped default is "send" on both halves, so every entry delivers.
 
-    The field, the call site and the shape all exist now precisely so that M8 replaces one function
-    body and nothing else. Until then no state, no privacy declaration and no shape of `Client`
-    may make it anything but `True`.
+    The shipped `push_filter` answers `True` for every pair, and a connection that has declared no
+    override defers to it (TW-DEL-001). Until an application configures a predicate or a socket
+    declares an override, no state, no `result_kind` and no shape of `Client` may make the answer
+    anything but `True`.
     """
     clients = [
         Client(session=NS),
@@ -173,18 +175,18 @@ def test_effective_delivery_is_true_in_m1(clean_configuration):  # noqa: ARG001 
     for client in clients:
         for operation in operations:
             assert effective_delivery(client, operation) is True, (
-                f"progress_delivery must be True for every entry in M1: {client} / {operation.progress.state}"
+                f"progress_delivery must be True for every entry by default: "
+                f"{client} / {operation.progress.state}"
             )
 
 
 def test_delivery_decision_is_routed_through_the_configured_predicate(clean_configuration):  # noqa: ARG001
     """TW-DEL-001 / TW-DEL-002: the answer is the configured predicate's, not a constant.
 
-    M1 answers `True` for everything, but it answers it *because the shipped predicate does*
-    (TW-DEL-019) - and a hardcoded `return True` would imitate that perfectly while quietly making
-    M8 a rewrite of every call site instead of one function body. So: an application predicate that
-    answers `False` must already be able to reach the answer today, it must be shown the very
-    `Client` and `OperationRef` the caller passed rather than a reconstruction, and a predicate that
+    The shipped predicate answers `True` for everything (TW-DEL-019), and a hardcoded `return True`
+    would imitate that perfectly. So: an application predicate that answers `False` must be able to
+    reach the answer, it must be shown the very `Client` and `OperationRef` the caller passed
+    rather than a reconstruction, and a predicate that
     answers something merely truthy must be normalised to a real `bool` (TW-DEL-002's signature is
     `-> bool`, and `progress_delivery` is serialized).
     """
@@ -199,7 +201,7 @@ def test_delivery_decision_is_routed_through_the_configured_predicate(clean_conf
 
     taskwire.configure(push_filter=refusing)
     assert effective_delivery(client, operation) is False, (
-        "the decision must be the predicate's answer; a constant `True` here makes M8 a rewrite"
+        "the decision must be the predicate's answer, never a constant `True`"
     )
     assert len(seen) == 1
     assert seen[0][0] is client, "the predicate is shown the caller's Client, not a copy of it"

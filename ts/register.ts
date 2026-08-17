@@ -1,20 +1,20 @@
 /**
  * `tw.register`, `tw.operations` and the loop that feeds them.
  *
- * **The register is the namespace's, not the tab's** (TW-REG-001). `GET {prefix}/operations` returns
- * the whole of it, takes no parameters and carries every entry's whole `Snapshot` (TW-REG-002,
- * TW-REG-003), so one request renders an entire operations UI with no follow-up per-token GETs. The
- * client adopts a handle per entry and feeds it that snapshot; it never opens a second poller for a
- * token the register is already telling it about.
+ * **The register is the namespace's, not the tab's** (TW-REG-001). `GET {prefix}` returns the whole
+ * of it, takes no parameters and carries every entry's whole `Snapshot` (TW-REG-002, TW-REG-003), so
+ * one request renders an entire operations UI with no follow-up per-token GETs. The client adopts a
+ * handle per entry and feeds it that snapshot; it never opens a second poller for a token the
+ * register is already telling it about.
  *
  * **On top of the payload sits one local addition and nothing else.** A private operation is in no
  * register payload, for any caller including its own (TW-PRIV-002), so the tokens *this page* minted
  * that came back with `resultKind === null` are merged in here from their own per-token polls. The
- * merge is keyed by token and the payload wins: from M3 onward a private operation *is* listed for as
- * long as it holds an open question (TW-PRIV-004), and a merge that appended rather than keyed would
- * put two rows on screen for one operation in exactly the case a user is being asked something. This
- * is the one place where `tw.register` is not literally the server's answer, and it is why TW-REG-016
- * calls a locally recomputed aggregate a display decision.
+ * merge is keyed by token and the payload wins: a private operation *is* listed for as long as it
+ * holds an open question (TW-PRIV-004), and a merge that appended rather than keyed would put two
+ * rows on screen for one operation in exactly the case a user is being asked something. This is the
+ * one place where `tw.register` is not literally the server's answer, and it is why TW-REG-016 calls
+ * a locally recomputed aggregate a display decision.
  *
  * **`tw.operations` is not `tw.register`** (TW-REG-021). It is never populated from the payload,
  * wholesale or otherwise. §4.3's table is the whole rule and it has exactly two doors in -
@@ -92,6 +92,7 @@ export interface RegisterClient {
   privateSnapshots(): Snapshot[];
 }
 
+/** What both change hooks hand over: a fresh array of the same handles, never a mutated one. */
 export type OperationsListener = (operations: Operation<unknown>[]) => void;
 
 /**
@@ -143,9 +144,19 @@ function settledDialog(dialogs: readonly DialogRequest[], body: WireObject): Dia
   return { ...existing, state, reply };
 }
 
-/** The state of the visible collection is one of these; §4.3's table is what moves between them. */
+/** A pending timer, whichever `setTimeout` the host supplies - a browser's or Node's. */
 type Timer = ReturnType<typeof setTimeout>;
 
+/**
+ * The register loop and the visible collection, for one client.
+ *
+ * It reads `GET {prefix}` on the shared ladder, merges this tab's private operations into the
+ * payload, adopts a handle per entry and keeps the four windows `Taskwire` exposes - `entries`,
+ * `operations`, `aggregate` and `selected` - in step with what it read. §4.3's table is what moves
+ * an operation in and out of the visible collection.
+ *
+ * It is lazy: nothing polls until something reads a register-facing member (TW-REG-021).
+ */
 export class RegisterState {
   private readonly client: RegisterClient;
 
@@ -223,18 +234,22 @@ export class RegisterState {
   // What §5.5 exposes
   // ---------------------------------------------------------------------------------------------
 
+  /** The merged register, in TW-REG-005's order: `needsAttention` first, then `createdAt` ascending. */
   get entries(): Operation<unknown>[] {
     return this.collect(this.order);
   }
 
+  /** This tab's visible subset (§4.3), in the order it was entered. Never populated from the payload. */
   get operations(): Operation<unknown>[] {
     return [...this.visible.values()];
   }
 
+  /** Recomputed locally from the merged entries (TW-REG-016); `null` at rest, so a widget can hide. */
   get aggregate(): Aggregate | null {
     return this.aggregateValue;
   }
 
+  /** The pinned entry, or the oldest active one (TW-REG-013); `null` when nothing is active. */
   get selected(): Operation<unknown> | null {
     if (this.selectedToken === null) return null;
     return this.entriesByToken.get(this.selectedToken) ?? null;
@@ -356,7 +371,7 @@ export class RegisterState {
   }
 
   /**
-   * One read of `GET {prefix}/operations`, with no parameters of any kind (TW-REG-003).
+   * One read of `GET {prefix}`, with no parameters of any kind (TW-REG-003).
    *
    * A failed read is polled through rather than surfaced: a client that stopped on a dropped
    * connection would never notice the connection coming back, and TW-REG-006 says a running operation

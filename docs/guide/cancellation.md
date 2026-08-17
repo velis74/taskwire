@@ -18,9 +18,9 @@ for row in rows:                       # no cancellation handling anywhere in th
 Once a cancel is requested, the next `set()` raises `OperationCancelled`, the loop unwinds, and
 `operation()`'s exit writes `cancelled`.
 
-That default is the whole design. `if reporter.cancelled: break` works right up until somebody
-forgets it in one of forty loops — and then that one operation ignores the user forever, with
-nothing in the logs to say so.
+Raising is the default because `if reporter.cancelled: break` works right up until somebody forgets
+it in one of forty loops — and then that one operation ignores the user forever, with nothing in the
+logs to say so.
 
 To opt out and poll instead:
 
@@ -32,9 +32,10 @@ async with taskwire.operation(token, session=ns, raise_on_cancel=False) as repor
         await reporter.set(...)
 ```
 
-`raise_on_cancel` resolves per-call, then per-operation, then from `settings.raise_on_cancel`
-(default `True`), most specific winning. It is fixed for the life of the operation.
-`await reporter.was_aborted()` forces a store read and is available either way.
+`raise_on_cancel` is the operation's, then `settings.raise_on_cancel` (default `True`). The keyword
+on `set()` is **sticky**: it replaces the reporter's value for every later call, and a subtask made
+afterwards inherits it. `await reporter.was_aborted()` forces a store read and is available either
+way.
 
 ## It is cooperative
 

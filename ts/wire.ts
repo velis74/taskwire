@@ -36,9 +36,9 @@
  * by a different code path is a different string - and no consumer of this module needs one.
  */
 
-export const WIRE_VERSION = 1;
 /** TW-CORE-011: bumped only on a breaking wire change, never on an implementation change. Package
  *  semver tracks the implementation and says nothing about this number. */
+export const WIRE_VERSION = 1;
 
 /** A JSON object as it travels: values are `unknown` because free-form bags are genuinely free. */
 export type WireObject = Record<string, unknown>;
@@ -50,6 +50,7 @@ export type WireObject = Record<string, unknown>;
 /** TW-PROG-001 / §4.1. There is no `received`: an operation begins at `queued`. */
 export type ProgressState = 'queued' | 'running' | 'waiting_input' | 'done' | 'failed' | 'cancelled';
 
+/** Every `ProgressState` at runtime, in §4.1's order. */
 export const PROGRESS_STATES: readonly ProgressState[] = [
   'queued',
   'running',
@@ -68,6 +69,7 @@ export const ACTIVE_STATES: ReadonlySet<ProgressState> = new Set<ProgressState>(
 /** §4.2. There is no `expired`: a dialog has no deadline to expire against (TW-DLG-005). */
 export type DialogState = 'open' | 'answered' | 'cancelled';
 
+/** Every `DialogState` at runtime, in §4.2's order. */
 export const DIALOG_STATES: readonly DialogState[] = ['open', 'answered', 'cancelled'];
 
 /**
@@ -81,6 +83,7 @@ export const DIALOG_STATES: readonly DialogState[] = ['open', 'answered', 'cance
 export type EnvelopeKind =
   'progress' | 'dialog.open' | 'dialog.close' | 'dialog.reply' | 'cancel' | 'watch' | 'snapshot';
 
+/** Every `EnvelopeKind` at runtime. `PUSHED_KINDS` is the subset a server may send. */
 export const ENVELOPE_KINDS: readonly EnvelopeKind[] = [
   'progress',
   'dialog.open',
@@ -103,6 +106,7 @@ export const PUSHED_KINDS: ReadonlySet<EnvelopeKind> = new Set<EnvelopeKind>([
 /** TW-DLG-004: exactly these four and nothing more. */
 export type InputType = 'string' | 'number' | 'boolean' | 'date';
 
+/** Every `InputType` at runtime; a frontend maps each to a control. */
 export const INPUT_TYPES: readonly InputType[] = ['string', 'number', 'boolean', 'date'];
 
 // ---------------------------------------------------------------------------------------------

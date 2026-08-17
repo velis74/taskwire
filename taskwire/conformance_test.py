@@ -38,7 +38,7 @@ SPECIFIED_CHECKS = (
     "test_publish_never_raises",
     "test_migrate_is_idempotent_and_preserves_rev",
 )
-"""The twelve checks the M1 brief §7 names one by one. Spelled out here rather than derived from
+"""The twelve checks the store brief §7 names one by one. Spelled out here rather than derived from
 `CHECKS`, because a list derived from the thing it is meant to police cannot police it."""
 
 

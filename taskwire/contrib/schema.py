@@ -17,8 +17,7 @@ against, and what a reader of `/docs` sees.
 `to_dict()` **omits** an absent optional field; these models **emit it as null**. Both are legal on
 the wire and parse identically, because TW-CORE-010 requires absent and null to be indistinguishable
 to a reader - a rule written for exactly this kind of second producer. `schema_test.py` asserts the
-equivalence by feeding every conformance fixture through both paths, which is what keeps this
-paragraph true rather than merely intended.
+equivalence by feeding every conformance fixture through both paths.
 """
 
 from __future__ import annotations
@@ -66,8 +65,8 @@ class Result(BaseModel):
 
 
 class Button(BaseModel):
-    """A choice on a dialog. There is no `default` flag - it existed only to answer a timeout, and
-    there are no timeouts (TW-DLG-005)."""
+    """A choice on a dialog. There is no `default` flag - a default button's only use is answering a
+    timeout, and there are no timeouts (TW-DLG-005)."""
 
     id: str
     label: Text | None = None
@@ -146,8 +145,8 @@ class Snapshot(BaseModel):
 class OperationSummary(BaseModel):
     """§3.7. One register row: the whole snapshot, plus what a list view needs lifted out of it.
 
-    This is the viewset's `T`, and `token` is its pk. That is not a convenience - the token IS the
-    identity of an operation, and there is no other key anywhere in the system (TW-KEY-001).
+    `token` is the pk the viewset is keyed on. That is not a convenience - the token IS the identity
+    of an operation, and there is no other key anywhere in the system (TW-KEY-001).
     """
 
     token: str
@@ -178,10 +177,9 @@ class Aggregate(BaseModel):
 class Register(BaseModel):
     """§3.8. Every shared operation of one namespace, sorted, with its aggregate.
 
-    Returned by the `register` action rather than by `list()`, because `list()` is typed `list[T]`
-    and this document is not a list: it carries `poll_after_ms`, which TW-REST-014 makes binding on
-    the client's next poll. Dropping the envelope to fit the CRUD shape would drop the one field the
-    polling ladder is required to obey.
+    Returned by `GET {prefix}` rather than as a `list[OperationSummary]`: this document carries
+    `poll_after_ms`, which TW-REST-014 makes binding on the client's next poll, and the aggregate
+    computed over the same read.
     """
 
     v: int = WIRE_VERSION

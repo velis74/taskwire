@@ -2,7 +2,7 @@
 
 TW-CORE-003 and TW-CORE-004 put it this way: a `Reporter` writes to the store and calls
 `store.publish()`; `store.publish()` drives a reader; the reader is the only caller of
-`transport.notify()`. `delivery_test.py::test_only_reader_calls_notify` asserts it statically, by
+`transport.notify()`. `delivery_test.py::test_only_reader_calls_notify` enforces it statically, by
 walking every non-test source file.
 
 The rule looks like tidiness and is not. A reporter that pushed directly "because the transport is

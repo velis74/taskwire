@@ -129,7 +129,7 @@ function useHttp(): void {
  *
  * A socket that pushes the instant a state changes and a ladder that asks again every few seconds
  * are two answers to one question, so `attachMuxws` suspends the ladder rather than adding to it -
- * open the network tab and there is no periodic `GET /taskwire/operations` while this reads
+ * open the network tab and there is no periodic `GET /taskwire` while this reads
  * *WebSocket*. What comes back on a loss is the ladder, because the store is the truth and one read
  * is the whole of the recovery (TW-CORE-005).
  *

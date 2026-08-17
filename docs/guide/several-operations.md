@@ -36,15 +36,18 @@ namespace-wide flicker.
 {
   "state": "waiting_input",
   "title": { "key": "taskwire.aggregate.title" },
-  "data": { "total": 3, "queued": 0, "running": 2, "waiting_input": 1 }
+  "label": { "key": "acme.import", "text": "Importing customers" },
+  "data": { "total": 3, "queued": 0, "running": 2, "waiting_input": 1 },
+  "updated_at": "2026-01-01T09:12:44.318Z"
 }
 ```
 
-**There is no `percent` here and there never will be.** There is no unit in which two operations'
-self-reported percentages are commensurable — one is 40 % through a row count, the other 40 % through
-a byte count — so any figure derived across them is invented. The field is absent from the wire
-rather than `null` on it, and `Aggregate` declares `percent?: never` in TypeScript so that adding one
-fails the typecheck.
+`label` is the selected operation's own title, so a footer has something to write beside the counts.
+
+**There is no `percent` here.** There is no unit in which two operations' self-reported percentages
+are commensurable — one is 40 % through a row count, the other 40 % through a byte count — so any
+figure derived across them is invented. The field is absent from the wire rather than `null` on it,
+and `Aggregate` declares `percent?: never` in TypeScript so that adding one fails the typecheck.
 
 `state` is computed **by domination**, ordered `waiting_input > running > queued`, never by majority.
 One operation blocked on a question among nine running ones is the whole reason a user needs to look
@@ -75,9 +78,8 @@ rendering of "this operation does not know", rather than zero or a guess.
 `needs_attention` first, then `created_at` **ascending** — oldest first — within both groups. There
 is no third key.
 
-A consequence worth knowing rather than working around: an old uncollected result sorts above a fresh
-question. The result holds nothing, and the aggregate's `waiting_input` state lights the indicator
-either way.
+An old uncollected result therefore sorts above a fresh question. The result holds nothing, and the
+aggregate's `waiting_input` state lights the indicator either way.
 
 ## Terminal entries leave immediately
 
@@ -93,9 +95,9 @@ it is purely the client holding on to a row it watched depart.
 However deep the subtask tree, one token produces one register entry, one bar and one document. There
 is no wire field expressing the tree, and a 400-way `split()` does not inflate the aggregate.
 
-## What taskwire deliberately does not ship
+## What taskwire does not ship
 
 **Cross-tab UI synchronisation.** No `BroadcastChannel` dialog mirroring, no leader-elected polling,
-and no hook to add them. They are rejected, not omitted: the tab rules already produce one modal in
-the tab the user is looking at, without any tab having to be elected — and an elected leader is a tab
-whose closing loses the election.
+and no hook to add them. The tab rules produce one modal in the tab the user is looking
+at without any tab having to be elected, and an elected leader is a tab whose closing loses the
+election.

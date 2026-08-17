@@ -17,10 +17,6 @@
  * **A pending dialog hangs on its own entry** (TW-TS-006, TW-TS-009). There is no `tw.dialog` slot
  * here, no queue, and no policy for a second question; and an application is expected to surface a
  * question on **any** `tw.register` entry, including one that is not in `tw.operations`.
- *
- * `dialog` is `null` and `answer`, `cancel`, `collect`, `dismiss` and `mute` are inert until M3b, M6,
- * M7 and M8 respectively. They exist now with their final signatures so no later milestone rewrites a
- * call site.
  */
 
 import { computed, type ComputedRef, getCurrentScope, onScopeDispose, type Ref, shallowRef } from 'vue';
@@ -34,6 +30,7 @@ export interface UseOperationOptions extends TaskwireOptions {
   token: string;
 }
 
+/** What `use_operation` hands a component: the handle, two refs that follow it, and its two writes. */
 export interface OperationBinding {
   /** The handle itself, so a template can reach `token`, `title`, `result` and `startedHere`. */
   operation: Operation<unknown>;
@@ -44,14 +41,19 @@ export interface OperationBinding {
    * is the state.
    */
   progress: Ref<Progress | null>;
-  /** M3b. `null` here, and always on the entry rather than on the client (TW-TS-006). */
+  /** This entry's open question, `null` when it has none - on the entry, never the client (TW-TS-006). */
   dialog: Ref<DialogRequest | null>;
+  /** Whether the state is `queued` or `running`. `false` before the first document arrives. */
   isRunning: ComputedRef<boolean>;
+  /** Whether the state is `done`. A `failed` or `cancelled` operation is neither running nor done. */
   isDone: ComputedRef<boolean>;
+  /** Answer `dialog` with one of its buttons. Quiet when another tab got there first (TW-DLG-011). */
   answer(button: string, values?: Record<string, unknown>): Promise<void>;
+  /** Ask for a cancel. Answered `202`, and only the terminal state confirms it (TW-CANCEL-003). */
   cancel(): Promise<void>;
 }
 
+/** What `use_register` hands a widget: the entries, the aggregate, the selection, and four acts. */
 export interface RegisterBinding {
   /** The namespace's register plus this tab's private operations (TW-REG-001, TW-PRIV-002). */
   entries: Ref<Operation<unknown>[]>;
@@ -59,9 +61,13 @@ export interface RegisterBinding {
   aggregate: Ref<Aggregate | null>;
   /** The one operation whose own percentage a footer may draw (TW-REG-013). */
   selected: Ref<Operation<unknown> | null>;
+  /** Put a row into this tab's visible collection (§4.3); invisible to every other tab. */
   show(operation: Operation<unknown>): void;
+  /** Take the result and release the record, once (TW-RES-010). */
   collect(operation: Operation<unknown>): Promise<Result>;
+  /** The same release, with the value thrown away, and idempotent (TW-REST-008). */
   dismiss(operation: Operation<unknown>): Promise<void>;
+  /** Record `false` for this token in this client's override map (TW-DEL-006). */
   mute(operation: Operation<unknown>): void;
 }
 
@@ -115,8 +121,8 @@ export function use_operation(source: string | UseOperationOptions): OperationBi
  * This tab's visible subset (§4.3), reactively.
  *
  * It is **not** the register: nothing here can put a row on screen, and reading it starts no poll of
- * `{prefix}/operations` (TW-REG-021). Entries arrive by `startedHere` plus `progressUi.delay`, or by
- * `show()`, and by nothing else.
+ * `{prefix}` (TW-REG-021). Entries arrive by `startedHere` plus `progressUi.delay`, or by `show()`,
+ * and by nothing else.
  */
 export function use_operations(options?: TaskwireOptions): Ref<Operation<unknown>[]> {
   const client = clientFor(options);
@@ -133,9 +139,9 @@ export function use_operations(options?: TaskwireOptions): Ref<Operation<unknown
  * The whole register surface a widget needs: the entries, the aggregate and the selection.
  *
  * Subscribing is what starts the register poll, so a page that never mounts a register widget never
- * asks for `{prefix}/operations`. The selection is FIFO and advances by itself when the selected
- * operation leaves (TW-TS-012); `client.select(token)` pins another and `select(null)` returns to the
- * default. There is no aggregate percentage to fall back to and never will be (TW-REG-011).
+ * asks for `{prefix}`. The selection is FIFO and advances by itself when the selected operation
+ * leaves (TW-TS-012); `client.select(token)` pins another and `select(null)` returns to the default.
+ * There is no aggregate percentage to fall back to and never will be (TW-REG-011).
  */
 export function use_register(options?: TaskwireOptions): RegisterBinding {
   const client = clientFor(options);

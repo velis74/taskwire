@@ -53,11 +53,10 @@ export interface TaskwireTransport {
 /**
  * A deep copy of one wire document.
  *
- * `structuredClone` is the right tool and is present in every runtime taskwire targets. The JSON
- * path behind it is not a silent fallback to a weaker guarantee: an `Envelope` is a JSON document by
- * construction (§3.9), so round-tripping it through JSON copies exactly the same value graph. It
- * exists so that an older embedded runtime degrades to slower, not to shared state - which is the
- * one thing TW-TR-009 does not tolerate.
+ * `structuredClone` is the right tool and is present in every runtime taskwire targets. An `Envelope`
+ * is a JSON document by construction (§3.9), so round-tripping it through JSON copies the same value
+ * graph: on an older embedded runtime the JSON path degrades to slower, never to shared state, which
+ * is the one thing TW-TR-009 does not tolerate.
  */
 function cloneDocument<T>(value: T): T {
   const clone = globalThis.structuredClone;
@@ -77,10 +76,10 @@ class PushTimedOut extends Error {
  * TW-TR-003: bound one subscriber's call. Resolves when the work resolves, rejects when it rejects,
  * and rejects with a `PushTimedOut` once `seconds` have passed - whichever happens first.
  *
- * The `catch` on `work` is not a swallow of the outcome: the `Promise.race` below it is what
- * observes the rejection. It is there so that work rejecting *after* it already lost the race - the
- * hung subscriber that eventually errors - does not surface as an unhandled rejection in the host,
- * which would turn a dropped push into a process-level warning or, under Node's default, a crash.
+ * The `Promise.race` below observes the rejection. The `catch` on `work` only keeps work rejecting
+ * *after* it already lost the race - the hung subscriber that eventually errors - from surfacing as
+ * an unhandled rejection in the host, which would turn a dropped push into a process-level warning
+ * or, under Node's default, a crash.
  */
 async function withTimeout(work: Promise<void>, seconds: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -183,9 +182,8 @@ export class LocalTransport implements TaskwireTransport {
   }
 
   /**
-   * `true`, exactly as the port's default says (TW-TR-001), and deliberately not "is anyone
-   * subscribed". A hint that answered accurately would be the first thing a caller was tempted to
-   * branch on, and TW-TR-001 spends a clause saying the hint is never load-bearing.
+   * `true`, exactly as the port's default says (TW-TR-001), and never "is anyone subscribed": the
+   * hint is never load-bearing, and an accurate answer is one a caller could branch on.
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the signature is specified (TW-TR-001)
   async isOnline(session: string): Promise<boolean> {

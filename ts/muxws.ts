@@ -58,6 +58,7 @@ export interface WatchReply {
   connection: string | null;
 }
 
+/** What a `MuxwsClientTransport` is built from: the socket, and the two things it reports back. */
 export interface MuxwsClientOptions {
   /**
    * A connected muxws `Peer`. taskwire does not open the socket: an application already has one, its
@@ -306,6 +307,7 @@ export interface MuxwsAttachable {
   readonly basePath?: string;
 }
 
+/** The two choices `attachMuxws` leaves open: whether the calls move too, and where they are mounted. */
 export interface AttachMuxwsOptions {
   /**
    * Whether the six calls travel the socket too. Default `true`: a client whose pushes arrive on a
@@ -330,9 +332,8 @@ export interface AttachMuxwsOptions {
  * await socket.announce();          // obtain this socket's connection id
  * ```
  *
- * Everything keeps working if this line is deleted, and that is the test of the layering rather
- * than a consolation: the register still answers and the polling ladder is what carries a client
- * with no socket - or one whose socket has just died (TW-TS-007).
+ * Everything keeps working if this line is deleted: the register still answers and the polling
+ * ladder carries a client with no socket - or one whose socket has just died (TW-TS-007).
  */
 export function attachMuxws(
   client: MuxwsAttachable,

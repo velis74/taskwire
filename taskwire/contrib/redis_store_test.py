@@ -4,8 +4,8 @@ That is the whole acceptance criterion (TW-STORE-011): RedisStore gets no weaken
 suite. If a rule in it cannot be satisfied by a real backend then the rule is wrong and the
 specification changes, not the suite.
 
-Skips - never errors - when no Redis is reachable, so the milestone's own requirement that the whole
-test suite passes with no optional extra installed keeps holding.
+Skips - never errors - when no Redis is reachable, so the requirement that the whole test suite
+passes with no optional extra installed keeps holding.
 """
 
 from __future__ import annotations
@@ -162,9 +162,9 @@ async def test_publish_never_raises_even_with_redis_gone(redis_url) -> None:
 async def test_the_backplane_carries_an_envelope_between_processes(redis_url) -> None:
     """TW-BP-003: an envelope published for a namespace reaches that namespace and no other.
 
-    Two `RedisStore` instances stand in for two web processes. This is the whole point of M4 - in a
-    single process `MemoryStore.publish` drives the reader directly, and nothing proves the
-    cross-process path until two of them are in the room.
+    Two `RedisStore` instances stand in for two web processes. In a single process
+    `MemoryStore.publish` drives the reader directly, and nothing proves the cross-process path
+    until two of them are in the room.
     """
     import asyncio
 

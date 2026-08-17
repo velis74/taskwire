@@ -1,9 +1,9 @@
 """Packaging invariants: one version stream, a core that drags nothing in, fixtures read in place.
 
 These four assertions are cheap and they are load-bearing. `test_core_imports_no_optional_dependency`
-in particular is the acceptance criterion for TW-CORE-006 and must keep passing in every later
-milestone: the whole design rests on core installing and running with none of redis, celery, fastapi
-or muxws present, and that property is only ever one careless top-level import away from being lost.
+in particular is the acceptance criterion for TW-CORE-006: the whole design rests on core installing
+and running with none of redis, celery, fastapi or muxws present, and that property is only ever one
+careless top-level import away from being lost.
 """
 
 from __future__ import annotations

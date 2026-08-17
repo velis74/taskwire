@@ -83,4 +83,6 @@ def declared_result_kind(fn: Any) -> str | None:
 
 
 def declared_result_params(fn: Any) -> dict[str, Any] | None:
+    """The params a decorated callable declared, or `None`. `dialog_result` is the only decorator
+    that sets them."""
     return getattr(fn, RESULT_PARAMS_ATTRIBUTE, None)

@@ -1,10 +1,9 @@
 /**
  * `operation()` - the lifecycle half of §5.5a, and the only writer of `Progress.state`.
  *
- * The callback form is normative (TW-TS-014). `await using` via `Symbol.asyncDispose` reads better
- * and may be added as sugar later, but it needs TypeScript 5.2 and a runtime with explicit resource
- * management, and TW-SYM-001 - a browser-only program is a first-class deployment - does not get to
- * depend on either.
+ * The callback form is normative (TW-TS-014). `await using` via `Symbol.asyncDispose` needs
+ * TypeScript 5.2 and a runtime with explicit resource management, and TW-SYM-001 - a browser-only
+ * program is a first-class deployment - does not get to depend on either.
  *
  * Two rules govern the exit and both are easy to lose:
  *
@@ -25,9 +24,8 @@
  * error anywhere. The reporter is passed to the callback and to everything the callback calls.
  *
  * `OperationCancelled` and `new_token` live in `reporter.ts`: `Reporter.ask()` needs both, and
- * importing upward from there would close a cycle. They are re-exported from here, because this is
- * the module callers have always imported them from - moving a symbol must not move its import
- * path.
+ * importing upward from there would close a cycle. They are re-exported from here, so `operation()`'s
+ * callers reach them on this module's path.
  */
 
 import {
@@ -145,8 +143,9 @@ function errorFor(raised: unknown): TaskwireError {
  * Open an operation, run `body`, and write exactly one terminal state on the way out (TW-TS-014).
  *
  * Inert but live-looking when `token`, `ns` or `store` is null (TW-AMB-010 / TW-AMB-009): the body
- * still runs, the reporter still answers every call, nothing is written anywhere, and the caller
- * never branches on it.
+ * still runs, every progress call is accepted and validated, nothing is written anywhere, and the
+ * caller never branches on it. `ask()` is the exception - with no store to arbitrate a reply it
+ * throws rather than returning one.
  */
 export async function operation<T>(opts: OperationOptions, body: (reporter: Reporter) => Promise<T>): Promise<T> {
   const settings: ReporterSettings = { ...DEFAULT_SETTINGS, ...opts.settings };

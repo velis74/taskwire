@@ -18,15 +18,24 @@ namespace, the first answer wins, and the losers close quietly.
 
 ## There is no timeout
 
-No `timeout` parameter. No `settings.dialog_timeout`. No `timeout_at`, no default answer, no
-`DialogTimeout`, no `expired` dialog state. Their absence is the design, not an omission: a deadline
-needs a default answer, and there is no answer a library can invent on a user's behalf.
+There is no `timeout` parameter, no `settings.dialog_timeout`, no `timeout_at`, no default answer, no
+`DialogTimeout` and no `expired` dialog state: a deadline needs a default answer, and there is no
+answer a library can invent on a user's behalf.
 
 **The consequence, stated plainly: an unanswered dialog blocks its worker.** Under Celery it blocks
 until that task's own execution timeout kills it, at which point the operation becomes `failed` with
-code `dialog_timeout` and `retryable: true`, and its open dialogs are withdrawn. The general problem
-of a blocked worker is deliberately unsolved — if you need a deadline, implement one at whatever
-level suits your application.
+code `dialog_timeout` and `retryable: true`, and its open dialogs are withdrawn. taskwire solves the
+general problem of a blocked worker nowhere; if you need a deadline, implement one at whatever level
+suits your application, as the demo does with `asyncio.wait_for` around the `ask()`.
+
+A worker parked on a question is a worker not doing anything else, so route tasks that ask onto a
+queue of their own:
+
+```python
+app.conf.task_routes = {"acme.tasks.reconcile": {"queue": "asks"}}
+```
+
+Without that, four questions on a four-worker pool stop the pool.
 
 ::: danger Never hold a transaction across ask()
 `ask()` waits for a human. A database transaction held across it holds its locks for as long as the
@@ -35,7 +44,7 @@ user takes to answer, which may be the rest of the afternoon.
 
 ## `id` versus `dialog_id`
 
-Two identifiers, and confusing them is the classic bug:
+Two identifiers:
 
 | | what it is | used as a key? |
 |---|---|---|
@@ -51,9 +60,10 @@ would answer each other's question — the first caller acting on the second use
 await operation.answer('overwrite', { reason: 'newer data' });
 ```
 
-`answer()` **resolves quietly** on 409, 404 and 410. A second tab answering first is a normal
+`answer()` **resolves quietly** on 404, 409 and 410. A second tab answering first is a normal
 outcome of a namespace-wide question, not a fault, so no application error handler ever sees it and
-nothing is logged. Only 422 — a malformed reply — rejects.
+nothing is logged. Everything else rejects, including a 422 — a malformed reply, which is a
+programming error — and any transport failure.
 
 A dialog closes when it **leaves `open`**, whether that was observed in a push or a poll, and
 whether it left for `answered` or `cancelled`. Never render a countdown: a dialog carries no
@@ -63,6 +73,24 @@ A withdrawal announces itself through no envelope of its own. The operation's te
 `404` that follows the drop, and the entry leaving the register are the three ways a client learns
 it, and the TypeScript client settles the question on all three — so a modal drawn from an entry
 closes whichever of them arrives, in the tab that started the operation and in every other.
+
+## Putting one on screen
+
+`taskwire/vuetify` ships the whole path:
+
+```ts
+import { useTaskwireDialogs } from 'taskwire/vuetify';
+
+useTaskwireDialogs({ components: { 'acme.overwrite': 'AcmeOverwriteDialog' } });
+```
+
+Mounted **once, high up**, it presents every open question of the namespace, applying the tab rules:
+the tab that started the operation presents at once, every other waits `dialogAdoptDelay` and
+presents only if the question is still open. `dialogId` maps to a component exactly as a
+`Result.kind` does, and an unmapped question falls back to a plain message dialog carrying the
+declared buttons — a worse dialog, but never a missing one, and a missing one holds a worker.
+
+Without Vuetify, `DialogAdoption` from the core package is the same rule with no rendering attached.
 
 ## Buttons and inputs
 

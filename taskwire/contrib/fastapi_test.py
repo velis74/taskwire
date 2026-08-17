@@ -1,8 +1,8 @@
 """Adapter tests for `taskwire.contrib.fastapi`.
 
-fastapi is an **optional** extra (`taskwire[fastapi]`). Every milestone except this one is required
-to pass with no extra installed at all, so the whole module skips - never errors - when the import
-is unavailable. That is why `pytest.importorskip` stands above the fastapi imports and why those
+fastapi is an **optional** extra (`taskwire[fastapi]`). The rest of the suite is required to pass
+with no extra installed at all, so this whole module skips - never errors - when the import is
+unavailable. That is why `pytest.importorskip` stands above the fastapi imports and why those
 imports carry `# noqa: E402`.
 """
 
@@ -118,7 +118,7 @@ def test_router_builds_client_from_request(store: object) -> None:
     scope = {
         "type": "http",
         "method": "GET",
-        "path": "/taskwire/operations",
+        "path": "/taskwire",
         "query_string": b"",
         "headers": [(b"x-taskwire-connection", b"conn-42"), (USER_HEADER.lower().encode(), b"alice")],
     }
@@ -141,7 +141,7 @@ def test_router_builds_client_from_request(store: object) -> None:
         # 2. The read path: the `Client` the router built reaches the register machinery intact.
         assert http.post("/queue", headers=headers).status_code == 200
         seen.clear()  # so `seen[-1]` below can only be the router's own Client, never `/queue`'s
-        listing = http.get("/taskwire/operations", headers=headers)
+        listing = http.get("/taskwire", headers=headers)
         assert listing.status_code == 200
         assert len(listing.json()["operations"]) == 1
         assert seen, "the register was built without the Client the adapter assembled"
@@ -149,12 +149,12 @@ def test_router_builds_client_from_request(store: object) -> None:
         assert seen[-1].connection == "conn-42"
         # The request travels too, and it is the *polling* request - the third field of TW-REST-002
         # reaching the register, not merely a field set on a hand-built Client.
-        assert seen[-1].request.url.path == "/taskwire/operations"
+        assert seen[-1].request.url.path == "/taskwire"
 
         # A caller of the same namespace who names no connection is still a caller; the register is
         # built for it with `connection=None` rather than the previous request's value.
         seen.clear()
-        assert http.get("/taskwire/operations", headers={USER_HEADER: "alice"}).status_code == 200
+        assert http.get("/taskwire", headers={USER_HEADER: "alice"}).status_code == 200
         assert seen, "the second read built no Client at all"
         assert seen[-1].connection is None
 
@@ -201,7 +201,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
     assert taskwire.Settings().rest_prefix == "/taskwire"
     api = router()
     assert {route.path for route in api.routes} == {
-        "/taskwire/operations",
+        "/taskwire",
         "/taskwire/{token}",
         "/taskwire/{token}/dialogs/{did}",
         "/taskwire/{token}/cancel",
@@ -214,7 +214,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         queued = http.post("/queue", headers=headers)
         token = queued.json()["token"]
 
-        listing = http.get("/taskwire/operations", headers=headers)
+        listing = http.get("/taskwire", headers=headers)
         assert listing.status_code == 200
         assert listing.json()["v"] == 1
         assert [entry["token"] for entry in listing.json()["operations"]] == [token]
@@ -238,7 +238,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
     # The prefix is an argument, not a constant, and every route moves with it.
     custom = router(prefix="/tw")
     assert {route.path for route in custom.routes} == {
-        "/tw/operations",
+        "/tw",
         "/tw/{token}",
         "/tw/{token}/dialogs/{did}",
         "/tw/{token}/cancel",
@@ -251,12 +251,12 @@ def test_the_router_mounts_exactly_the_specified_endpoints() -> None:
     """TW-REST-004: the table has six rows and the router has six routes, no more and no fewer.
 
     A route with no handler behind it is worse than no route: a client cannot tell its 404 from an
-    expired token's (TW-SEC-002 makes both 404). Now that every milestone has landed, the check is
-    that nothing EXTRA appears - a seventh path would be a wire change nobody agreed to.
+    expired token's (TW-SEC-002 makes both 404). The other half of the check is that nothing EXTRA
+    appears - a seventh path would be a wire change nobody agreed to.
     """
     paths = {route.path for route in router().routes}
     assert paths == {
-        "/taskwire/operations",
+        "/taskwire",
         "/taskwire/{token}",
         "/taskwire/{token}/dialogs/{did}",
         "/taskwire/{token}/cancel",
@@ -278,19 +278,19 @@ def test_the_dialog_reply_path_is_declared_before_the_token_path() -> None:
     assert reply < token_only, paths
 
 
-def test_operations_is_matched_before_token(store: object) -> None:
-    """TW-REST-006: `{prefix}/operations` is matched before `{prefix}/{token}`.
+def test_the_register_is_the_prefix_itself(store: object) -> None:
+    """TW-REST-004: `GET {prefix}` is the register, and no segment follows the prefix.
 
-    Declaration order is the mechanism in FastAPI, so assert the order *and* the behaviour: the
-    literal "operations" is not a well-formed UUID, so a router that matched it as a token would
-    answer 404 instead of a register.
+    The collection at the collection's own URL, which is also what leaves nothing after the prefix
+    for a token to be mistaken for. Declaration order still matters in FastAPI, so assert the order
+    *and* the behaviour.
     """
     api = router()
     paths = [route.path for route in api.routes]
-    assert paths.index("/taskwire/operations") < paths.index("/taskwire/{token}")
+    assert paths.index("/taskwire") < paths.index("/taskwire/{token}")
 
     with TestClient(_make_app(store)) as http:
-        response = http.get("/taskwire/operations", headers={USER_HEADER: "alice"})
+        response = http.get("/taskwire", headers={USER_HEADER: "alice"})
         assert response.status_code == 200
         body = response.json()
         assert set(body) >= {"v", "operations", "aggregate", "server_time", "poll_after_ms"}

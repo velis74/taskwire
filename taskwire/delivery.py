@@ -1,9 +1,7 @@
-"""`Client`, `OperationRef` and the one function M8 replaces the body of.
+"""`Client`, `OperationRef`, and the delivery decision the last hop applies.
 
-In M1 `effective_delivery` returns `True` unconditionally. The field, the call site and the shape
-all exist now so that M8 changes exactly one function body and nothing else - and so that nobody
-has to introduce a `progress_delivery` concept into the register a milestone later, by which time
-three call sites would be computing it three ways.
+`effective_delivery` is `fe_override if present else push_filter(client, operation)` (TW-DEL-001);
+`may_be_suppressed` bounds which envelopes either half may act on (TW-DEL-010).
 """
 
 from __future__ import annotations

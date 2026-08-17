@@ -6,9 +6,8 @@
  * (TW-DEL-022) - an empty declaration is not a restoration, it asserts exactly the state the new
  * socket already has - and it MUST NOT re-declare the overrides the old socket held.
  *
- * With no transport attached this is vacuously true, and the test exists anyway because **M5 and M8
- * extend it**: M5 brings the socket and the reconnect, M8 brings the overrides worth restoring. The
- * assertions below are written so that a later milestone adds cases rather than rewriting the file.
+ * Two sockets and a scan of the sources carry the claim between them: nothing the first socket held
+ * is declared on the second, and no module calls `watch()` with a stored override map.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -140,10 +139,9 @@ afterEach(() => {
 
 describe('reconnecting (TW-REG-020)', () => {
   it('the only watch on on_reconnect declares an empty map', async () => {
-    // Named in the specification. In M1c there is no reconnect and no socket, so the claim holds
-    // vacuously - and the two ways it could stop holding are both asserted here rather than in a
-    // comment: the client never declares anything on a fresh socket, and there is no code that
-    // replays an override map on one.
+    // Named in the specification. The two ways the claim could stop holding are both asserted
+    // rather than described: the client declares nothing but an empty map on a fresh socket, and
+    // no module replays an override map on one.
     const token = new_token();
     server.list(token);
     const client = new Taskwire(DEFAULT_BASE_PATH, server.http);
@@ -173,10 +171,8 @@ describe('reconnecting (TW-REG-020)', () => {
     // And statically. The rule is not "watch takes no arguments" - a user muting an operation
     // declares a non-empty map, and that is TW-DEL-006's whole purpose. The rule is that nothing
     // RE-DECLARES a map it had stored: `watch(this.overrides)` on a fresh socket is exactly the
-    // restoration TW-REG-020 forbids, while `watch(whatTheUserJustAskedFor)` is the feature.
-    //
-    // (This check used to read "no non-empty argument anywhere", which held vacuously while there
-    // was no socket. Once ts/muxws.ts existed it would have forbidden overrides outright.)
+    // restoration TW-REG-020 forbids, while `watch(whatTheUserJustAskedFor)` is the feature. A
+    // check that forbade every non-empty argument would forbid TW-DEL-006 outright.
     const restores = /\.watch\(\s*(this\.[A-Za-z]*[Oo]verrides|saved|stored|previous|restored)/;
     const offenders = [...sources()].filter(([, text]) => restores.test(text));
     expect(offenders.map(([name]) => name)).toEqual([]);

@@ -14,7 +14,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `docs/` | the user-facing VitePress site, and only that |
 | `demo/` + `demo.py` | the one demo. A consumer of taskwire, not part of it |
 | `conformance/wire/` | 28 JSON fixtures read in place by **both** pytest and vitest |
-| `GAPS.md` | decisions taken without the author; 10 still OPEN |
+| `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 271 pass, 9 skip

@@ -22,8 +22,8 @@
  * is `async` for the port's sake and synchronous in its body for that reason.
  *
  * There is deliberately no TypeScript `RedisStore` (TW-STORE-011). The store is a port; an
- * implementation that is not written is simply absent, and TW-STORE-012's exported conformance suite
- * (`./conformance`) is what an application writing its own would prove it against.
+ * implementation that is not written is simply absent, and TW-STORE-012's conformance suite, in
+ * `ts/conformance.ts`, is what an application writing its own proves it against.
  */
 
 import {
@@ -80,14 +80,6 @@ export const DIALOG_RESOLUTIONS: readonly DialogResolution[] = [
 ];
 
 /**
- * The dialog document no longer exists.
- *
- * A distinguishable fault, never an answer nobody gave (TW-DLG-008). `await_dialog` rejects with
- * this; it must not resolve with a synthesised reply, because a caller cannot tell a synthesised
- * "cancel" from a user who pressed cancel.
- */
-export const CANCELLED_BUTTON = '__taskwire_cancelled__';
-/**
  * The reserved button a withdrawal pushes onto a dialog's reply channel (TW-CANCEL-007).
  *
  * With dialog timeouts gone (TW-DLG-005), a sentinel on the reply channel is the ONLY thing that can
@@ -98,17 +90,26 @@ export const CANCELLED_BUTTON = '__taskwire_cancelled__';
  * `ask()` recognises it and throws `OperationCancelled` whatever `raiseOnCancel` says (TW-DLG-012);
  * it is never returned to an application as an answer.
  */
+export const CANCELLED_BUTTON = '__taskwire_cancelled__';
 
+/** The reply a withdrawal queues: the reserved button, with no values. */
 const CANCELLED_SENTINEL: DialogReply = { button: CANCELLED_BUTTON, values: {} };
 
-const AWAIT_POLL_MS = 5;
 /**
  * How long `awaitDialog` waits before re-reading (TW-BP-008).
  *
  * A liveness device inside the store, never a deadline offered to `ask()` - the loop it bounds has
  * no overall deadline at all. A lost wakeup costs this much latency instead of hanging forever.
  */
+const AWAIT_POLL_MS = 5;
 
+/**
+ * The dialog document no longer exists.
+ *
+ * A distinguishable fault, never an answer nobody gave (TW-DLG-008). `awaitDialog` rejects with
+ * this; it must not resolve with a synthesised reply, because a caller cannot tell a synthesised
+ * "cancel" from a user who pressed cancel.
+ */
 export class DialogVanished extends Error {
   constructor(message = 'taskwire: the dialog document no longer exists') {
     super(message);
@@ -144,19 +145,19 @@ export interface TaskwireStore {
    */
   listOperations(ns: string): Promise<Snapshot[]>;
 
-  /** Write a dialog and bump `rev` atomically. M3. */
+  /** Write a dialog and bump `rev` atomically. */
   putDialog(key: string, dialog: DialogRequest, ttl: number): Promise<number>;
 
-  /** The arbiter of first-answer-wins (TW-STORE-003). M3. */
+  /** The arbiter of first-answer-wins (TW-STORE-003). */
   resolveDialog(key: string, did: string, reply: DialogReply): Promise<DialogResolution>;
 
-  /** Flip every still-open dialog to `cancelled`; resolve with the ids flipped. M3. */
+  /** Flip every still-open dialog to `cancelled`; resolve with the ids flipped. */
   withdrawDialogs(key: string): Promise<string[]>;
 
-  /** Block until resolved. Takes **no deadline** - the caller has none to give (TW-DLG-005). M3. */
+  /** Block until resolved. Takes **no deadline** - the caller has none to give (TW-DLG-005). */
   awaitDialog(key: string, did: string): Promise<DialogReply>;
 
-  /** The single arbiter of the three release paths (TW-STORE-016). M7. */
+  /** The single arbiter of the three release paths (TW-STORE-016). */
   releaseResult(key: string): Promise<Result | null>;
 
   /** Set the sticky cancel flag and resolve with the new `rev`. The flag is never cleared. */
@@ -194,11 +195,10 @@ export interface MemoryStoreOptions {
    * `time.time()` so a test drives both languages' stores the same way.
    */
   clock?: () => number;
-  /** Installed by the reader (M1b) or by an application wiring its own transport. */
+  /** Installed by the reader, or by an application wiring its own transport. */
   dispatch?: PublishHook;
 }
 
-/** One operation's stored state. Not a wire shape - the store's own bookkeeping. */
 /**
  * Present `waiting_input` while a dialog is open, without ever having written it.
  *
@@ -220,6 +220,7 @@ function derivedProgress(entry: Entry): Progress {
   return { ...entry.progress, state: 'waiting_input' };
 }
 
+/** One operation's stored state. Not a wire shape - the store's own bookkeeping. */
 interface Entry {
   progress: Progress;
   rev: number;
@@ -227,10 +228,7 @@ interface Entry {
   expiresAt: number;
   dialogs: Map<string, DialogRequest>;
   cancelRequested: boolean;
-  /**
-   * One wakeup queue per dialog id, used by M3 to wake a blocked worker. Declared here so the entry
-   * shape does not change under M3, and so it is already covered by `drop`.
-   */
+  /** One wakeup queue per dialog id: what wakes a worker blocked in `ask()`. Covered by `drop`. */
   replies: Map<string, DialogReply[]>;
 }
 
@@ -256,8 +254,9 @@ export class MemoryStore implements TaskwireStore {
   private readonly index = new Map<string, Map<string, string>>();
 
   /**
-   * TW-KEY-005: tokens currently holding at least one open dialog, private ones included. M1 owns
-   * only `drop`'s half and the empty structure; the three dialog writers are M3's.
+   * TW-KEY-005: tokens currently holding at least one open dialog, private ones included. `putDialog`
+   * adds; `releaseAskingIfQuiet`, `drop` and `prune` remove; `migrate` carries membership across with
+   * the entry.
    */
   private readonly asking = new Map<string, Set<string>>();
 
@@ -313,7 +312,7 @@ export class MemoryStore implements TaskwireStore {
   }
 
   private buildSnapshot(k: string, entry: Entry): Snapshot {
-    // (see `derivedProgress` below - the state a reader sees is computed here, never stored)
+    // (see `derivedProgress` above - the state a reader sees is computed here, never stored)
     const [, token] = splitKey(k);
     return {
       v: WIRE_VERSION,
@@ -508,12 +507,11 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * TW-STORE-006, written as the union from the start.
+   * TW-STORE-006, as a union of two terms rather than "everything the index holds".
    *
-   * The second term is constantly empty until M3 fills the asking set, and writing this as
-   * "everything the index holds" today would be a rewrite waiting to happen: the index holds shared
-   * operations only, and a private operation holding an open dialog must be listed for exactly as
-   * long as it asks (TW-PRIV-004).
+   * The index holds shared operations only, and a private operation holding an open dialog must be
+   * listed for exactly as long as it asks (TW-PRIV-004). The asking set is the second term, and it is
+   * what carries that operation into the listing.
    */
   async listOperations(ns: string): Promise<Snapshot[]> {
     this.prune(ns);
@@ -536,13 +534,7 @@ export class MemoryStore implements TaskwireStore {
     return snapshots;
   }
 
-  // -------------------------------------------------------------------------------- M3 / M7
-
-  /*
-   * The signatures are the contract (TW-STORE-001) and are fixed now so that the port does not
-   * change under the milestone that fills them in. The parameters are therefore deliberately
-   * present and deliberately unused.
-   */
+  // -------------------------------------------------------------------------------- dialogs and results
 
   /**
    * Write a dialog and bump `rev` atomically (TW-STORE-002).

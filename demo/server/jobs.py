@@ -171,10 +171,9 @@ async def export_blotter(reporter: Reporter) -> None:
                     data={"rows_done": written, "rows_total": rows_total},
                 )
     except OperationCancelled:
-        # Six minutes of successfully written rows are not discarded because the user cancelled the
-        # seventh: the partial file is kept and named as partial. Whether that is right is the
-        # operation author's call and nobody else's, which is exactly why `raise_on_cancel` is
-        # switchable rather than a library-wide policy.
+        # Re-raised so `operation()` writes `cancelled` (TW-CANCEL-006). What a half-finished export
+        # leaves behind is the operation author's call, which is why `raise_on_cancel` is switchable
+        # rather than a library-wide policy.
         raise
 
     await reporter.set_result(

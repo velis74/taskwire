@@ -107,6 +107,7 @@ registry = PeerRegistry()
 
 
 def create_app() -> FastAPI:
+    """Configure taskwire, mount its two transports, and return the app with the demo's own routes."""
     taskwire.configure(
         store=store,
         # The push half. With no socket open this fans out to nobody and the browser learns from its

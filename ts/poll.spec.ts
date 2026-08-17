@@ -301,7 +301,7 @@ describe('nothing derives a duration from the poll interval (TW-THR-007)', () =>
       .map(([name]) => name)
       .sort();
     // The frontend must never assume any update frequency. Two consumers, and both are schedulers:
-    // the single-token poll and (M1c) the register poll, which share this one ladder rather than
+    // the single-token poll and the register poll, which share this one ladder rather than
     // forking it (TW-REST-011). Neither the package entry point nor anything else may import it.
     expect(importers).toEqual(['register.ts', 'taskwire.ts']);
   });

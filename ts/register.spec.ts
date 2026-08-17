@@ -234,7 +234,7 @@ let tw: Taskwire;
  * One full register read, at the base interval.
  *
  * Reading `tw.register` is what starts the loop: an application that only ever calls `run()` polls
- * its own tokens and never `{prefix}/operations`, so a test that never touched the register would be
+ * its own tokens and never `{prefix}`, so a test that never touched the register would be
  * advancing a clock nothing is waiting on.
  */
 async function poll(times = 1, client: Taskwire = tw): Promise<void> {

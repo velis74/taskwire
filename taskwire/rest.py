@@ -51,7 +51,7 @@ def _not_found() -> Response:
 
 
 async def get_operations(client: Client) -> Response:
-    """`GET {prefix}/operations` - the central endpoint, and the one an ordinary client polls.
+    """`GET {prefix}` - the central endpoint, and the one an ordinary client polls.
 
     Always returns the whole register and takes no parameters (TW-REG-003), so there is none that
     could name another namespace.
@@ -59,7 +59,7 @@ async def get_operations(client: Client) -> Response:
     if client.session is None:
         # A `session_resolver` that returned None means the application opted this caller out of
         # taskwire entirely (TW-AMB-009). 404, never 401 or 403.
-        # NOTE: brief-level choice, not a spec rule.
+        # NOTE: not a spec rule - the status is this module's choice.
         return _not_found()
 
     store = configured.store

@@ -71,8 +71,8 @@ def poll_after_ms(snapshots: list[Snapshot]) -> int:
     dialog, which is the one situation the cadence singles out for the ceiling. A blocked worker
     would then be polled twelve times a second per tab instead of once every five seconds.
 
-    NOTE: brief-level choice, not a spec rule - the specific pair 400/5000 is this brief's, matching
-    §8.2's base and ceiling.
+    NOTE: not a spec rule - §8.2 fixes the base and the ceiling, and choosing between them on this
+    test is this module's.
     """
     active = any(_entry_state(s) in ACTIVE_STATES for s in snapshots)
     return BASE_POLL_MS if active else CEILING_POLL_MS
@@ -163,7 +163,7 @@ def summarize(snapshot: Snapshot, client: Client) -> OperationSummary:
 
 
 def build_register(snapshots: list[Snapshot], client: Client) -> Register:
-    """Assemble the document `GET {prefix}/operations` returns.
+    """Assemble the document `GET {prefix}` returns.
 
     Always the whole register (TW-REG-003). There is no parameter by which a caller could ask for
     less, and therefore none that could name another namespace. A suppressed operation still appears

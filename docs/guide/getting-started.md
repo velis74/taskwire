@@ -7,11 +7,12 @@ something when it cannot decide alone.
 
 ::: code-group
 ```bash [Python]
-pip install taskwire              # core: no runtime dependencies at all
-pip install "taskwire[fastapi]"   # the REST adapter
-pip install "taskwire[redis]"     # cross-process store and backplane
-pip install "taskwire[celery]"    # the worker entry point
-pip install "taskwire[muxws]"     # the WebSocket transport
+pip install taskwire               # core: no runtime dependencies at all
+pip install "taskwire[viewsets]"   # the REST API as a fastapi-viewsets viewset
+pip install "taskwire[fastapi]"    # the hand-rolled FastAPI router
+pip install "taskwire[redis]"      # cross-process store and backplane
+pip install "taskwire[celery]"     # the worker entry point
+pip install "taskwire[muxws]"      # the WebSocket transport
 ```
 
 ```bash [TypeScript]
@@ -19,22 +20,27 @@ npm install taskwire
 ```
 :::
 
-The core has **no required runtime dependencies** in either language. Every extra adds an adapter to
-something outside the process — never a capability the core lacks.
+The Python core has **no runtime dependencies at all**; the npm package requires axios and nothing
+else. Every extra adds an adapter to something outside the process — never a capability the core
+lacks.
 
 ## Wire it up once
 
 ```python
 import taskwire
-from fastapi import Request
+from fastapi import Request, WebSocket
 
-def session_resolver(request: Request) -> str | None:
+def session_resolver(connection: Request | WebSocket) -> str | None:
     """The only thing that produces a namespace.
 
     Return the account when a user is logged in and the session otherwise. An anonymous visitor
     still has a session, so anonymity is never a reason to return None.
+
+    One resolver serves both transports, so read only what a request and a handshake both carry -
+    headers and cookies. A second resolver for the socket is a second place the namespace could be
+    decided differently.
     """
-    return request.session.get("account_id") or request.session.session_key
+    return connection.headers.get("X-Account") or connection.cookies.get("sessionid")
 
 taskwire.configure(
     store=taskwire.MemoryStore(),          # RedisStore for more than one process
@@ -56,12 +62,39 @@ app.include_router(router)
 
 That needs `pip install "taskwire[fastapi,viewsets]"`. taskwire declares its REST API as a
 [fastapi-viewsets](https://docs.velis.si/) viewset, so your middleware chain, your authentication and
-your `@action_configuration` apply to taskwire's endpoints exactly as they do to your own — rather
-than taskwire inventing a second way to be configured and protected.
+your `@action_configuration` apply to taskwire's endpoints exactly as they do to your own.
 
 **On a different framework, or none at all?** `taskwire.rest` holds every decision these endpoints
 make and imports no framework whatsoever; `taskwire.contrib.asgi` mounts the identical protocol with
 nothing installed but Python, in about ninety lines you can copy.
+
+## The token is the link
+
+The front end mints a token and sends it with **its own** command; the server writes `queued` under
+that token and hands the work off; the job reports under it; the browser watches it. taskwire never
+carries the command, so `POST /imports` stays an ordinary endpoint with ordinary routing and ordinary
+authorization.
+
+```ts
+const operation = tw.run((_token) => api.post('/imports', { file }));
+```
+
+`run()` mints the token and binds it for the **synchronous** part of the callback, so the request the
+callback issues carries `X-Taskwire-Token`. Awaiting the handle gives back what that request
+returned, not what the worker decided; the worker's outcome is on `operation.progress`.
+
+```python
+@app.post("/imports")
+async def start_import(request: Request) -> dict:
+    token = request.headers.get(taskwire.TOKEN_HEADER) or taskwire.new_token()
+    session = session_resolver(request)
+    await taskwire.mark_queued(token, session=session, result_kind="acme.import_report")
+    asyncio.create_task(import_customers(token, session, rows))
+    return {"token": token}
+```
+
+The endpoint writes `queued` and returns; it does **not** open `operation()` around the work and wait
+for it, or every progress report would arrive after the thing it describes.
 
 ## Report progress
 
@@ -95,7 +128,10 @@ import { use_taskwire } from 'taskwire';
 
 const tw = use_taskwire();
 
+// The handle `run()` handed back, or one for a token minted somewhere else - another tab, a link,
+// a job id somebody saved.
 const operation = tw.track(token);
+
 operation.onChange(() => {
   console.log(operation.progress?.percent, operation.progress?.label);
 });

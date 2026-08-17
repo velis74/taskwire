@@ -17,10 +17,9 @@ that wraps a *non*-Celery action does open one, because the web process is the w
 
 ## The blocked-worker problem is deliberately unsolved
 
-Stated in those words rather than as a mitigation dressed up as a fix (TW-CELERY-010). With dialog
-timeouts removed (TW-DLG-005), **an unanswered question holds its worker until Celery's own execution
-timeout kills the task.** At that point this module writes `failed` with `code: "dialog_timeout"` and
-`retryable: true`, and withdraws the operation's open dialogs.
+A dialog has no deadline (TW-DLG-005), so **an unanswered question holds its worker until Celery's
+own execution timeout kills the task** (TW-CELERY-010). At that point this module writes `failed`
+with `code: "dialog_timeout"` and `retryable: true`, and withdraws the operation's open dialogs.
 
 What you can do about it today, none of which is a solution:
 
@@ -35,9 +34,6 @@ What you can do about it today, none of which is a solution:
 - **A high-volume interactive flow wants a workflow engine**, which taskwire deliberately does not
   implement. It reports on work and asks questions about it; it does not orchestrate, schedule or
   resume.
-
-Whether an asyncio loop inside a Celery worker is a viable answer is an open question the author
-intends to research before committing to one. No rule here claims to have closed it.
 """
 
 from __future__ import annotations
@@ -97,7 +93,8 @@ def taskwire_task(
             insert(row)
     ```
 
-    The task receives the reporter as its first argument after `self`. `token` and `session` cross
+    The task body must declare a parameter named `reporter`; the wrapper passes it by that keyword,
+    and passes `None` when the caller was opted out. `token` and `session` cross
     in as **plain strings** (TW-CELERY-003) and the namespace is *not* re-resolved here: there is no
     request in a worker, `session_resolver` is the only producer of a namespace (TW-AMB-008), and a
     namespace that crossed a process boundary travels as inert data.

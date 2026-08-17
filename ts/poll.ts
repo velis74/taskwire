@@ -42,6 +42,7 @@ export interface PollSettings {
   jitterFraction: number;
 }
 
+/** §8.2's published cadence: 400 ms base, ×1.5 backoff, a 5 s ceiling and ±20 % jitter. */
 export const DEFAULT_POLL_SETTINGS: PollSettings = {
   baseIntervalMs: 400,
   backoffFactor: 1.5,
@@ -102,10 +103,10 @@ export function jitterMultiplier(draw: Draw = Math.random, settings: PollSetting
 /**
  * Milliseconds until the next poll. The only function a scheduler needs.
  *
- * The three-line body is TW-REST-014 written out: raise the ladder to the server's floor, jitter it,
- * then floor it again at both the server's number and the client's own base interval. The second
- * flooring is not redundant - it is the one that survives a `pollAfterMs` of `0`, a negative one, and
- * the 0.8 end of the jitter.
+ * The body is TW-REST-014 written out: raise the ladder to the server's floor, jitter it, then floor
+ * it again at both the server's number and the client's own base interval. The second flooring is
+ * not redundant - it is the one that survives a `pollAfterMs` of `0`, a negative one, and the 0.8
+ * end of the jitter.
  */
 export function nextDelay(
   state: PollLadderState,
@@ -151,7 +152,7 @@ export function revsOf(register: Register): Map<string, number> {
 }
 
 /**
- * The ladder state for the register poll, `GET {prefix}/operations`.
+ * The ladder state for the register poll, `GET {prefix}`.
  *
  * "No entry's `rev` changed" is read strictly: an entry appearing and an entry leaving are both
  * changes, so a differing set of tokens resets the ladder to base exactly as a moved `rev` does.
@@ -199,6 +200,7 @@ export class PollLadder {
     return this.previous;
   }
 
+  /** Climb one rung and answer the jittered milliseconds to wait. The rung climbed is remembered. */
   next(state: Omit<PollLadderState, 'previousDelay'>): number {
     const full: PollLadderState = { ...state, previousDelay: this.previous };
     this.previous = ladderInterval(full, this.settings);

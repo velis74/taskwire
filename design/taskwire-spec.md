@@ -75,15 +75,10 @@ adapters to things outside the process, never a capability the core lacks.
   Framework imports are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify
   or the modal kit outside a subpath export.
 
-  > **Amended.** This rule previously read as though fastapi-viewsets were forbidden *outright*,
-  > alongside a dependency diagram drawing `fastapi-viewsets --optional--> taskwire`. Both were
-  > wrong, and the error was consequential: it produced a phantom circular dependency and blocked
-  > the REST transport from being built the way the author asked for.
-  >
-  > **taskwire uses fastapi-viewsets as a tool to build its own REST API** (`contrib/viewsets.py`).
-  > It is subject to the same confinement as FastAPI and Celery — banned from the core, allowed in
-  > `contrib` — and to nothing more. Separately, applications built *with* fastapi-viewsets use
-  > taskwire for progress. Those are two different relationships and neither closes a circle.
+  > **taskwire uses fastapi-viewsets as a tool to build its own REST API** (`contrib/viewsets.py`),
+  > under the same confinement as FastAPI and Celery — banned from the core, allowed in `contrib`,
+  > and nothing more. Separately, applications built *with* fastapi-viewsets use taskwire for
+  > progress. Two relationships, and neither closes a circle.
 - **TW-CORE-007** The wire vocabulary is closed at the six kinds listed in §1. A seventh kind is a
   breaking change requiring a bump of `Envelope.v`. `command` MUST NOT be added.
 
@@ -217,7 +212,7 @@ adapters to things outside the process, never a capability the core lacks.
   | `tw:{ns}:{token}:d:{did}:reply` | list | wakeup channel for a blocked worker |
   | `tw:{ns}:{token}:cancel` | string | `"1"` when cancel requested |
   | `tw:{ns}:{token}:rev` | integer | seeded per TW-REV-002, `INCR` on every commit |
-  | `tw:{ns}:index` | sorted set | token → `created_at` ms, **shared operations only**; backs `GET {prefix}/operations` |
+  | `tw:{ns}:index` | sorted set | token → `created_at` ms, **shared operations only**; backs `GET {prefix}` |
   | `tw:{ns}:asking` | set | tokens currently holding at least one **open** dialog, private ones included (TW-KEY-005) |
   | `twx:{ns}` | pub/sub channel | one per namespace |
 
@@ -433,8 +428,8 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-REG-001** The register MUST be scoped to the **namespace** — the account when a user is logged
   in, the session otherwise — and never to a tab. It holds every **shared** operation of that
   namespace and no private one (TW-PRIV-002), with the single exception TW-PRIV-004 carves: a private
-  operation is listed for as long as it holds an open dialog. `GET {prefix}/operations` is the central
-  endpoint and the one an ordinary client polls.
+  operation is listed for as long as it holds an open dialog. `GET {prefix}` is the central endpoint and
+  the one an ordinary client polls.
 - **TW-REG-002** Each entry MUST carry the whole `Snapshot`, so one request renders an entire
   operations UI with no follow-up per-token GETs.
 - **TW-REG-003** The register endpoint MUST always return the whole register. It MUST take no
@@ -648,15 +643,11 @@ adapters to things outside the process, never a capability the core lacks.
   regardless of which way the answer arrived. REST MUST remain the default reply path: it is the one
   that works with no socket at all.
 
-  > **Amended.** This rule previously required the socket form to be a taskwire stream kind that was
-  > optional and off by default (`serve_peer(..., allow_socket_replies=True)`). There is no such
-  > kind and no such flag: the reply is one of the six, published over muxws by the same
-  > `route_viewset` call that publishes it over REST, and a per-call opt-in on the server would
-  > single out one of six routes for a switch the other five do not have.
-  >
-  > What "off by default" protected is now the client's, where the choice actually belongs and is
-  > one call: `useCalls()` decides which transport the six calls take, and REST is what a client
-  > uses until it says otherwise.
+  > The reply is one of the six and is published over muxws by the same `route_viewset` call that
+  > publishes it over REST, so the server has no per-route switch: singling one of six routes out
+  > for a flag the other five do not have is what such a switch would mean. Which transport the six
+  > calls take is the client's, where the choice belongs and where it is one call — `useCalls()` —
+  > and REST is what a client uses until it says otherwise.
 - **TW-WS-009** `watch` MUST have no polling counterpart and needs none.
 - **TW-WS-010** taskwire MUST NOT install the peer's stream handler. A `Peer` has exactly one
   `on_stream` slot; `register_taskwire_muxws(peer, session)` **returns** its handler and the
@@ -735,12 +726,10 @@ adapters to things outside the process, never a capability the core lacks.
   touching the store, so scanning the token space costs the caller a round trip and the server
   nothing.
 
-  > **Amended.** This rule used to open with *"`{prefix}/operations` MUST be matched before
-  > `{prefix}/{token}`"*, which made correctness depend on the order two routes were declared in.
-  > The register now lives at `{prefix}` itself — the collection at the collection's own URL — so
-  > there is no literal segment after the prefix that a token could ever be mistaken for, and the
-  > hazard is gone by construction rather than by a rule somebody has to remember. The UUID check
-  > remains and is unrelated.
+  > The register lives at `{prefix}` itself — the collection at the collection's own URL — so no
+  > literal segment follows the prefix that a token could be mistaken for, and correctness does not
+  > depend on the order two routes are declared in. The UUID check is unrelated and stands on its
+  > own.
 - **TW-REST-007** The per-token `GET` MUST NOT carry `progress_delivery` (that is a fact about a
   pair, not about a document).
 - **TW-REST-008** **Collect and dismiss MUST be the same act with two names**, both routed through
@@ -954,7 +943,7 @@ adapters to things outside the process, never a capability the core lacks.
   page of this table" — that would otherwise make every tab of the namespace flicker; an operation
   that *should* interest other tabs declares a result, even when that result is only a dialog saying
   it finished.
-- **TW-PRIV-002** A private operation MUST NOT appear in `GET {prefix}/operations`, for any caller
+- **TW-PRIV-002** A private operation MUST NOT appear in `GET {prefix}`, for any caller
   including its own, and MUST NOT be in the namespace index — except while TW-PRIV-004 lists it,
   which is answered from `tw:{ns}:asking` (TW-KEY-005) and never by writing it into the index.
   `GET {prefix}/{token}` MUST serve it
@@ -1419,7 +1408,7 @@ class Operation<T> implements PromiseLike<T> {
   readonly token: string;
   readonly streamId?: number;                   // logs only; nothing may key off it
   readonly title: Text | null;                  // client-supplied; progress.title overrides
-  readonly progress: ProgressState | null;
+  readonly progress: Progress | null;
   readonly dialog: DialogRequest | null;        // the oldest open dialog on this operation
   readonly resultKind: string | null;           // null = private to this connection
   readonly result: Result | null;               // non-null while uncollected
@@ -1510,7 +1499,7 @@ interface Reporter {
 ```ts
 // taskwire/vue
 function use_operation(token: string | { token: string; basePath?: string; axiosInstance?: any }):
-  { progress: Ref<ProgressState | null>; dialog: Ref<DialogRequest | null>;
+  { progress: Ref<Progress | null>; dialog: Ref<DialogRequest | null>;
     isRunning: ComputedRef<boolean>; isDone: ComputedRef<boolean>;
     answer(button: string, values?: Record<string, unknown>): Promise<void>;
     cancel(): Promise<void> };
@@ -1551,18 +1540,15 @@ function use_register(): { entries: Ref<Operation<unknown>[]>; aggregate: Ref<Ag
   emits nothing between its `dialog.open` and its terminal envelope, and a client that never read
   would show neither (TW-CORE-002, TW-TS-009). Tests: `client.spec.ts`, `register.spec.ts`.
 
-  > **Amended.** This rule previously required the ladder to keep running at the ceiling interval
-  > with a transport attached, so that a socket which died without saying so cost at most one
-  > ceiling interval. The socket now carries the client's calls as well as the server's pushes
-  > (TW-CORE-007), which makes the two mechanisms alternatives rather than layers: a client polling
-  > beside its own socket issues a request per tab per tick that answers a question the socket
-  > already answered, and no deployment can demonstrate that it is on the socket at all.
+  > The socket carries the client's calls as well as the server's pushes (TW-CORE-007), which makes
+  > the two mechanisms alternatives rather than layers: a client polling beside its own socket
+  > issues a request per tab per tick that answers a question the socket already answered, and no
+  > deployment can demonstrate that it is on the socket at all.
   >
-  > **The recovery guarantee is unchanged and is now explicit.** Loss is reported, not inferred:
-  > `ClientTransport.onHealth` reports `false` on close and on a peer that is already down, and the
-  > ladder resumes on its base rung — 400 ms, not the ceiling — so the worst case after a socket
-  > dies is one base interval, better than the ceiling interval the old rule tolerated. A transport
-  > that does not implement `onHealth` counts as healthy for as long as it is attached, so
+  > **The recovery guarantee is explicit.** Loss is reported, not inferred: `ClientTransport.onHealth`
+  > reports `false` on close and on a peer that is already down, and the ladder resumes on its base
+  > rung — 400 ms, not the ceiling — so the worst case after a socket dies is one base interval. A
+  > transport that does not implement `onHealth` counts as healthy for as long as it is attached, so
   > `detachTransport()` is the only way back to the ladder for it — one call, and a transport
   > written without the signal keeps working.
 - **TW-TS-008** The handoff MUST be reactive collections of `Operation` handles, not a

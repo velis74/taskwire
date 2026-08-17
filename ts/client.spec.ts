@@ -809,7 +809,7 @@ describe('the pending dialog hangs on its own entry (TW-TS-006)', () => {
     expect((tw as any).dialogs).toBeUndefined();
     expect((tw as any).dialogQueue).toBeUndefined();
 
-    // It hangs here, on the entry - null until M3b, but on the entry.
+    // It hangs here, on the entry, and reads null while the document carries no open question.
     expect(handle.dialog).toBeNull();
     expect('dialog' in handle).toBe(true);
 

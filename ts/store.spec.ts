@@ -315,12 +315,12 @@ describe('MemoryStore bookkeeping (TW-KEY-002, TW-KEY-003)', () => {
   });
 });
 
-describe("the asking set (TW-KEY-005), ahead of M3's writers", () => {
-  // `putDialog` is M3's, so nothing in the port can fill this set yet - and the second term of
-  // TW-STORE-006's union is already implemented, which is precisely the combination that ships
-  // untested unless a test seeds the set itself. M3 replaces the seeding below with `putDialog` and
-  // brings the black-box conformance check TW-STORE-006 names,
-  // `test_list_operations_includes_a_private_operation_only_while_it_asks`, with it.
+describe('the asking set (TW-KEY-005)', () => {
+  // The asking set is the second term of TW-STORE-006's union. It is seeded directly here so the
+  // listing rule is asserted on its own, without a dialog write in front of it; the black-box
+  // version goes through `putDialog` and is
+  // `test_list_operations_includes_a_private_operation_only_while_it_asks` in the exported
+  // conformance suite.
   const ask = (store: MemoryStore, ns: string, token: string) => {
     const asking = internals(store).asking.get(ns) ?? new Set<string>();
     asking.add(token);
@@ -424,7 +424,7 @@ describe('MemoryStore publish (TW-STORE-008)', () => {
   });
 });
 
-describe('the milestone boundary', () => {
+describe('a key that is not there', () => {
   it('answers rather than throwing when the operation is not there', async () => {
     const store = new MemoryStore();
     const k = key('ns', 'tok');
@@ -438,13 +438,11 @@ describe('the milestone boundary', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
 
-    // The four dialog methods left this list when M3 landed and `releaseResult` when M7 did; their
-    // behaviour is asserted in the dialog section below, in results.spec.ts and in the exported
-    // conformance suite. A store with no such operation answers rather than throwing.
+    // A store with no such operation answers rather than throwing: each of these on a key that is
+    // not there is a lost race with expiry, not a programming error. What the methods do when the
+    // operation IS there is asserted in the dialog section below, in results.spec.ts and in the
+    // exported conformance suite.
     expect(await store.releaseResult(k)).toBeNull();
-
-    // A store with no such operation answers rather than throwing: `putDialog` on a key that is not
-    // there is a lost race with expiry, not a programming error.
     expect(await store.putDialog(k, dialog, 60)).toBe(0);
     expect(await store.resolveDialog(k, 'd1', reply)).toBe('not_found');
     expect(await store.withdrawDialogs(k)).toEqual([]);

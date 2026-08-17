@@ -14,6 +14,12 @@
  * `wire.ts` and nowhere else (TW-TS-000).
  */
 
+/**
+ * The package's own version, which says nothing about the wire.
+ *
+ * `WIRE_VERSION` is the protocol's and moves only on a breaking wire change (TW-CORE-011); this one
+ * tracks the implementation and moves whenever the package is published.
+ */
 export const VERSION = '0.1.0';
 
 // §5.5 - the client
@@ -58,7 +64,7 @@ export {
 // from the cadence (TW-THR-007), and an export is an invitation to try.
 export { sortEntries } from './register';
 
-// M7b's tab hints. Framework-free on purpose: these are the rules a Vuetify footer or a
+// The tab hints (TW-TAB-*). Framework-free on purpose: these are the rules a Vuetify footer or a
 // React modal would OBEY, and putting them in a UI layer would mean writing them again for
 // every UI - each time slightly differently, and each time with the timing re-derived.
 export {
@@ -163,6 +169,7 @@ export {
   serializeDialogReply,
   serializeDialogRequest,
   serializeEnvelope,
+  serializeInputField,
   serializeOperationSummary,
   serializeProgress,
   serializeRegister,

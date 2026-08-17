@@ -12,12 +12,11 @@ async with taskwire.operation(token, session=ns, result_kind="acme.import_report
 
 ## A parked result holds a record, never a worker
 
-This is the rule the whole feature turns on, and the one most easily mis-implemented.
+This is the rule the whole feature turns on.
 
 The task has **finished**. Only the *record* waits. The reporter writes the result, writes the state,
 and the worker exits. An implementation that waited for collection the way `ask()` waits for a reply
-would pin a worker overnight on a download nobody clicked — and it would look correct in every test
-that only inspected the document.
+would pin a worker overnight on a download nobody clicked.
 
 So `waiting_input` has two causes and **they are not alike**:
 

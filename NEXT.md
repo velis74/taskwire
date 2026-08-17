@@ -78,7 +78,9 @@ order of what they cost someone who hits them:
 2. **`mute()` / `unmute()` reach no socket.** `Taskwire.overrides` and
    `MuxwsClientTransport.overrides` are two unconnected maps: only the transport's is ever sent, and
    only `watch()` sends it. So the client-side half of TW-DEL-006 is inert, and TW-DEL-023's pruning
-   is implemented on the transport's copy alone.
+   is implemented on the transport's copy alone. Three more client-side symbols have no caller
+   outside the specs and belong to the same hole: `ClientTransport.watch`, the transport's own
+   `forget()` — TW-DEL-023's client half — and `Operation.setStreamId`, which nothing writes.
 3. **A dropped push in the browser leaves no trace, and nothing re-reads.** Bare `catch {}` at
    `ts/muxws.ts:150` and `ts/register.ts:440`, and a silent return when no consumer is attached. The
    Python side logs every equivalent drop at debug (`contrib/muxws.py:86,125,127`). The consequence is

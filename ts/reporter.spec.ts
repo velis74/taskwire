@@ -73,7 +73,7 @@ interface Entry {
  * itself is dropped in the same step (TW-REG-007).
  */
 class RecordingStore implements ReporterStore {
-  /** M3: `ask()` writes through these two, so the double has to answer them. */
+  /** `ask()` writes through these two, so the double has to answer them. */
   async putDialog(k: string, dialog: DialogRequest, ttl: number): Promise<number> {
     const entry = this.entries.get(k);
     if (entry === undefined) return 0;
@@ -725,9 +725,9 @@ describe('cancellation', () => {
   });
 
   it('refreshes the cached answer on every commit (TW-CANCEL-004)', async () => {
-    // `raiseOnCancel: false` so the commit can be observed at all: once M6 landed, the default is
-    // that the very next progress call THROWS (TW-CANCEL-002), which is a different rule and has its
-    // own test. An operation that opts out is choosing to poll `cancelled` itself - and this asserts
+    // `raiseOnCancel: false` so the commit can be observed at all: by default the very next
+    // progress call THROWS (TW-CANCEL-002), which is a different rule and has its own test. An
+    // operation that opts out is choosing to poll `cancelled` itself - and this asserts
     // that polling it is free and still correct.
     const store = new RecordingStore();
     const token = new_token();
@@ -774,13 +774,10 @@ describe('cancellation', () => {
   });
 });
 
-describe('the surfaces later milestones fill in', () => {
+describe('failing loudly', () => {
   it('rejects a misused surface rather than silently doing nothing', async () => {
-    // Every surface this test used to guard is now implemented; the assertions moved to the nesting
-    // section, to dialog.spec.ts and to results.spec.ts rather than being deleted. What remains
-    // worth asserting is that a *misuse* is still loud - a setResult() that quietly did nothing
-    // would let an application ship a result nobody can collect, and the failure would surface as a
-    // missing download weeks later.
+    // A `setResult()` that quietly did nothing would let an application ship a result nobody can
+    // collect, and the failure would surface as a missing download weeks later.
     const store = new RecordingStore();
     await operation(options(store, new_token()), async (reporter) => {
       await expect(reporter.subtask(0, 50).setResult({ kind: 'report' })).rejects.toThrow(/root reporter/);

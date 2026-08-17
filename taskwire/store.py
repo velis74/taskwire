@@ -68,7 +68,7 @@ class DialogResolution(Enum):
 CANCELLED_BUTTON = "__taskwire_cancelled__"
 """The reserved button a withdrawal pushes onto a dialog's reply channel (TW-CANCEL-007).
 
-With dialog timeouts gone (TW-DLG-005), a sentinel on the reply channel is the ONLY thing that can
+A dialog has no deadline (TW-DLG-005), so a sentinel on the reply channel is the ONLY thing that can
 wake a worker blocked in `ask()`. It is spelled with a reserved name rather than by a second channel
 or a separate flag so that the waking path and the answering path are the same code - a second path
 is a second place to forget to wake somebody.
@@ -122,15 +122,15 @@ class TaskwireStore(ABC):
 
     @abstractmethod
     async def put_dialog(self, key: str, dialog: DialogRequest, ttl: float) -> int:
-        """Write a dialog and bump `rev` atomically. M3."""
+        """Write a dialog and bump `rev` atomically."""
 
     @abstractmethod
     async def resolve_dialog(self, key: str, did: str, reply: DialogReply) -> DialogResolution:
-        """The arbiter of first-answer-wins (TW-STORE-003). M3."""
+        """The arbiter of first-answer-wins (TW-STORE-003)."""
 
     @abstractmethod
     async def withdraw_dialogs(self, key: str) -> list[str]:
-        """Flip every still-open dialog to `cancelled`; return the ids flipped. M3."""
+        """Flip every still-open dialog to `cancelled`; return the ids flipped."""
 
     @abstractmethod
     async def await_dialog(self, key: str, did: str) -> DialogReply:
@@ -138,7 +138,7 @@ class TaskwireStore(ABC):
 
     @abstractmethod
     async def release_result(self, key: str) -> Result | None:
-        """The single arbiter of the three release paths (TW-STORE-016). M7."""
+        """The single arbiter of the three release paths (TW-STORE-016)."""
 
     @abstractmethod
     async def request_cancel(self, key: str) -> int:
@@ -172,8 +172,8 @@ class _Entry:
         self.expires_at = expires_at
         self.dialogs: dict[str, DialogRequest] = {}
         self.cancel_requested = False
-        # One queue per dialog id, used by M3 to wake a blocked worker. Declared here so the entry
-        # shape does not change under M3 and so `drop` already clears it.
+        # One queue per dialog id: what wakes a worker blocked in `ask()`. `drop` clears it with the
+        # rest of the entry.
         self.replies: dict[str, asyncio.Queue] = {}
 
 
@@ -193,7 +193,6 @@ class MemoryStore(TaskwireStore):
         # that is the whole of its privacy in the store (TW-PRIV-002).
         self._index: dict[str, dict[str, str]] = {}
         # TW-KEY-005: tokens currently holding at least one open dialog, private ones included.
-        # M1 owns only `drop`'s half and the empty structure; the three dialog writers are M3's.
         self._asking: dict[str, set[str]] = {}
 
     # ---------------------------------------------------------------- internals
@@ -344,10 +343,10 @@ class MemoryStore(TaskwireStore):
             entry.cancel_requested = True
             entry.rev = max(self._now_ms(), entry.rev + 1)
 
-            # TW-CANCEL-007: a worker blocked in `ask()` must wake IMMEDIATELY. With dialog timeouts
-            # gone (TW-DLG-005) a sentinel on the reply channel is the only thing that can wake it -
-            # otherwise a cancelled operation would sit on a question until Celery's execution
-            # timeout killed the task, which is minutes of a pinned worker for a click.
+            # TW-CANCEL-007: a worker blocked in `ask()` must wake IMMEDIATELY. A dialog has no
+            # deadline (TW-DLG-005), so a sentinel on the reply channel is the only thing that can
+            # wake it - otherwise a cancelled operation would sit on a question until Celery's
+            # execution timeout killed the task, which is minutes of a pinned worker for a click.
             for did, dialog in entry.dialogs.items():
                 if DialogState(dialog.state) is DialogState.OPEN:
                     dialog.state = DialogState.CANCELLED
@@ -423,12 +422,10 @@ class MemoryStore(TaskwireStore):
         return bool(entry and entry.cancel_requested)
 
     async def list_operations(self, ns: str) -> list[Snapshot]:
-        """TW-STORE-006, written as the union from the start.
+        """TW-STORE-006: the shared index UNION anything asking.
 
-        The second term is constantly empty until M3 fills the asking set, and writing this as
-        "everything the index holds" today would be a rewrite waiting to happen: the index holds
-        shared operations only, and a private operation holding an open dialog must be listed for
-        exactly as long as it asks (TW-PRIV-004).
+        The index holds shared operations only, and a private operation holding an open dialog is
+        listed for exactly as long as it asks (TW-PRIV-004).
         """
         self._prune(ns)
         tokens = list(self._index.get(ns, {}).keys())
@@ -447,7 +444,7 @@ class MemoryStore(TaskwireStore):
             snapshots.append(self._build_snapshot(k, entry))
         return snapshots
 
-    # ---------------------------------------------------------------- M3 / M7
+    # ------------------------------------------------------- dialogs and results
 
     async def put_dialog(self, key: str, dialog: DialogRequest, ttl: float) -> int:  # noqa: A002
         """Write a dialog and bump `rev` atomically (TW-STORE-002).

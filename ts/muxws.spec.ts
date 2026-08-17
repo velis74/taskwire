@@ -11,7 +11,7 @@ import { type ProgressState, serializeDialogRequest, serializeProgress, WIRE_VER
 import type { Envelope, WireObject } from './wire';
 
 /**
- * `taskwire/muxws`, browser side (M5's client half, M8's client half).
+ * `taskwire/muxws`, browser side.
  *
  * The socket is the superior transport because it does two things REST cannot: it PUSHES the instant
  * a state changes, and it carries the client's own calls back up the same connection. REST can only

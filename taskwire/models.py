@@ -269,7 +269,7 @@ class Result:
 class Button:
     """A choice on a dialog.
 
-    There is no `default` flag: a default button existed only to answer a timeout, and there are no
+    There is no `default` flag: a default button's only use is answering a timeout, and there are no
     timeouts (TW-DLG-005).
     """
 
@@ -471,6 +471,7 @@ class Progress:
 
     @property
     def is_terminal(self) -> bool:
+        """`done`, `failed` or `cancelled` - the states after which `state` is frozen."""
         return ProgressState(self.state) in TERMINAL_STATES
 
     @property
@@ -522,6 +523,7 @@ class Snapshot:
 
     @property
     def open_dialogs(self) -> list[DialogRequest]:
+        """The askings still awaiting an answer."""
         return [d for d in self.dialogs if DialogState(d.state) is DialogState.OPEN]
 
     @property

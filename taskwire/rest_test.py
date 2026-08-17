@@ -228,18 +228,18 @@ async def test_malformed_token_rejected_before_store(counting_store):
 # --------------------------------------------------------------------------- 41
 
 
-async def test_operations_route_matches_before_token_route(counting_store):
-    """TW-REST-006: `{prefix}/operations` is matched before `{prefix}/{token}`.
+async def test_the_register_is_the_prefix_itself(counting_store):
+    """TW-REST-004: `GET {prefix}` is the register, with no segment after the prefix.
 
     Driven through `taskwire.contrib.asgi.app()`, which is framework-free and needs nothing
-    installed, because route ordering lives in the adapter and not in a handler. If the token route
-    won, `GET /taskwire/operations` would be parsed as a token named "operations" and the central
-    endpoint every client polls would answer 404 forever.
+    installed, because routing lives in the adapter and not in a handler. The collection at the
+    collection's own URL is also what leaves nothing after the prefix for a token to be mistaken
+    for.
     """
     await seed(counting_store, NS_A, taskwire.new_token())
     application = asgi_app(PREFIX)
 
-    status, payload = await asgi_get(application, f"{PREFIX}/operations")
+    status, payload = await asgi_get(application, PREFIX)
 
     assert status == 200
     assert payload["v"] == 1
@@ -248,7 +248,7 @@ async def test_operations_route_matches_before_token_route(counting_store):
     assert len(payload["operations"]) == 1
 
     assert counting_store.listed_namespaces == [NS_A], "the register endpoint must list the namespace"
-    assert counting_store.snapshot_keys == [], "'operations' must never be looked up as a token"
+    assert counting_store.snapshot_keys == [], "the prefix itself must never be read as a token"
 
     # The token route is still reachable through the same adapter, so the ordering is what separates
     # them rather than the token route being broken.
@@ -286,9 +286,8 @@ async def test_snapshot_has_no_progress_delivery(store):
 
     # And the row's value is *computed for the pair* rather than stamped: a `push_filter` that
     # suppresses this operation flips the register row to False while the document is unchanged.
-    # `progress_delivery` is True for every entry in M1, so a `summarize()` that hardcoded the
-    # literal would satisfy the assertion above - it would not satisfy this one, and M8 replaces
-    # only `effective_delivery`'s body, so the call has to be real now.
+    # The shipped predicate answers True for every entry, so a `summarize()` that hardcoded the
+    # literal would satisfy the assertion above - it would not satisfy this one.
     taskwire.configure(push_filter=lambda _client, operation: operation.token != token)
     _status, suppressed = await get_operations(client)
     assert suppressed["operations"][0]["progress_delivery"] is False
@@ -304,9 +303,9 @@ async def test_snapshot_has_no_progress_delivery(store):
 async def test_poll_after_ms_is_never_below_the_base_interval(store):
     """TW-REST-014: `poll_after_ms` may only ever slow a client down.
 
-    Checked across all three shapes of register - one with something active, one with nothing
-    active, and an empty one - because the failure this rule prevents is a miscomputed or zeroed
-    advice value turning into a request flood against the server that emitted it. The client-side
+    Checked across all three shapes of register - an empty one, one whose entry stores no active
+    state, and one with something active - because the failure this rule prevents is a miscomputed
+    or zeroed advice value turning into a request flood against the server that emitted it. The client-side
     clamp is the normative one, but a server that advertises `0` is a server asking to be flooded.
     """
     empty_client = Client(session=NS_A)
@@ -317,15 +316,13 @@ async def test_poll_after_ms_is_never_below_the_base_interval(store):
     assert empty["poll_after_ms"] == CEILING_POLL_MS
     assert empty["poll_after_ms"] >= BASE_POLL_MS
 
-    # Idle register: entries exist but none is queued or running. `waiting_input` is written here
-    # directly because its two causes arrive in M3 and M7; what M1 owns is the advice it produces.
+    # A stored `waiting_input` holding neither an open dialog nor an uncollected result: nothing on
+    # this document is queued or running, yet its *derived* state is `running` (TW-REG-004,
+    # TW-PROG-010), and that is the reading both the advice and the aggregate take.
     #
     # Only the rule is asserted here, deliberately, and not the value the implementation happens to
-    # produce. `register.poll_after_ms()` reads `progress.state` off the document while
-    # `_entry_state()` beside it *derives* the entry's state (TW-REG-004, TW-PROG-010) - and on this
-    # very document the two disagree: the advice calls it idle, the aggregate two lines down calls
-    # it running. Pinning `== CEILING_POLL_MS` would freeze the stored-state reading, which is the
-    # reading that has to change for TW-REST-010's "ceiling while a dialog is open" to hold in M3.
+    # produce. Pinning a number would freeze the derivation rather than TW-REST-014's bound, and the
+    # derivation is what carries TW-REST-010's "ceiling while a dialog is open".
     idle_token = await seed(store, NS_A, taskwire.new_token(), state=ProgressState.WAITING_INPUT)
     _status, idle = await get_operations(empty_client)
     assert len(idle["operations"]) == 1
@@ -390,7 +387,7 @@ async def test_session_resolver_returning_none_is_404(counting_store):
     application = asgi_app(PREFIX)
 
     token_status, token_payload = await asgi_get(application, f"{PREFIX}/{UNCLAIMED_TOKEN}")
-    register_status, register_payload = await asgi_get(application, f"{PREFIX}/operations")
+    register_status, register_payload = await asgi_get(application, PREFIX)
 
     assert token_status == 404
     assert register_status == 404
@@ -439,7 +436,7 @@ async def test_register_always_returns_everything(store):
 
     # A query string an adapter might be tempted to forward changes nothing: the ASGI adapter reads
     # none, and the handler has nowhere to put one.
-    _status, unfiltered = await asgi_get(asgi_app(PREFIX), f"{PREFIX}/operations", query=b"limit=1&state=running")
+    _status, unfiltered = await asgi_get(asgi_app(PREFIX), PREFIX, query=b"limit=1&state=running")
     assert sorted(entry["token"] for entry in unfiltered["operations"]) == sorted(tokens)
 
 

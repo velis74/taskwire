@@ -48,6 +48,13 @@ taskwire.configure(
     session_resolver=session_resolver,
 )
 
+@app.on_event("startup")
+async def start_reader() -> None:
+    # A store with a backplane publishes to a channel, and the reader is the only thing in this
+    # process that turns a channel message into a push. Without it the socket is connected and
+    # silent, and polling covers for it well enough that the deployment looks healthy.
+    await taskwire.start_taskwire_reader()
+
 @app.websocket("/ws")
 async def socket(websocket):
     peer = await accept(websocket)
@@ -175,6 +182,5 @@ A dialog reply travels the socket as what it is: the same `POST /taskwire/{token
 REST client sends, dispatched from a stream into the same handler. First answer wins across every
 tab either way, and the losing tab is told so identically.
 
-REST remains the default. It is the path that works with no socket at all, and the reply is the one
-place where "works everywhere" beats "arrives sooner" — so a client answers over HTTP until
-`attachMuxws` moves its calls, which is one explicit call.
+REST remains the default: it is the path that works with no socket at all. A client answers over
+HTTP until `attachMuxws` moves its calls.

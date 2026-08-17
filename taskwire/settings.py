@@ -2,10 +2,9 @@
 
 Two things are deliberately absent and their absence is load-bearing:
 
-`terminal_ttl` is gone because a terminal operation with nothing to collect is **dropped** in the
-same step that makes it terminal (TW-REG-007), not aged out. `dialog_timeout` is gone because a
-dialog has no deadline at all (TW-DLG-005). Neither may be reintroduced under another name; the
-done-when check for M1 greps for both.
+There is no `terminal_ttl`: a terminal operation with nothing to collect is **dropped** in the same
+step that makes it terminal (TW-REG-007), not aged out. There is no `dialog_timeout`: a dialog has
+no deadline at all (TW-DLG-005). Neither may be reintroduced under another name.
 """
 
 from __future__ import annotations
@@ -42,7 +41,8 @@ class Settings:
     by truncating."""
 
     max_overrides: int = 64
-    """Per-connection override map bound (TW-DEL-008). M8 enforces it."""
+    """Per-connection override map bound (TW-DEL-008). A declaration above it is rejected whole,
+    leaving the previous map in force."""
 
     raise_on_cancel: bool = True
     """Global default for whether the next progress call raises once a cancel is requested

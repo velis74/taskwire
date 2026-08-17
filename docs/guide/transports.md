@@ -1,6 +1,6 @@
 # One protocol, three implementations
 
-The layering is deliberate, and it is the shape of the source tree rather than only of the prose:
+The layering is the shape of the source tree:
 
 ```
              protocol            documents, envelopes, the six kinds, the state
@@ -19,7 +19,7 @@ framework is imported.
 | Implementation | Carries the protocol over | Adapter | Needs |
 |---|---|---|---|
 | **local** | the process itself — no wire, no socket, no serialization | none | nothing |
-| **REST** | request/response polling; the baseline everywhere | `contrib.fastapi`, `contrib.asgi` | nothing in core |
+| **REST** | request/response polling; the baseline everywhere | `contrib.viewsets`, `contrib.fastapi`, `contrib.asgi` | nothing in core |
 | **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
 
 ## The store is the truth
@@ -53,8 +53,7 @@ it received cannot alter the store or another subscriber's copy. A subscriber th
 outlasts `push_timeout`, is a dropped push: it does not propagate, and it does not stop the
 remaining subscribers being called.
 
-The same is available in TypeScript, which is what makes a browser-only application a first-class
-deployment rather than a degraded one.
+The same is available in TypeScript, so a browser-only application is a full deployment.
 
 ## Mounting the socket
 

@@ -6,7 +6,7 @@ returns - which is what lets the transport be swapped without changing behaviour
 
 The layering is: one **protocol** (the documents of §3 and the state machines of §4, in `models`),
 then three independent **implementations** of it - local (`transport.LocalTransport`), REST
-(`rest`), and WebSocket (`contrib.muxws`, M5) - each with one **adapter** binding it to the world
+(`rest`), and WebSocket (`contrib.muxws`) - each with one **adapter** binding it to the world
 outside. Nothing in the core imports a framework, a driver or a UI library (TW-CORE-006).
 """
 

@@ -35,24 +35,19 @@ def build_client(request: Request) -> Client:
 
 
 def router(prefix: str | None = None) -> APIRouter:
-    """Mount point for the two polling endpoints.
-
-    The remaining four rows of TW-REST-004's table arrive in M3, M6 and M7 and are deliberately not
-    registered before then: a route that answers 404 because its handler does not exist yet is
-    worse than no route, because a client cannot tell it from an expired token.
-    """
+    """Mount point for the six endpoints of TW-REST-004, under `prefix`."""
     api = APIRouter(prefix=prefix if prefix is not None else settings.rest_prefix)
 
-    # TW-REST-006: `/operations` is declared before `/{token}` so it can never be parsed as a token.
-    # FastAPI matches in declaration order, so this ordering is the mechanism, not a convention.
-    @api.get("/operations")
+    # The register is the collection, so it lives at the collection's own URL and carries no extra
+    # segment (TW-REST-004). Nothing follows the prefix that a token could be mistaken for.
+    @api.get("")
     async def operations(request: Request, response: Response) -> Any:
         status, payload = await get_operations(build_client(request))
         response.status_code = status
         return payload
 
-    # Declared before `/{token}` for the same reason `/operations` is: FastAPI matches in
-    # declaration order, and a longer path must be offered first or the token route swallows it.
+    # Declared before `/{token}`: FastAPI matches in declaration order, and the longer path must be
+    # offered first or the token route swallows it.
     @api.post("/{token}/dialogs/{did}")
     async def dialog_reply(token: str, did: str, request: Request, response: Response) -> Any:
         body = await request.json() if await request.body() else {}

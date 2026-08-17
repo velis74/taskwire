@@ -1,7 +1,7 @@
-"""`MuxwsTransport` (M5, TW-WS-*).
+"""`MuxwsTransport` (TW-WS-*).
 
-Skips - never errors - when muxws is absent, because M0-M4 are required to pass with no optional
-extra installed at all.
+Skips - never errors - when muxws is absent, because the rest of the suite is required to pass with
+no optional extra installed at all.
 
 The assertion that matters most is `test_taskwire_uses_exactly_two_muxws_calls`: the whole point of
 this transport is that the dependency is two calls wide. That narrowness is what lets muxws change
@@ -76,7 +76,7 @@ async def test_one_envelope_becomes_one_notify_per_peer() -> None:
     """TW-WS-003: one stream opened and ended in one frame, per peer.
 
     A long-lived per-session stream would leave a ten-minute import holding a stream for ten
-    minutes; the milestone's acceptance criterion is that it leaves zero open streams behind.
+    minutes; the criterion is that a fan-out leaves zero open streams behind.
     """
     a, b = FakePeer("a"), FakePeer("b")
     tag_peer(a, "acct-42")
@@ -217,7 +217,7 @@ async def test_swapping_the_transport_changes_latency_and_nothing_else() -> None
         taskwire.reset_configuration()
 
 
-# ------------------------------------------------------------------ M8: the delivery decision
+# ---------------------------------------------------------------------- the delivery decision
 
 
 async def test_an_override_suppresses_only_this_socket() -> None:

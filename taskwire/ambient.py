@@ -48,8 +48,7 @@ def unbind(token: contextvars.Token | None) -> None:
 
     Resetting rather than overwriting is the whole rule. A raising task that merely wrote `None` back
     would leave the *next* task on the same pooled thread holding a stale binding, and operation A's
-    progress would land on operation B's key - which is TW-INV-011, and which no test notices unless
-    it deliberately raises in the middle of one operation and then runs another.
+    progress would land on operation B's key (TW-INV-011).
     """
     if token is not None:
         _current.reset(token)

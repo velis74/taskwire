@@ -1,5 +1,5 @@
 /**
- * The tab hints (M7b, TW-TAB-*): who opens a progress view, and who presents a question.
+ * The tab hints (TW-TAB-*): who opens a progress view, and who presents a question.
  *
  * Framework-free on purpose. These are the rules a Vuetify footer or a React modal would *obey*, and
  * putting them in the UI layer would mean writing them again for every UI - each time slightly
@@ -42,23 +42,25 @@ export interface Timers {
   clearTimeout(handle: unknown): void;
 }
 
+/** The host's own clock and timers, which is what everything but a test runs on. */
 export const REAL_TIMERS: Timers = {
   now: () => Date.now(),
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-export const MIN_ADOPT_DELAY_MS = 250;
 /**
  * TW-TAB-005: `dialogAdoptDelay` is bounded and **must not be zero**.
  *
  * Zero makes every tab ask every question at once, which is the exact behaviour the rule exists to
  * prevent - and it would do so silently, looking like a configuration that simply had no effect.
  */
+export const MIN_ADOPT_DELAY_MS = 250;
 
-export const MAX_ADOPT_DELAY_MS = 60_000;
 /** Bounded at the other end too: a delay nobody lives long enough to see is a question nobody adopts. */
+export const MAX_ADOPT_DELAY_MS = 60_000;
 
+/** A configured delay brought inside those two bounds. A non-finite one reads as the minimum. */
 export function clampAdoptDelay(ms: number): number {
   if (!Number.isFinite(ms)) return MIN_ADOPT_DELAY_MS;
   return Math.min(MAX_ADOPT_DELAY_MS, Math.max(MIN_ADOPT_DELAY_MS, ms));
@@ -70,9 +72,11 @@ export interface AdoptableDialog {
   state: 'open' | 'answered' | 'cancelled';
 }
 
+/** What `DialogAdoption` needs to run the rule: who asked, how long to wait, and how to present. */
 export interface AdoptOptions {
   /** `true` in the tab that minted this operation's token (TW-TAB-002). */
   startedHere: boolean;
+  /** Milliseconds a tab that did not start the operation waits before adopting. Clamped. */
   dialogAdoptDelay: number;
   timers?: Timers;
   /** Asked again when the timer fires: present only if the question is STILL open. */
@@ -153,6 +157,7 @@ export class DialogAdoption {
   }
 }
 
+/** What `VisibilityDelay` is configured with: the visible collection's policy, and its timers. */
 export interface VisibilityOptions {
   /** `false` turns the visible collection off wholesale; `{ delay }` moves the age at which a
    *  `startedHere` operation becomes visible. */
