@@ -89,6 +89,12 @@ the worst a dead socket costs is one 400 ms interval. What is suspended is the l
 first read: every loop reads once when it starts, because a socket announces what changes and can
 say nothing about what was already happening when it arrived.
 
+**Some reads are off the ladder.** A shared operation's row comes from the register payload and from
+nowhere else, so a client asks for one read of the list the moment it learns of a token with no row:
+a push that names one, the command of its own `run()` answering, or that token's own first document.
+Each is bounded by the answer, because the payload it fetches carries the token — and a private
+operation, which no payload carries for any caller including its own, asks for none of them.
+
 The server advertises `poll_after_ms`, and it may only ever **slow a client down**: the effective
 interval is `max(poll_after_ms, the client's own ladder)`. Without that clamp a miscomputed or
 zeroed value becomes a request flood against the server that emitted it.

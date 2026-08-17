@@ -265,6 +265,14 @@ def create_app() -> FastAPI:
                 # `create_task` would make asyncio log "Task exception was never retrieved" with a
                 # full traceback on every ordinary cancel - alarming, and about nothing.
                 logger.info("taskwire: %s was cancelled", token)
+            except Exception as error:
+                # The same reasoning for the other ending. `operation()` re-raises in every failure
+                # case (TW-API-001), and by the time the exception reaches here it has already
+                # written `failed`, published it and dropped the entry - so the report the browser
+                # reads is complete, and one line is what is left to say. A bare task whose exception
+                # nobody retrieves has asyncio print a traceback at collection time instead, for a
+                # failure that was reported and handled.
+                logger.warning("taskwire: %s failed: %r", token, error)
 
         task = asyncio.create_task(run_job(), name=f"demo-{name}-{token[:8]}")
         running.add(task)

@@ -18,7 +18,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 
 ```bash
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 271 pass, 9 skip
-npx vitest run                                            # 386 pass
+npx vitest run                                            # 390 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npx eslint ts --fix && npx vue-tsc --noEmit
 python demo.py                                            # both halves, Ctrl-C stops the pair
@@ -103,6 +103,12 @@ real socket, and the **shipped `dist/`** over HTTP and over the socket, doing wh
 is collected by neither runner — pytest takes `test_*.py`, vitest takes `*.spec.*` — and it is what
 found every client-side defect the two suites could not see, because neither ever put the two halves
 in one process tree.
+
+It drives **two tabs** and puts a clock on the row. A check that reads the handle `run()` hands back,
+in the tab that started the work, says little about the page: the markup reads a register entry, in
+whichever tab happens to be open, and an entry the register loop adopted has no poller and therefore
+a different set of readers (TW-REG-002). Latency is asserted for the same reason — a row that arrives
+eventually is not a row that arrived.
 
 **Next, in order** — the detail is in `NEXT.md`:
 

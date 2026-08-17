@@ -384,6 +384,34 @@ its clock.
 
 ---
 
+## taskwire-m1c-ts-register-and-vue.md §6 — what reads the register between rungs — OPEN
+
+**What I needed:** the row of a shared operation comes from the register payload and from nowhere
+else (TW-PRIV-002 leaves the per-token reads only the private half). Something has to decide when
+that payload is asked for, other than the ladder.
+
+**What the brief says:** the ladder, and nothing else. §8.2 puts the interval at the five second
+ceiling whenever nothing in the last payload was active — which is the state of every client at the
+moment somebody starts the first job of the day.
+
+**What I assumed:** four triggers, all of them off the ladder and all of them one read.
+
+1. A push naming a token this client cannot place, and
+2. a push for a token it has a handle for but no row — both already the brief's own consequence of
+   TW-REG-006, since a push carries what changes and the register is what says who is in it.
+3. **The command of a `run()` that declared a `resultKind` answering.** The front end mints the token
+   and sends it with the command, and the server writes `queued` before it replies (TW-CORE-007), so
+   the reply is proof that the list can answer for this token.
+4. **The first document a token's own poller reads**, when that document is shared and not terminal.
+   It covers an application that writes `queued` in the worker rather than in the command, and a
+   token this tab was asked to `track()` rather than started.
+
+`knownMember` bounds all four to one read per token — the payload that answers carries it — and a
+private operation asks for none of them: no payload carries one for any caller including its own,
+and its row is the copy its own poller already holds.
+
+---
+
 ## taskwire-m1c-ts-register-and-vue.md §4 — what a departing entry does to its handle
 
 **What I needed:** a register entry vanishes from the payload. The handle behind it has to do
@@ -398,6 +426,14 @@ which is the party that can tell a terminal state from a disappearance (TW-TS-00
 handle does not settle its promise: a departure is "terminal with nothing to collect" (TW-REG-007),
 and inventing `done` or `failed` from an absence would be a guess. Nobody awaits an adopted handle —
 it was minted from a payload row, not from a call.
+
+**The questions go with it.** An adopted handle has no poller (TW-REG-002) and no payload ever
+carries the terminal document, so the departure is the only news it will ever get; a client that let
+it say nothing about the entry's open dialogs would leave a modal on screen, in every tab that did
+not start the operation, over a worker that has gone. TW-DLG-016 writes the close rule against the
+dialog's own state rather than against how that state was learnt, and TW-CANCEL-011 says a dialog
+never outlives its operation — so the departure withdraws them exactly as the terminal document and
+the `404` do.
 
 A visible entry that departs without any terminal state ever having been read leaves the visible
 collection at once rather than lingering: `progressUi.failureLinger` holds a row the client **saw**

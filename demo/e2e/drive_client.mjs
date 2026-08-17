@@ -79,8 +79,28 @@ const T = {
   pollWindow: 4_000,
 };
 
+/**
+ * How long the row of an operation **this client started** may take to reach the screen, measured
+ * from the command's own answer.
+ *
+ * A budget rather than a timeout: every other wait here is on an event and bounds a failure, while
+ * this one is the assertion. The register is the only place a shared operation's row can come from
+ * (TW-PRIV-002), so a client that does not read the list when its own command returns waits for the
+ * ladder - which sits on its five second ceiling for exactly as long as the namespace was quiet,
+ * i.e. always, at the moment somebody starts the first job of the day.
+ */
+const ROW_BUDGET_MS = 500;
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Wait for a predicate, and **never hand it an `Operation`**.
+ *
+ * A handle is a `PromiseLike` over the request that started it (TW-TS-002), so `await predicate()`
+ * on one waits for that request rather than reading the value - and a handle the register adopted
+ * has no request behind it, so the wait never ends. Return the token, the dialog, a boolean, or the
+ * entry wrapped in an object; never the entry itself.
+ */
 async function until(predicate, timeoutMs, step = 40) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -143,6 +163,8 @@ class Harness {
     this.envelopes = [];
     this.peer = null;
     this.transport = null;
+    /** `token` → the moment the command that started it answered, for the row budget. */
+    this.answered = new Map();
   }
 
   async open() {
@@ -152,7 +174,10 @@ class Harness {
       .map((value) => /taskwire_demo_session=([^;]+)/.exec(value)?.[1])
       .find(Boolean);
     if (!cookie) throw new Error('the demo handed out no session cookie');
+    // Kept, because a second page of the same namespace is one of the arrangements under test and
+    // the namespace *is* this cookie.
     const headers = { Cookie: `${SESSION_COOKIE}=${cookie}` };
+    this.headers = headers;
 
     this.probe = axios.create({ baseURL: this.base, headers, validateStatus: () => true });
     this.client = axios.create({ baseURL: this.base, headers });
@@ -227,7 +252,14 @@ class Harness {
 
   /** Start a job the way `App.vue` does: `run()` mints the token and the POST carries it. */
   start(job) {
-    return this.tw.run((_token) => this.client.post(`/demo/jobs/${job}`), { resultKind: `demo.${job}` });
+    const handle = this.tw.run((_token) => this.client.post(`/demo/jobs/${job}`), { resultKind: `demo.${job}` });
+    // The handle is a `PromiseLike` over the POST (TW-TS-002), so this is the command answering and
+    // nothing about the work: the moment the operation exists and the register can answer for it.
+    Promise.resolve(handle).then(
+      () => this.answered.set(handle.token, Date.now()),
+      () => undefined,
+    );
+    return handle;
   }
 
   /** The server's own answer for a token: `404` once it has left the store (TW-REG-007). */
@@ -256,6 +288,49 @@ class Harness {
   }
 }
 
+/**
+ * A second page of the same namespace: the tab that started nothing.
+ *
+ * Its entries are **adopted** - the register loop mints the handle, and TW-REG-002 gives it no poller
+ * of its own - which is a different object with a different set of readers from the handle `run()`
+ * hands back. Every check above this line reads the starting tab's handle and so proves nothing
+ * about it, while the register is namespace-wide (TW-REG-001) and every question in it appears here
+ * too (TW-TAB-004). It speaks the same wire as the harness, on a socket of its own where that is a
+ * socket, because a second connection is what a second tab is.
+ */
+class Observer {
+  constructor(host) {
+    this.host = host;
+    this.entries = [];
+    this.peer = null;
+  }
+
+  async open() {
+    const http = axios.create({ baseURL: this.host.base, headers: this.host.headers });
+    this.tw = use_taskwire({ basePath: BASE_PATH, axiosInstance: http });
+    this.entries = this.tw.register;
+    this.stopWatching = this.tw.onRegisterChange((operations) => {
+      this.entries = operations;
+    });
+    if (this.host.wire === 'websocket') {
+      this.peer = await connect(`${this.host.base.replace(/^http/, 'ws')}/ws`, { headers: this.host.headers });
+      this.transport = attachMuxws(this.tw, this.peer);
+      await this.transport.announce();
+    }
+  }
+
+  row(token) {
+    return this.entries.find((entry) => entry.token === token) ?? null;
+  }
+
+  async close() {
+    this.stopWatching?.();
+    if (this.peer !== null) detachMuxws(this.tw);
+    this.tw.dispose();
+    await this.peer?.close();
+  }
+}
+
 // ------------------------------------------------------------------------------------------------
 // The phases
 // ------------------------------------------------------------------------------------------------
@@ -273,9 +348,20 @@ async function phaseExport(h) {
   const op = h.start('export');
   const token = op.token;
 
-  const row = await until(() => h.row(token), T.row);
-  ledger.check('register.fills', 'the started operation appears as a register row', row !== null, `token ${token}`);
-  if (row === null) {
+  const listed = await until(() => h.row(token) !== null, T.row);
+  ledger.check('register.fills', 'the started operation appears as a register row', listed !== null, `token ${token}`);
+  // Taken before the wait below, because over a socket the push routinely puts the row on screen
+  // *before* the POST it was started by has resolved, and that is a pass rather than a puzzle.
+  const shownAt = Date.now();
+  const answeredAt = await until(() => h.answered.get(token) ?? null, T.row);
+  const waited = answeredAt === null ? null : shownAt - answeredAt;
+  ledger.check(
+    'register.is_prompt',
+    `the row is on screen within ${ROW_BUDGET_MS} ms of the command answering`,
+    waited !== null && waited <= ROW_BUDGET_MS,
+    waited === null ? 'the command never answered' : `${waited} ms, on a ${h.wire} client`,
+  );
+  if (listed === null) {
     // Every check below reads that row. A `404` for a token the client never placed would make the
     // cancellation check pass for the wrong reason - "the operation is not in the store" is what it
     // waits for - so they are recorded as unreached instead.
@@ -547,20 +633,27 @@ async function phaseDismiss(h) {
  *
  * The terminal write withdraws the question in the same step (TW-CANCEL-011) and publishes **no**
  * `dialog.close` - so the terminal progress is the only notice a client ever gets that the modal on
- * its screen is pointing at a worker that is gone. That is what the last two checks are about, and
- * the client-side one is asserted on both wires because a client that cleared its question only over
- * a socket would leave that modal up for every reader who chose HTTP.
+ * its screen is pointing at a worker that is gone. That is what the last checks are about, and they
+ * are asserted on both wires and in both tabs: a client that cleared its question only over a socket,
+ * or only in the tab that started the job, would leave that modal up for everybody else.
+ *
+ * The second tab is not a variation of the first. Its entry is adopted by the register loop and has
+ * no poller (TW-REG-002), and no payload ever carries the terminal document (TW-REG-007) - so with
+ * no push to carry it, the row's departure is the entire announcement it will ever get.
  */
 async function phaseHold(h) {
   const { ledger } = h;
+  const elsewhere = new Observer(h);
+  await elsewhere.open();
   const op = h.start('hold');
   const token = op.token;
 
   const asked = await until(() => h.row(token)?.dialog ?? null, T.question);
   if (asked === null) {
-    ['hold.question', 'hold.ends', 'hold.question_cleared'].forEach((id) =>
-      ledger.blocked(id, id, 'hold never asked'),
+    ['hold.question', 'hold.ends', 'hold.question_cleared', 'hold.other_tab_sees_it', 'hold.other_tab_cleared'].forEach(
+      (id) => ledger.blocked(id, id, 'hold never asked'),
     );
+    await elsewhere.close();
     await h.cleanup(token);
     return;
   }
@@ -571,6 +664,21 @@ async function phaseHold(h) {
     `dialogId ${asked.dialogId}`,
   );
 
+  // The other tab's own copy of the row, kept the way the page keeps it: the entry object that was
+  // holding the question, read again after the operation is over. `App.vue` does exactly this - the
+  // modal closes when the entry it is drawn from has no open dialog left, and nothing else closes it.
+  const held = await until(() => {
+    const entry = elsewhere.row(token);
+    return (entry?.dialog ?? null) === null ? null : { entry };
+  }, T.question);
+  const watched = held?.entry ?? null;
+  ledger.check(
+    'hold.other_tab_sees_it',
+    'a tab that started nothing sees the same question (TW-TAB-004)',
+    watched !== null && watched.dialog?.id === asked.id,
+    watched === null ? 'the question never reached the second tab' : `it holds ${watched.dialog?.id}, not ${asked.id}`,
+  );
+
   const ended = await until(async () => h.row(token) === null && (await h.serverSnapshot(token)) === null, T.holdEnds, 250);
   ledger.check(
     'hold.ends',
@@ -579,13 +687,40 @@ async function phaseHold(h) {
     'the row is still in the register after the deadline',
   );
 
+  // Waited for rather than sampled. The two ends of this are on separate clocks: the row departs
+  // when the register is next read, and the handle learns of the withdrawal from its own poller's
+  // `404` - and both of those ladders are at the five second ceiling while a question is open, so
+  // which arrives first is not a property of anything.
+  const settled = await until(
+    () => (op.dialogs.find((dialog) => dialog.id === asked.id)?.state ?? 'gone') !== 'open',
+    T.settles,
+    100,
+  );
   const open = op.dialogs.find((dialog) => dialog.id === asked.id);
   ledger.check(
     'hold.question_cleared',
     'the withdrawn question is cleared from the client',
-    (open?.state ?? 'gone') !== 'open',
+    settled !== null,
     `the client still holds dialog ${asked.id} open, with no operation behind it (state ${open?.state})`,
   );
+
+  const cleared =
+    watched === null
+      ? null
+      : await until(() => elsewhere.row(token) === null && watched.dialog === null, T.holdEnds, 250);
+  if (watched === null) {
+    ledger.blocked('hold.other_tab_cleared', 'hold.other_tab_cleared', 'the second tab never held the question');
+  } else {
+    ledger.check(
+      'hold.other_tab_cleared',
+      'the other tab closes its question too, on the departure alone',
+      cleared !== null,
+      `its entry still holds dialog ${watched.dialog?.id} open (state ${watched.dialog?.state}), row ${
+        elsewhere.row(token) === null ? 'gone' : 'present'
+      }`,
+    );
+  }
+  await elsewhere.close();
 
   if (h.wire === 'websocket') {
     const closes = h.envelopes.filter((e) => e.token === token && e.kind === 'dialog.close');

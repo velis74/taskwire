@@ -246,9 +246,9 @@ async def hold_the_line(reporter: Reporter) -> None:
 
     **Start it, watch the question arrive, and then leave it alone.** Fifteen seconds later the
     question disappears from every tab of the namespace and the operation leaves the register,
-    `failed` with a `TimeoutError`; a tab that was part-way through answering gets 410 while the
-    document is still there and 404 once it is dropped, and closes its modal without a word either
-    way (TW-DLG-011).
+    `failed` with code `dialog_timeout` and `retryable: true`; a tab that was part-way through
+    answering gets 410 while the document is still there and 404 once it is dropped, and closes its
+    modal without a word either way (TW-DLG-011).
 
     Those fifteen seconds belong to **this function**. `ask()` has no timeout and must never grow
     one (TW-DLG-005), so a deadline has to be written where the cost of waiting is actually known:
@@ -283,21 +283,35 @@ async def hold_the_line(reporter: Reporter) -> None:
     # The deadline is the application's, applied from outside `ask()` and known to nothing inside
     # taskwire. When it expires, `wait_for` cancels the pending `ask()` and raises; the exception
     # walks out of `operation()`, which writes `failed` and withdraws this dialog on the way.
-    answer = await asyncio.wait_for(
-        reporter.ask(
-            "demo.release_window",
-            buttons=[
-                Button(id="release", label=t("demo.hold.release", text="Release now")),
-                Button(id="hold", label=t("demo.hold.wait", text="Hold until morning")),
-            ],
-            params={"deadline_seconds": HOLD_DEADLINE, "instructions": total_trades()},
-            text=t(
-                "demo.release_window.text",
-                text=f"Release tonight's settlement file? This worker waits {HOLD_DEADLINE:.0f} s.",
+    try:
+        answer = await asyncio.wait_for(
+            reporter.ask(
+                "demo.release_window",
+                buttons=[
+                    Button(id="release", label=t("demo.hold.release", text="Release now")),
+                    Button(id="hold", label=t("demo.hold.wait", text="Hold until morning")),
+                ],
+                params={"deadline_seconds": HOLD_DEADLINE, "instructions": total_trades()},
+                text=t(
+                    "demo.release_window.text",
+                    text=f"Release tonight's settlement file? This worker waits {HOLD_DEADLINE:.0f} s.",
+                ),
             ),
-        ),
-        HOLD_DEADLINE,
-    )
+            HOLD_DEADLINE,
+        )
+    except TimeoutError:
+        # `name_error` decides what the one terminal write of `operation()` will say and writes
+        # nothing itself; the write happens as this exception leaves the block. Without it the code
+        # would be `TimeoutError` and the message the same word again - the exception's class is all
+        # taskwire can derive, and it does not know what the deadline was for. A worker killed by its
+        # own execution limit reports this code (TW-CELERY-010), so both deployments of this job end
+        # with the same document.
+        reporter.name_error(
+            "dialog_timeout",
+            t("taskwire.dialog_timeout", text=f"Nobody answered within {HOLD_DEADLINE:.0f} s."),
+            True,
+        )
+        raise
 
     await reporter.set(percent=100, label=t("demo.hold.decided", text="Decision recorded"))
     await reporter.set_result(

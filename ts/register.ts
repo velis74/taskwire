@@ -512,6 +512,22 @@ export class RegisterState {
   }
 
   /**
+   * A token this client watches has a document, and the register has no row for it: read the list.
+   *
+   * The one path into an off-ladder read that does not begin with a push. A shared operation is in
+   * the payload or it is nowhere - the per-token reads carry the private half alone (TW-PRIV-002) -
+   * so a client with no transport learns of the operation it started itself no sooner than the next
+   * rung, and that rung is the ceiling for as long as the payload it last read was quiet.
+   *
+   * `knownMember` is what keeps it to one read: the payload that answers carries the token, and the
+   * private half answers for a private operation without a request at all.
+   */
+  noteMembership(token: string): void {
+    if (this.knownMember(token)) return;
+    this.readOnce();
+  }
+
+  /**
    * Whether the merged register already accounts for this token, by either of the two ways it can.
    *
    * A row in the last payload is one; being **this tab's own private operation** is the other, and
@@ -607,9 +623,10 @@ export class RegisterState {
     [...this.entriesByToken.entries()].forEach(([token, handle]) => {
       if (present.has(token)) return;
       this.entriesByToken.delete(token);
-      // Only handles this loop minted are closed here: one that arrived with a poller of its own
-      // settles on that poller's own reading of the token (TW-TS-004), not on a departure.
-      if (this.adopted.delete(token)) handle.close();
+      // Only handles this loop minted end here: one that arrived with a poller of its own settles on
+      // that poller's own reading of the token (TW-TS-004), not on a departure. For the rest this is
+      // the only news they will ever get, questions included (TW-CANCEL-011).
+      if (this.adopted.delete(token)) handle.departed();
     });
 
     merged.forEach((snapshot) => this.handleFor(snapshot.token));

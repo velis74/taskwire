@@ -410,12 +410,13 @@ class TokenPoller {
   }
 
   private deliver(snapshot: Snapshot): void {
+    const first = !this.seen;
     this.seen = true;
     this.lastRev = snapshot.rev;
     this.latest = snapshot;
     this.handle?.applySnapshot(snapshot);
     // The private half of `tw.register` is exactly what these reads carry (TW-PRIV-002).
-    this.client.noteSnapshot();
+    this.client.noteSnapshot(snapshot, first);
     [...this.subscriptions].forEach((subscription) => subscription.emit(snapshot));
   }
 
@@ -457,10 +458,11 @@ class TokenPoller {
       // the one the server wrote it at.
       serverTime: progress.updatedAt,
     };
+    const first = !this.seen;
     this.seen = true;
     this.lastRev = snapshot.rev;
     this.latest = snapshot;
-    this.client.noteSnapshot();
+    this.client.noteSnapshot(snapshot, first);
     [...this.subscriptions].forEach((subscription) => subscription.emit(snapshot));
     // The same consequence a terminal read has: it is the last document that will ever exist for
     // this token (TW-REG-007), so the handle settles on it and the loop has nothing left to ask for.
@@ -700,7 +702,16 @@ export class Taskwire implements OperationHost, RegisterClient {
     });
     const poller = this.pollerFor(token);
     const settled = (): void => poller.searchIsOver();
-    promise.then(settled, settled);
+    // The command's answer is the earliest moment a row can be shown. The front end mints the token
+    // and sends it with its own command, and the server writes `queued` before it replies
+    // (TW-CORE-007) - so a reply is proof that the register can already answer for this token, and
+    // for a shared operation the register is the only thing that can (TW-REG-006, TW-PRIV-002).
+    // A caller who declared no `resultKind` means a private operation, whose row this client holds
+    // itself and asks nobody for.
+    promise.then(() => {
+      settled();
+      if (options.resultKind !== undefined) this.registerState.noteMembership(token);
+    }, settled);
     // §4.3's first door: `startedHere` plus `progressUi.delay`, and this tab only (TW-TAB-002).
     this.registerState.noteStarted(handle as Operation<unknown>, options.progressUi !== false);
     return handle;
@@ -991,9 +1002,24 @@ export class Taskwire implements OperationHost, RegisterClient {
     this.registerState.refresh();
   }
 
-  /** @internal A per-token read landed: the private half of the merged register moved. */
-  noteSnapshot(): void {
+  /**
+   * @internal A per-token document landed: the private half of the merged register moved, and a
+   * **shared** token seen here for the first time is a membership change this client can prove.
+   *
+   * The row of a shared operation comes from the register payload and from nowhere else - these
+   * reads carry only the private half (TW-PRIV-002) - so `tw.register` learns about an operation
+   * this tab started no earlier than the ladder's next rung, which is the ceiling whenever nothing
+   * else in the namespace was active (TW-REST-014, §8.2). A document under the token is proof that
+   * the list can now answer for it, and the register is what says who is in it (TW-REG-006): one
+   * read off the ladder is the answer, exactly as it is for a push naming a token with no row.
+   *
+   * Only the first document asks. The payload it fetches carries the token, so every later read
+   * finds the membership already known and asks for nothing.
+   */
+  noteSnapshot(snapshot: Snapshot, firstDocument: boolean): void {
     this.registerState.refresh();
+    if (!firstDocument || snapshot.progress.resultKind === null || isTerminal(snapshot.progress)) return;
+    this.registerState.noteMembership(snapshot.token);
   }
 
   /** Stop every poller and take the interceptor back off the axios instance. */

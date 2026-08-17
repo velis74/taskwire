@@ -59,6 +59,11 @@ A dialog closes when it **leaves `open`**, whether that was observed in a push o
 whether it left for `answered` or `cancelled`. Never render a countdown: a dialog carries no
 deadline for any party to renegotiate, so there is no field to count down.
 
+A withdrawal announces itself through no envelope of its own. The operation's terminal state, the
+`404` that follows the drop, and the entry leaving the register are the three ways a client learns
+it, and the TypeScript client settles the question on all three — so a modal drawn from an entry
+closes whichever of them arrives, in the tab that started the operation and in every other.
+
 ## Buttons and inputs
 
 `buttons` is the object form on the wire; a list of strings is sugar that expands to

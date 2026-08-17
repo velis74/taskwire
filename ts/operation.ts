@@ -558,6 +558,23 @@ export class Operation<T> implements PromiseLike<T> {
   }
 
   /**
+   * @internal The register stopped listing this token, and this handle has no poller of its own
+   * (TW-REG-002): the loop that adopted it is the only reader it has.
+   *
+   * An entry leaves a payload when the operation ended, and no payload ever carries the terminal
+   * document - it is written, published and dropped in one step (TW-REG-007) - so for a handle with
+   * nothing else reading the token, the departure is the entire announcement. It carries the
+   * withdrawal exactly as the terminal document and the `404` do, because TW-DLG-016 writes the
+   * close rule against the dialog's own state and not against how that state was learnt: without
+   * this, a tab that did not start the operation keeps a question on screen over a worker that is
+   * gone, and nothing will ever tell it otherwise.
+   */
+  departed(): void {
+    this.#withdrawOpenDialogs();
+    this.close();
+  }
+
+  /**
    * @internal Never written, and the search is over: dropped silently (TW-TS-004). The deferred
    * resolves rather than rejects - nothing failed, there was simply never an operation to watch.
    */

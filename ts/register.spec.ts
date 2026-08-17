@@ -440,6 +440,26 @@ describe('tw.register (TW-REG-001..007)', () => {
     expect(server.polls(REGISTER_URL).length).toBeGreaterThan(3);
   });
 
+  it('a question on a departed entry closes with the entry (TW-CANCEL-011, TW-DLG-016)', async () => {
+    // An entry this loop adopted has no poller of its own (TW-REG-002), and no payload ever carries
+    // the terminal document - it is written and dropped in one step (TW-REG-007). So the departure
+    // is the only news a tab that did not start the operation will ever get, and a client that let
+    // it say nothing about the question would leave a modal on screen over a worker that is gone.
+    const elsewhere = new_token();
+    server.list(summaryWire(elsewhere, { dialog: true }));
+    await poll();
+    const entry = tw.register[0];
+    expect(entry.dialog?.state).toBe('open');
+
+    server.list();
+    // A question open holds the ladder at its ceiling (§8.2), which is where a client with no
+    // transport learns of the departure.
+    await poll(10);
+    expect(tw.register).toEqual([]);
+    expect(entry.dialog).toBeNull();
+    expect(entry.dialogs.map((dialog) => dialog.state)).toEqual(['cancelled']);
+  });
+
   it('the aggregate and the selection follow the payload', async () => {
     // TW-REG-013 through TW-REG-017 as the loop applies them: FIFO advances by itself, and the
     // resting state is nothing at all rather than a zeroed document.
@@ -462,6 +482,69 @@ describe('tw.register (TW-REG-001..007)', () => {
     await poll();
     expect(tw.aggregate).toBeNull();
     expect(tw.selected).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe('what puts a row on screen with no push to carry it (TW-REG-006)', () => {
+  it('the command answering is what shows the row of an operation this tab started', async () => {
+    // The front end mints the token and sends it with its own command, and the server writes
+    // `queued` before it replies (TW-CORE-007) - so the reply is proof the list can answer for this
+    // token. Without a read there, the row waits for the ladder, and the ladder is on its ceiling
+    // for as long as the last payload was quiet: the click is followed by seconds of nothing.
+    server.list();
+    await poll(2);
+    const reads = server.polls(REGISTER_URL).length;
+
+    const op = tw.run(
+      async (token) => {
+        // What the server does while it answers, in the order it does it.
+        server.list(summaryWire(token, { percent: 3 }));
+      },
+      { resultKind: 'acme.report' },
+    );
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads + 1);
+    expect(tokensOf(tw.register)).toEqual([op.token]);
+    expect(tw.register[0].progress?.percent).toBe(3);
+  });
+
+  it('a first document under a token with no row is one read of the list', async () => {
+    // The command may answer before the operation exists - an application is free to write `queued`
+    // in the worker instead. The token's own poller is the other proof, and it is the one that
+    // covers a token this tab never started but was asked to watch.
+    const token = new_token();
+    server.list();
+    await poll(2);
+    const reads = server.polls(REGISTER_URL).length;
+
+    server.documents.set(token, snapshotWire(token, { percent: 12 }));
+    server.list(summaryWire(token, { percent: 12 }));
+    tw.track(token);
+
+    await vi.advanceTimersByTimeAsync(600);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads + 1);
+    expect(tokensOf(tw.register)).toEqual([token]);
+  });
+
+  it('asks for nothing on behalf of a private operation, on either path (TW-PRIV-002)', async () => {
+    // No register payload carries a private operation for any caller including its own, so a read
+    // asked for on its behalf is a question the list cannot answer. Its row is the one its own
+    // poller holds, and it is on screen without a request of any kind.
+    server.list();
+    await poll(2);
+    const reads = server.polls(REGISTER_URL).length;
+
+    const op = tw.run(async (token) => {
+      server.documents.set(token, snapshotWire(token, { resultKind: null, percent: 55 }));
+    });
+
+    await vi.advanceTimersByTimeAsync(600);
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads);
+    expect(tokensOf(tw.register)).toEqual([op.token]);
+    expect(tw.register[0].progress?.percent).toBe(55);
   });
 });
 

@@ -9,9 +9,10 @@ done, not when it is ticked.
 
 taskwire's half is built. What is left is in *that* repository, and it is three edits:
 
-1. `celery_viewset_server.sync_wrapper` calls the hook, in this order — the reconstruction pass
-   passes through any key it has no type hint for, so a taskwire key surviving into it reaches the
-   action as an argument it never declared:
+1. `decorators/celery_viewset/server.py::sync_wrapper` (line 85, around the `run_until_complete` at
+   line 106) calls the hook, in this order — `_reconstruct_kwargs` passes through any key it has no
+   type hint for, so a taskwire key surviving into it reaches the action as an argument it never
+   declared:
 
    ```python
    run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)
@@ -21,8 +22,9 @@ taskwire's half is built. What is left is in *that* repository, and it is three 
 
    Behind `try: from taskwire.contrib.celery import wrap_sync_runner / except ImportError:` with a
    two-line identity fallback, so fastapi-viewsets keeps working without taskwire installed.
-2. The dispatching client sends `_taskwire_token` and `_taskwire_session` beside `_correlation_id`,
-   and calls `mark_queued` before it sends. Until it does, the hook is inert on every call.
+2. `decorators/celery_viewset/client.py` sends `_taskwire_token` and `_taskwire_session` in the same
+   `kwargs` dict as `_correlation_id` (line 103), and calls `mark_queued` before it sends. Until it
+   does, every call takes the hook's "no token, run unwrapped" branch and nothing is ever reported.
 3. The web-side middleware opens `operation()` around a **non**-Celery action (TW-CELERY-006) and
    must not open one for a Celery-dispatching action (TW-CELERY-005).
 
@@ -43,7 +45,25 @@ declares as a viewset, which of the library's mechanisms therefore apply to task
 
 Not started at all. Two packages, one version stream (TW-PKG-001).
 
-## 5. Five things the end-to-end run walked past
+## 5. Two questions the tab rule cannot answer
+
+Both are `DialogAdoption` reasoning over a register payload that is up to one ceiling interval old,
+and both are visible in the demo with two tabs open and no transport.
+
+1. **`isStillOpen` is vacuous exactly when it matters.** The re-check after `dialogAdoptDelay` reads
+   the entries the client holds, and without a socket those are a payload up to 5 s old - four times
+   the 1200 ms delay it guards. Open a second tab about a second before `hold`'s deadline: its first
+   read sees the question open, its timer fires half a second *after* the worker gave up, the
+   re-check answers `true` from the stale payload, and a modal goes up for a question the store
+   withdrew. It now clears on the next read rather than staying, so the cost is a few seconds of a
+   modal about nothing.
+2. **The adopt delay governs the first question only.** `DialogAdoption` is keyed by dialog id and
+   `App.vue` holds an `Operation`, whose `dialog` is the *oldest open* one - so when `reconcile`'s
+   q1 is answered elsewhere and q2 opens, the watching tab's modal never closes and silently becomes
+   q2's, with no delay and no `present()` call. TW-TAB-003's rule is skipped rather than delayed. The
+   fix is in the page: hold the dialog **id** that was adopted, not the operation.
+
+## 6. Five things the end-to-end run walked past
 
 Found while chasing the socket and the cancel, none of them the defect being chased. In descending
 order of what they cost someone who hits them:
@@ -59,9 +79,13 @@ order of what they cost someone who hits them:
    `MuxwsClientTransport.overrides` are two unconnected maps: only the transport's is ever sent, and
    only `watch()` sends it. So the client-side half of TW-DEL-006 is inert, and TW-DEL-023's pruning
    is implemented on the transport's copy alone.
-3. **A dropped push in the browser leaves no trace.** Bare `catch {}` at `ts/muxws.ts:150` and
-   `ts/register.ts:440`, and a silent return when no consumer is attached. The Python side logs every
-   equivalent drop at debug (`contrib/muxws.py:86,125,127`).
+3. **A dropped push in the browser leaves no trace, and nothing re-reads.** Bare `catch {}` at
+   `ts/muxws.ts:150` and `ts/register.ts:440`, and a silent return when no consumer is attached. The
+   Python side logs every equivalent drop at debug (`contrib/muxws.py:86,125,127`). The consequence is
+   larger than the silence: a socket that is attached and healthy holds every ladder (TW-TS-007), so
+   a terminal envelope that is dropped rather than delivered is never asked for again - the operation
+   stays `running` on screen with an open question behind it until the socket is lost. The store is
+   the truth, and in that arrangement nothing ever asks it.
 4. **A cancel is noticed one `settings.progress_interval` late for a job that does not ask.** The
    sticky flag is re-read inside `_commit` (`taskwire/reporter.py:385,401`), which runs only when the
    throttle window has elapsed - so `set()` called every 0.2 s still raises up to 0.25 s after the
