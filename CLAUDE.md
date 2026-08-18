@@ -17,8 +17,8 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 271 pass, 9 skip
-npx vitest run                                            # 395 pass
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 272 pass, 9 skip
+npx vitest run                                            # 396 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npx eslint ts --fix && npx vue-tsc --noEmit
 python demo.py                                            # both halves, Ctrl-C stops the pair

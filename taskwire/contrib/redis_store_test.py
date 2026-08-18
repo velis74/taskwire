@@ -124,14 +124,15 @@ async def test_commit_returns_the_cancel_flag_in_one_round_trip(redis_url) -> No
     key = make_key("ns", "counted")
 
     calls.clear()
-    await store.commit(key, Progress(state=ProgressState.RUNNING, result_kind="k", origin_session="ns"), 60)
+    written = await store.commit(key, Progress(state=ProgressState.RUNNING, result_kind="k", origin_session="ns"), 60)
     assert "exists" not in calls, "the cancel flag came back with the rev; no second read is allowed"
-    assert store._last_cancel_flag is False
+    assert written.cancelled is False
 
     await store.request_cancel(key)
     calls.clear()
-    await store.commit(key, Progress(state=ProgressState.RUNNING, result_kind="k", origin_session="ns"), 60)
-    assert store._last_cancel_flag is True
+    written = await store.commit(key, Progress(state=ProgressState.RUNNING, result_kind="k", origin_session="ns"), 60)
+    assert written.cancelled is True
+    assert "exists" not in calls, "the flag the commit returned is the whole answer"
     await inner.aclose()
 
 

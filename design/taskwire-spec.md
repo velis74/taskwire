@@ -197,9 +197,12 @@ adapters to things outside the process, never a capability the core lacks.
   MUST be Lua scripts under `RedisStore`. The three dialog scripts additionally maintain
   `tw:{ns}:asking` (TW-KEY-005) inside their own atomic step; that adds no script. Other read shapes
   are free.
-- **TW-STORE-014** Under `RedisStore`, `commit` MUST return the cancellation flag alongside the new
-  `rev` in one round trip. Test: `cancel_test.py::test_commit_and_cancel_check_is_one_round_trip`
-  (asserted against a counting Redis client).
+- **TW-STORE-014** `commit` MUST return the cancellation flag alongside the new `rev`, in one round
+  trip, for **every** store: the port's return is `Commit(rev, cancelled)`. `Reporter` refreshes
+  `cancelled` from it after every commit (TW-CANCEL-004) and MUST NOT ask the store a second time.
+  Tests: `conformance` — `test_commit_reports_the_cancel_flag`, for every store; and
+  `redis_store_test.py::test_commit_returns_the_cancel_flag_in_one_round_trip` against a counting
+  Redis client, for the round trip itself.
 
 ### 2.4 Store keys (`TW-KEY-*`)
 
@@ -1325,8 +1328,13 @@ class DialogResolution(Enum):
     ACCEPTED = "accepted"; NOT_FOUND = "not_found"; ALREADY_ANSWERED = "already_answered"
     CANCELLED = "cancelled"
 
+@dataclass(frozen=True, slots=True)
+class Commit:
+    rev: int
+    cancelled: bool          # the sticky flag as this write saw it (TW-STORE-014)
+
 class TaskwireStore(ABC):
-    async def commit(self, key: str, progress: Progress, ttl: float) -> int: ...
+    async def commit(self, key: str, progress: Progress, ttl: float) -> Commit: ...
     async def snapshot(self, key: str) -> Snapshot | None: ...
     async def touch(self, key: str, ttl: float) -> bool: ...
     async def list_operations(self, ns: str) -> list[Snapshot]: ...   # shared, plus anything asking

@@ -59,24 +59,6 @@ not added on a guess.
 
 ---
 
-## taskwire-spec.md §5.3 / §2.3 — TW-STORE-014
-
-**What I needed:** how `Reporter` refreshes `cancelled` on every commit (TW-CANCEL-004).
-
-**What the spec says:** TW-STORE-014 requires `RedisStore.commit` to return the cancellation flag
-alongside the new `rev` **in one round trip**. But the port's signature in §5.3 is
-`commit(key, progress, ttl) -> int`, which has nowhere to put a second value.
-
-**What I assumed:** the reporter calls `store.commit()` and then `store.is_cancelled()`. Against
-`MemoryStore` that is two dictionary lookups and costs nothing. It is, however, two round trips
-against Redis, which is exactly what TW-STORE-014 forbids. `RedisStore`'s commit script does return
-the flag with the rev and holds it in `_last_cancel_flag`, but nothing reads it: the reporter still
-asks. Resolving it means either widening the port's return type or giving `Reporter` a store-private
-fast path it prefers when one exists — a change to a signature every module is written against, and
-not one to make on a guess.
-
----
-
 ## taskwire-spec.md §5.3 — TW-DEL-005
 
 **What I needed:** to know whether `Client` should enforce its own invariant.

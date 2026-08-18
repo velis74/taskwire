@@ -122,7 +122,7 @@ export async function commitBumpsRevMonotonically(makeStore: StoreFactory): Prom
   const k = makeKey(NS, 't1');
   const revisions: number[] = [];
   for (let i = 0; i < 5; i += 1) {
-    revisions.push(await store.commit(k, sampleProgress({ percent: i }), 60));
+    revisions.push((await store.commit(k, sampleProgress({ percent: i }), 60)).rev);
   }
   revisions.forEach((rev, position) => {
     ok(position === 0 || rev > revisions[position - 1], `rev must strictly increase, got ${revisions.join(', ')}`);
@@ -144,7 +144,7 @@ export async function concurrentCommitsRevAndBodyAgree(makeStore: StoreFactory):
 
   const attempts = Array.from({ length: 24 }, (_unused, i) => i);
   const results = await Promise.all(
-    attempts.map(async (i) => ({ rev: await store.commit(k, sampleProgress({ percent: i }), 60), percent: i })),
+    attempts.map(async (i) => ({ rev: (await store.commit(k, sampleProgress({ percent: i }), 60)).rev, percent: i })),
   );
   const highest = results.reduce((best, candidate) => (candidate.rev > best.rev ? candidate : best));
 
@@ -192,12 +192,33 @@ export async function commitAfterExpiryExceedsPreviousMax(makeStore: StoreFactor
   const store = makeStore({ clock: () => now });
   const k = makeKey(NS, 't4');
 
-  const first = await store.commit(k, sampleProgress(), 10);
+  const first = (await store.commit(k, sampleProgress(), 10)).rev;
   now += 1000;
   equal(await store.snapshot(k), null, 'precondition: the document expired');
 
-  const second = await store.commit(k, sampleProgress(), 10);
+  const second = (await store.commit(k, sampleProgress(), 10)).rev;
   ok(second > first, `a rewritten key must exceed its own past rev (${second} <= ${first})`);
+}
+
+/**
+ * TW-STORE-014 (`test_commit_reports_the_cancel_flag`): one write answers with the new `rev` and the
+ * sticky flag that write saw.
+ *
+ * It is what `Reporter.cancelled` answers between forced reads (TW-CANCEL-004), so a store that
+ * always reported `false` would leave a cancelled operation reporting progress until something asked
+ * again - and asking again is a second round trip on every commit.
+ */
+export async function commitReportsTheCancelFlag(makeStore: StoreFactory): Promise<void> {
+  const store = makeStore();
+  const k = makeKey(NS, 'cancelling');
+
+  equal((await store.commit(k, sampleProgress(), 60)).cancelled, false, 'nothing has asked for a cancel yet');
+
+  await store.requestCancel(k);
+  const written = await store.commit(k, sampleProgress({ percent: 10 }), 60);
+  equal(written.cancelled, true, 'the first commit after a cancel request must report it');
+  // TW-CANCEL-001: sticky and never cleared, so every later commit says the same.
+  equal((await store.commit(k, sampleProgress({ percent: 20 }), 60)).cancelled, true, 'the flag is sticky');
 }
 
 /**
@@ -341,7 +362,7 @@ export async function migrateIsIdempotentAndPreservesRev(makeStore: StoreFactory
   const anon = 'anon-session';
   const account = 'account-42';
 
-  const movingRev = await store.commit(makeKey(anon, 'moving'), sampleProgress(), 100);
+  const movingRev = (await store.commit(makeKey(anon, 'moving'), sampleProgress(), 100)).rev;
   await store.commit(makeKey(anon, 'clash'), sampleProgress({ label: { text: 'source' } }), 100);
   await store.commit(makeKey(account, 'clash'), sampleProgress({ label: { text: 'destination' } }), 100);
   await store.requestCancel(makeKey(anon, 'moving'));
@@ -412,6 +433,7 @@ export const CHECKS: readonly ConformanceCheck[] = [
   snapshotOnUnknownKeyIsNull,
   ttlExpiryRemovesKeyAndTouchPreventsIt,
   commitAfterExpiryExceedsPreviousMax,
+  commitReportsTheCancelFlag,
   commitAfterTerminalKeepsState,
   readsHaveNoSideEffects,
   listOperationsIsNamespaceScoped,

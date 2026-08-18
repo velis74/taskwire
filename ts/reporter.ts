@@ -739,9 +739,13 @@ export class Reporter {
     // getter a caller reads still answers, and nothing was written anywhere.
     if (this.store === null) return 0;
 
-    this.revValue = await this.store.commit(this.key, this.progress, this.settings.activeTtl);
+    // One write, and both of its answers: the new `rev`, and the sticky cancel flag as that write
+    // saw it (TW-STORE-014). Asking the store a second time would be a second round trip per commit
+    // against anything that is not a map.
+    const written = await this.store.commit(this.key, this.progress, this.settings.activeTtl);
+    this.revValue = written.rev;
     this.lastCommit = this.clock();
-    this.cancelledValue = await this.store.isCancelled(this.key);
+    this.cancelledValue = written.cancelled;
 
     const envelope: Envelope = {
       v: WIRE_VERSION,

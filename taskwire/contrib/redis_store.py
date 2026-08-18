@@ -45,7 +45,7 @@ from ..models import (
     Result,
     Snapshot,
 )
-from ..store import CANCELLED_BUTTON, DialogResolution, DialogVanished, split_key, TaskwireStore
+from ..store import CANCELLED_BUTTON, Commit, DialogResolution, DialogVanished, split_key, TaskwireStore
 
 logger = logging.getLogger("taskwire.redis")
 
@@ -257,7 +257,8 @@ class RedisStore(TaskwireStore):
 
     # ---------------------------------------------------------------- writes
 
-    async def commit(self, key: str, progress: Progress, ttl: float) -> int:  # noqa: A002
+    async def commit(self, key: str, progress: Progress, ttl: float) -> Commit:  # noqa: A002
+        """TW-STORE-014: one script call answers with the rev and the cancel flag it saw."""
         k = self._keys(key)
         created_ms = self._now_ms()
         rev, cancelled = await self._commit(
@@ -271,10 +272,7 @@ class RedisStore(TaskwireStore):
                 created_ms,
             ],
         )
-        # TW-STORE-014: the script returns the cancellation flag alongside the rev, in the one round
-        # trip. This holds what the latest commit saw.
-        self._last_cancel_flag = bool(int(cancelled))
-        return int(rev)
+        return Commit(rev=int(rev), cancelled=bool(int(cancelled)))
 
     async def touch(self, key: str, ttl: float) -> bool:  # noqa: A002
         k = self._keys(key)

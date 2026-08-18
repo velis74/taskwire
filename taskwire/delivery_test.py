@@ -343,7 +343,7 @@ async def test_subscriber_mutation_is_contained(clean_configuration):  # noqa: A
 
     progress = _progress()
     k = key(NS, TOKEN)
-    rev = await store.commit(k, progress, 60.0)
+    rev = (await store.commit(k, progress, 60.0)).rev
     envelope = Envelope(token=TOKEN, rev=rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict())
 
     def vandal(received: Envelope) -> None:
@@ -472,7 +472,7 @@ async def test_null_transport_notify_is_inert(clean_configuration):  # noqa: ARG
     store = MemoryStore()
     taskwire.configure(store=store, transport=transport)
     k = key(NS, TOKEN)
-    rev = await store.commit(k, _progress(), 60.0)
+    rev = (await store.commit(k, _progress(), 60.0)).rev
     before = (await store.snapshot(k)).to_dict()
 
     assert await store.publish(NS, Envelope(token=TOKEN, rev=rev, kind=EnvelopeKind.PROGRESS, body={})) is None

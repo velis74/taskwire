@@ -145,13 +145,13 @@ describe('MemoryStore writes', () => {
     const k = key('ns', 'tok');
     // Milliseconds on the injected clock's own scale: a faked clock must fake `rev` too, or an
     // expiry test could not observe the seeding rule at all.
-    expect(await store.commit(k, running(), 60)).toBe(1_000_000_000);
+    expect((await store.commit(k, running(), 60)).rev).toBe(1_000_000_000);
 
     // A second commit inside the same millisecond still moves, because `previous + 1` is the floor.
-    expect(await store.commit(k, running(), 60)).toBe(1_000_000_001);
+    expect((await store.commit(k, running(), 60)).rev).toBe(1_000_000_001);
 
     now += 5;
-    expect(await store.commit(k, running(), 60)).toBe(1_000_005_000);
+    expect((await store.commit(k, running(), 60)).rev).toBe(1_000_005_000);
   });
 
   it('remembers an expired document rev inside the same millisecond (TW-REV-002)', async () => {
@@ -170,27 +170,30 @@ describe('MemoryStore writes', () => {
     // that TW-STORE-009 does not let it keep.
     await store.commit(k, running(), 0.001);
     await store.commit(k, running(), 0.001);
-    const third = await store.commit(k, running(), 0.001);
+    const third = (await store.commit(k, running(), 0.001)).rev;
 
     now += 0.002;
     expect(await store.snapshot(k)).toBeNull();
-    expect(await store.commit(k, running(), 60)).toBeGreaterThan(third);
+    expect((await store.commit(k, running(), 60)).rev).toBeGreaterThan(third);
   });
 
   it('cancellation is sticky and bumps rev (TW-CANCEL-001)', async () => {
     const store = new MemoryStore();
     const k = key('ns', 'tok');
     const first = await store.commit(k, running(), 60);
+    expect(first.cancelled).toBe(false);
     expect(await store.isCancelled(k)).toBe(false);
     const cancelled = await store.requestCancel(k);
 
-    expect(cancelled).toBeGreaterThan(first);
+    expect(cancelled).toBeGreaterThan(first.rev);
     expect(await store.isCancelled(k)).toBe(true);
     // Setting the flag does not by itself change `state` - only `operation()` writes `cancelled`
     // (TW-CANCEL-002, TW-CANCEL-006).
     expect((await store.snapshot(k))?.progress.state).toBe('running');
 
-    await store.commit(k, running({ label: { text: 'still going' } }), 60);
+    // TW-STORE-014: the write that follows a cancel reports the flag itself, so the reporter needs
+    // no second read to know (`Reporter.cancelled`).
+    expect((await store.commit(k, running({ label: { text: 'still going' } }), 60)).cancelled).toBe(true);
     expect(await store.isCancelled(k)).toBe(true);
   });
 

@@ -71,7 +71,7 @@ async def test_commit_bumps_rev_monotonically(make_store: StoreFactory) -> None:
     """TW-REV-001: every committed change bumps `rev`."""
     store = make_store()
     k = make_key(NS, "t1")
-    revisions = [await store.commit(k, _progress(percent=float(i)), 60) for i in range(5)]
+    revisions = [(await store.commit(k, _progress(percent=float(i)), 60)).rev for i in range(5)]
     assert revisions == sorted(revisions), revisions
     assert len(set(revisions)) == len(revisions), revisions
 
@@ -88,7 +88,7 @@ async def test_concurrent_commits_rev_and_body_agree(make_store: StoreFactory) -
     k = make_key(NS, "t2")
 
     async def commit(i: int) -> tuple[int, float]:
-        return await store.commit(k, _progress(percent=float(i)), 60), float(i)
+        return (await store.commit(k, _progress(percent=float(i)), 60)).rev, float(i)
 
     results = await asyncio.gather(*[commit(i) for i in range(24)])
     highest_rev, highest_percent = max(results, key=lambda pair: pair[0])
@@ -134,12 +134,31 @@ async def test_commit_after_expiry_exceeds_previous_max(make_store: StoreFactory
     store = make_store(clock=lambda: now[0])
     k = make_key(NS, "t4")
 
-    first = await store.commit(k, _progress(), 10)
+    first = (await store.commit(k, _progress(), 10)).rev
     now[0] += 1000
     assert await store.snapshot(k) is None, "precondition: the document expired"
 
-    second = await store.commit(k, _progress(), 10)
+    second = (await store.commit(k, _progress(), 10)).rev
     assert second > first, (second, first)
+
+
+async def test_commit_reports_the_cancel_flag(make_store: StoreFactory) -> None:
+    """TW-STORE-014: one write answers with the new `rev` and the sticky flag that write saw.
+
+    It is what `Reporter.cancelled` answers between forced reads (TW-CANCEL-004), so a store that
+    always reported `False` would leave a cancelled operation reporting progress until something
+    asked again - and asking again is a second round trip on every commit.
+    """
+    store = make_store()
+    k = make_key(NS, "cancelling")
+
+    assert (await store.commit(k, _progress(), 60)).cancelled is False
+
+    await store.request_cancel(k)
+    written = await store.commit(k, _progress(percent=10.0), 60)
+    assert written.cancelled is True, "the first commit after a cancel request must report it"
+    # TW-CANCEL-001: sticky and never cleared, so every later commit says the same.
+    assert (await store.commit(k, _progress(percent=20.0), 60)).cancelled is True
 
 
 async def test_commit_after_terminal_keeps_state(make_store: StoreFactory) -> None:
@@ -280,7 +299,7 @@ async def test_migrate_is_idempotent_and_preserves_rev(make_store: StoreFactory)
     store = make_store(clock=lambda: now[0])
     anon, account = "anon-session", "account-42"
 
-    moving_rev = await store.commit(make_key(anon, "moving"), _progress(), 100)
+    moving_rev = (await store.commit(make_key(anon, "moving"), _progress(), 100)).rev
     await store.commit(make_key(anon, "clash"), _progress(label=Text(text="source")), 100)
     await store.commit(make_key(account, "clash"), _progress(label=Text(text="destination")), 100)
     await store.request_cancel(make_key(anon, "moving"))
@@ -401,6 +420,7 @@ CHECKS: tuple[Callable[[StoreFactory], Awaitable[None]], ...] = (
     test_snapshot_on_unknown_key_is_none,
     test_ttl_expiry_removes_key_and_touch_prevents_it,
     test_commit_after_expiry_exceeds_previous_max,
+    test_commit_reports_the_cancel_flag,
     test_commit_after_terminal_keeps_state,
     test_reads_have_no_side_effects,
     test_list_operations_is_namespace_scoped,

@@ -21,7 +21,7 @@ import time
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from .models import (
@@ -54,6 +54,20 @@ def split_key(k: str) -> tuple[str, str]:
     """
     ns, _, token = k.rpartition(":")
     return ns, token
+
+
+@dataclass(frozen=True, slots=True)
+class Commit:
+    """What one commit reports back: the new `rev`, and the cancel flag that write saw.
+
+    Both in one return because both are read on every commit and a networked store must not be
+    asked twice for one write's outcome (TW-STORE-014). The flag is the sticky one
+    (TW-CANCEL-001) as it stood when the document was written, which is what `Reporter.cancelled`
+    then answers for free.
+    """
+
+    rev: int
+    cancelled: bool
 
 
 class DialogResolution(Enum):
@@ -102,8 +116,12 @@ class TaskwireStore(ABC):
     """
 
     @abstractmethod
-    async def commit(self, key: str, progress: Progress, ttl: float) -> int:
-        """Write the document and bump `rev` in one indivisible step. Returns the new `rev`."""
+    async def commit(self, key: str, progress: Progress, ttl: float) -> Commit:
+        """Write the document and bump `rev` in one indivisible step.
+
+        Returns the new `rev` and the cancel flag the same write saw, so a caller that refreshes
+        `cancelled` after every commit needs no second round trip (TW-STORE-014).
+        """
 
     @abstractmethod
     async def snapshot(self, key: str) -> Snapshot | None:
@@ -261,7 +279,7 @@ class MemoryStore(TaskwireStore):
 
     # ---------------------------------------------------------------- writes
 
-    async def commit(self, key: str, progress: Progress, ttl: float) -> int:  # noqa: A002
+    async def commit(self, key: str, progress: Progress, ttl: float) -> Commit:  # noqa: A002
         """TW-STORE-002: bump rev and write the document in one indivisible step.
 
         Three rules meet here and each is easy to lose:
@@ -323,7 +341,7 @@ class MemoryStore(TaskwireStore):
             # write and is read back off the stored document, never off this call's argument.
             if written.is_shared:
                 self._index.setdefault(ns, {})[token] = written.created_at
-            return rev
+            return Commit(rev=rev, cancelled=entry.cancel_requested)
 
     async def touch(self, key: str, ttl: float) -> bool:  # noqa: A002
         """TW-RET-002's half of the keepalive. Refreshing an expiry is a write, and is not a read."""

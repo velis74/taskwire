@@ -61,6 +61,7 @@ from .reporter import (
 )
 from .settings import configure, configured, reset_configuration, Settings, settings
 from .store import (
+    Commit,
     DialogResolution,
     DialogVanished,
     key,
@@ -73,6 +74,7 @@ __all__ = [
     "Aggregate",
     "Button",
     "Client",
+    "Commit",
     "DialogAnswer",
     "DialogReply",
     "DialogRequest",

@@ -13,7 +13,7 @@ import {
   type OperationOptions,
 } from './operation-scope';
 import { DEFAULT_SETTINGS, encodedSize, InertReporter, Reporter, type ReporterStore } from './reporter';
-import { key as storeKey, MemoryStore } from './store';
+import { type Commit, key as storeKey, MemoryStore } from './store';
 import { LocalTransport } from './transport';
 import type { DialogReply, DialogRequest } from './wire';
 import {
@@ -132,7 +132,7 @@ class RecordingStore implements ReporterStore {
     };
   }
 
-  async commit(k: string, progress: Progress, ttl: number): Promise<number> {
+  async commit(k: string, progress: Progress, ttl: number): Promise<Commit> {
     this.commitCount += 1;
     if (this.recordBodies) {
       this.calls.push(['commit', k]);
@@ -172,7 +172,7 @@ class RecordingStore implements ReporterStore {
       tokens.add(k);
       this.index.set(ns, tokens);
     }
-    return rev;
+    return { rev, cancelled: entry.cancelRequested };
   }
 
   async snapshot(k: string): Promise<Snapshot | null> {
@@ -890,7 +890,7 @@ describe('the Reporter port', () => {
     const minimal: ReporterStore = {
       commit: async (k, progress) => {
         written.push([k, { state: progress.state }]);
-        return 1;
+        return { rev: 1, cancelled: false };
       },
       snapshot: async () => null,
       touch: async () => true,

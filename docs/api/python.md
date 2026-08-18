@@ -11,7 +11,7 @@ from taskwire import (
     MemoryStore, NullTransport, LocalTransport,
     start_taskwire_reader, stop_taskwire_reader, check_taskwire_readers,
     TOKEN_HEADER, CONNECTION_HEADER,
-    Client, OperationRef,
+    Client, OperationRef, Commit,
 )
 ```
 
@@ -225,8 +225,12 @@ starts an operation. There is no tab header, and there must not be one.
 ## Ports
 
 ```python
+class Commit:                    # frozen: the new rev, and the flag that write saw
+    rev: int
+    cancelled: bool
+
 class TaskwireStore(ABC):
-    async def commit(self, key, progress, ttl) -> int
+    async def commit(self, key, progress, ttl) -> Commit
     async def snapshot(self, key) -> Snapshot | None
     async def touch(self, key, ttl) -> bool
     async def list_operations(self, ns) -> list[Snapshot]
@@ -245,6 +249,10 @@ class TaskwireTransport(ABC):
     async def notify(self, session: str, envelope: Envelope) -> None
     async def is_online(self, session: str) -> bool
 ```
+
+`commit` answers with both of a write's outcomes at once, so a reporter refreshing `cancelled` after
+every commit costs one round trip rather than two (TW-STORE-014); `is_cancelled` is what
+`was_aborted()` uses when a caller wants a fresh read on demand.
 
 Every per-operation method takes an **already-namespaced key**, `f"{ns}:{token}"`; `list_operations`
 and `publish` take a bare namespace. There is no code path to the store without a namespace, because

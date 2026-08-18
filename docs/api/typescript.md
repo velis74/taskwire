@@ -137,6 +137,9 @@ before it sends the command.
 A store publishes through its `dispatch` option, which is what a transport is wired to; without one a
 `MemoryStore` keeps state correctly and pushes nothing.
 
+`store.commit()` answers with `{ rev, cancelled }` — both of a write's outcomes at once, so a
+reporter refreshing `cancelled` after every commit costs one round trip rather than two.
+
 The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `flush`, `subtask`,
 `split`, `cancelled` and `wasAborted`, with the same rules as the Python half.
 

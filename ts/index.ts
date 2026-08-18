@@ -98,6 +98,7 @@ export {
 } from './reporter';
 
 export {
+  type Commit,
   DIALOG_RESOLUTIONS,
   type DialogResolution,
   DialogVanished,

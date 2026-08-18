@@ -19,7 +19,7 @@ import taskwire
 
 from taskwire import conformance
 from taskwire.settings import configured
-from taskwire.store import MemoryStore
+from taskwire.store import Commit, MemoryStore
 
 CHECK_NAMES = [check.__name__ for check in conformance.CHECKS]
 """Captured at import time: `run_conformance`'s roster before any test can monkeypatch it."""
@@ -129,9 +129,9 @@ async def test_run_conformance_runs_every_check(monkeypatch: pytest.MonkeyPatch)
 class _FrozenRevStore(MemoryStore):
     """TW-REV-001 broken on purpose: every commit reports the same `rev`. Fails check 1."""
 
-    async def commit(self, key: str, progress, ttl: float) -> int:
-        await super().commit(key, progress, ttl)
-        return 1
+    async def commit(self, key: str, progress, ttl: float) -> Commit:
+        written = await super().commit(key, progress, ttl)
+        return Commit(rev=1, cancelled=written.cancelled)
 
 
 class _NeverDroppingStore(MemoryStore):

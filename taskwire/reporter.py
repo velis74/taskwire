@@ -400,9 +400,13 @@ class Reporter:
             self._progress.state = state
         self._progress.updated_at = now_iso()
 
-        self._rev = await self._store.commit(self._key, self._progress, settings.active_ttl)
+        # One write, and both of its answers: the new `rev`, and the sticky cancel flag as that
+        # write saw it (TW-STORE-014). Asking the store a second time would be a second round trip
+        # per commit against anything that is not a dictionary.
+        written = await self._store.commit(self._key, self._progress, settings.active_ttl)
+        self._rev = written.rev
         self._last_commit = self._clock()
-        self._cancelled = bool(await self._store.is_cancelled(self._key))
+        self._cancelled = written.cancelled
         self._raise_if_cancelled(state)
 
         await self._store.publish(
@@ -1059,10 +1063,10 @@ async def mark_queued(
         result_kind=result_kind,
         connection=connection,
     )
-    rev = await store.commit(k, progress, settings.active_ttl)
+    written = await store.commit(k, progress, settings.active_ttl)
     await store.publish(
         session,
-        Envelope(token=token, rev=rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict()),
+        Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict()),
     )
     return None
 
@@ -1098,10 +1102,10 @@ async def mark_failed(
     )
     progress.updated_at = now_iso()
     progress.state = ProgressState.FAILED
-    rev = await store.commit(k, progress, settings.active_ttl)
+    written = await store.commit(k, progress, settings.active_ttl)
     await store.publish(
         session,
-        Envelope(token=token, rev=rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict()),
+        Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict()),
     )
     await store.drop(k)
     return None

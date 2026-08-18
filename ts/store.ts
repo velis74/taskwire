@@ -118,6 +118,18 @@ export class DialogVanished extends Error {
 }
 
 /**
+ * What one commit reports back: the new `rev`, and the cancel flag that write saw.
+ *
+ * Both in one return because both are read on every commit and a networked store must not be asked
+ * twice for one write's outcome (TW-STORE-014). The flag is the sticky one (TW-CANCEL-001) as it
+ * stood when the document was written, which is what `Reporter.cancelled` then answers for free.
+ */
+export interface Commit {
+  rev: number;
+  cancelled: boolean;
+}
+
+/**
  * TW-STORE-001: exactly these methods.
  *
  * An interface rather than an abstract class - TypeScript has no ABC, and a store is a port that an
@@ -129,8 +141,13 @@ export class DialogVanished extends Error {
  * Every `ttl` is **seconds**, float, matching the Python side and `settings.activeTtl`.
  */
 export interface TaskwireStore {
-  /** Write the document and bump `rev` in one indivisible step. Resolves with the new `rev`. */
-  commit(key: string, progress: Progress, ttl: number): Promise<number>;
+  /**
+   * Write the document and bump `rev` in one indivisible step.
+   *
+   * Resolves with the new `rev` and the cancel flag the same write saw, so a caller that refreshes
+   * `cancelled` after every commit needs no second round trip (TW-STORE-014).
+   */
+  commit(key: string, progress: Progress, ttl: number): Promise<Commit>;
 
   /** Read. Writes nothing, including TTL (TW-STORE-009). */
   snapshot(key: string): Promise<Snapshot | null>;
@@ -346,7 +363,7 @@ export class MemoryStore implements TaskwireStore {
    * anywhere. The expired document's `rev` is read back for the same reason: the *client* did not
    * forget it just because the key did.
    */
-  async commit(key: string, progress: Progress, ttl: number): Promise<number> {
+  async commit(key: string, progress: Progress, ttl: number): Promise<Commit> {
     const [ns, token] = splitKey(key);
     const existing = this.live(key);
     const previousRev = existing?.rev ?? this.entries.get(key)?.rev ?? 0;
@@ -391,7 +408,7 @@ export class MemoryStore implements TaskwireStore {
       index.set(token, written.createdAt);
       this.index.set(ns, index);
     }
-    return rev;
+    return { rev, cancelled: entry.cancelRequested };
   }
 
   /** TW-RET-002's half of the keepalive. Refreshing an expiry is a write, and is not a read. */

@@ -36,7 +36,7 @@ from taskwire.models import Envelope, Progress, ProgressState, Snapshot, Text
 from taskwire.register import build_register
 from taskwire.reporter import InertReporter, mark_failed, mark_queued, migrate_namespace, new_token, operation
 from taskwire.settings import configure, reset_configuration, settings
-from taskwire.store import key as make_key, MemoryStore
+from taskwire.store import Commit, key as make_key, MemoryStore
 from taskwire.transport import TaskwireTransport
 
 NS = "acct-42"
@@ -75,7 +75,7 @@ class RecordingStore(MemoryStore):
         self.touches = 0
         self._record_bodies = record_bodies
 
-    async def commit(self, key: str, progress: Progress, ttl: float) -> int:
+    async def commit(self, key: str, progress: Progress, ttl: float) -> Commit:
         self.commit_count += 1
         if self._record_bodies:
             self.calls.append(("commit", key))

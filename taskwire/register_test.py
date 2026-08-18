@@ -38,7 +38,7 @@ from taskwire.register import (
     sort_entries,
 )
 from taskwire.reporter import mark_queued, operation, OperationCancelled
-from taskwire.store import key, MemoryStore
+from taskwire.store import Commit, key, MemoryStore
 
 NS = "acct-7"
 """The namespace under test. A resolved string and nothing else (TW-AMB-007)."""
@@ -415,7 +415,7 @@ class _NoWriteStore(MemoryStore):
         super().__init__()
         self.reads_are_open = False
 
-    async def commit(self, key: str, progress, ttl: float) -> int:  # noqa: A002, ANN001
+    async def commit(self, key: str, progress, ttl: float) -> Commit:  # noqa: A002, ANN001
         self._forbid("commit")
         return await super().commit(key, progress, ttl)
 
