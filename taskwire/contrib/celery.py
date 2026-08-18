@@ -118,15 +118,21 @@ def taskwire_task(
                 try:
                     return body(*args, reporter=reporter, **kwargs)
                 except SoftTimeLimitExceeded:
-                    # TW-DLG-006: this is what an unanswered dialog looks like from the outside.
-                    # Retryable, because the question may well be answered on a second attempt.
+                    # TW-DLG-006: an unanswered question is what this death usually is, and the code
+                    # says so only when it is - a worker killed while grinding rows would otherwise
+                    # tell its reader to answer a question nobody asked. `reporter.asking` is local
+                    # and free, which is what makes the distinction affordable here, of all places.
+                    #
                     # Named rather than committed: the exception is on its way out of `operation()`,
-                    # whose exit makes the one terminal write this operation gets (TW-API-001).
-                    reporter.name_error(
-                        DIALOG_TIMEOUT,
-                        Text(key="taskwire.dialog_timeout"),
-                        True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
-                    )
+                    # whose exit makes the one terminal write this operation gets (TW-API-001). When
+                    # it is not a question, nothing is named and the exception's own class is what
+                    # the exit derives the code from, as it does for every other failure.
+                    if reporter.asking:
+                        reporter.name_error(
+                            DIALOG_TIMEOUT,
+                            Text(key="taskwire.dialog_timeout"),
+                            True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
+                        )
                     raise
 
         return run
@@ -257,13 +263,15 @@ def _drive(runner: Callable[[Any], Any], awaitable: Any, *, token: str, session:
         try:
             return runner(awaitable)
         except SoftTimeLimitExceeded:
-            # TW-DLG-006, as `taskwire_task` names it: the class of the exception is whatever the
-            # worker's limit raises, and `dialog_timeout` is what a reader can act on.
-            reporter.name_error(
-                DIALOG_TIMEOUT,
-                Text(key="taskwire.dialog_timeout"),
-                True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
-            )
+            # TW-DLG-006, as `taskwire_task` names it, and on the same condition: `dialog_timeout` is
+            # what a reader can act on when the operation was holding a question, and a lie when it
+            # was not.
+            if reporter.asking:
+                reporter.name_error(
+                    DIALOG_TIMEOUT,
+                    Text(key="taskwire.dialog_timeout"),
+                    True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
+                )
             raise
     finally:
         ambient_unbind(ambient)

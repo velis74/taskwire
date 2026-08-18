@@ -24,7 +24,10 @@ answer a library can invent on a user's behalf.
 
 **The consequence, stated plainly: an unanswered dialog blocks its worker.** Under Celery it blocks
 until that task's own execution timeout kills it, at which point the operation becomes `failed` with
-code `dialog_timeout` and `retryable: true`, and its open dialogs are withdrawn. taskwire solves the
+code `dialog_timeout` and `retryable: true`, and its open dialogs are withdrawn. That code is written
+only when a question was actually open — a worker killed while doing the work reports what its own
+exception names, because telling a reader to answer a question nobody asked is worse than telling
+them nothing. taskwire solves the
 general problem of a blocked worker nowhere; if you need a deadline, implement one at whatever level
 suits your application, as the demo does with `asyncio.wait_for` around the `ask()`.
 

@@ -109,6 +109,7 @@ async def flush() -> None
 def subtask(start: float, end: float) -> Reporter
 def split(*weights: float) -> tuple[Reporter, ...]
 @property token -> str
+@property asking -> bool                         # a question is open on this operation, subtasks too
 @property cancelled -> bool                      # last known, free to poll
 async def was_aborted() -> bool                  # forces a store read
 @property sync -> SyncReporter
@@ -194,6 +195,10 @@ def import_rows(self, reporter, *, rows): ...
 
 run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)   # a viewset action
 ```
+
+Both name `dialog_timeout` on a soft time limit **only when the operation was holding an open
+question** — `reporter.asking` answers that with no store read, which is what makes it affordable at
+the moment a worker is being killed. Otherwise the exception's own class names the error.
 
 `taskwire_task` decorates the body and passes the reporter **by keyword**, so the parameter must be
 named `reporter`; `token` and `session` arrive as task kwargs. `wrap_sync_runner` is for a caller that

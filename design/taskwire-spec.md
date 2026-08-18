@@ -398,8 +398,15 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-DLG-006** The consequence MUST be stated plainly in the docs rather than softened: **an
   unanswered dialog blocks its worker until Celery's own execution timeout kills the task**, at which
   point the operation becomes `failed` with `code: "dialog_timeout"` and `retryable: true`, and its
-  open dialogs are withdrawn (TW-STORE-004). The general problem of a blocked worker is
-  **deliberately unsolved** (TW-CELERY-010).
+  open dialogs are withdrawn (TW-STORE-004). taskwire does not solve the general problem of a blocked
+  worker (TW-CELERY-010).
+
+  `dialog_timeout` MUST be written only when the operation was holding an open question. A worker
+  killed while doing the work reports the error its own exception names, because a code telling a
+  reader to answer a question nobody asked is worse than none. The condition MUST be answerable
+  without a store read - the operation knows whether it is waiting - since it is read at the moment
+  the worker is being killed. Test:
+  `celery_test.py::test_an_execution_limit_still_writes_the_terminal_state`.
 - **TW-DLG-007** `ask()` MUST return only when the store arbitrated a reply. There is no second
   outcome to reconcile, so `DialogAnswer` MUST carry no `timed_out` flag.
 - **TW-DLG-008** If `await_dialog` raises `DialogVanished`, `ask()` MUST propagate it. A vanished

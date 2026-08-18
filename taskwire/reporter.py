@@ -162,6 +162,9 @@ class Reporter:
         # siblings produces the same sum.
         self._children_lock = asyncio.Lock()
         self._ambient_token: Any = None
+        # How many questions this operation is waiting on, counted on the root so a subtask's `ask()`
+        # is visible to whoever handles the worker being killed (TW-DLG-006).
+        self._asking = 0
         # TW-RES-004: a clean exit with a result already written lands in `waiting_input`
         # rather than `done`, and `operation()`'s exit reads this to know which.
         self._result_parked = False
@@ -172,6 +175,20 @@ class Reporter:
     def token(self) -> str:
         """The operation's address. A UUIDv4, minted by the caller."""
         return self._token
+
+    @property
+    def asking(self) -> bool:
+        """Whether this operation is waiting on an answer right now, subtasks included.
+
+        Free, and local: it is what a caller handling a worker's execution limit reads to tell a
+        deadline that expired on a question from one that expired on the work itself (TW-DLG-006).
+        Reading it costs no store round trip, which matters where it is read - the worker is being
+        killed.
+        """
+        root = self
+        while root._parent is not None:
+            root = root._parent
+        return root._asking > 0
 
     @property
     def cancelled(self) -> bool:
@@ -556,7 +573,15 @@ class Reporter:
             Envelope(token=self._token, rev=rev, kind=EnvelopeKind.DIALOG_OPEN, body=request.to_dict()),
         )
 
+        root = self
+        while root._parent is not None:
+            root = root._parent
+        root._asking += 1
         reply = await self._store.await_dialog(self._key, did)
+        # The question is over the moment the store arbitrates it, answered or withdrawn. An
+        # exception on the way out of the wait leaves the count where it is, which is what the count
+        # means: the question is still open, and whoever unwinds this worker died on one.
+        root._asking -= 1
 
         # TW-DLG-012: a dialog on a cancelled operation is flipped to `cancelled` and `ask()` raises
         # OperationCancelled whatever `raise_on_cancel` says. A withdrawal is not an answer, and
@@ -784,6 +809,9 @@ class OperationScope:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._ambient_token: Any = None
+        # How many questions this operation is waiting on, counted on the root so a subtask's `ask()`
+        # is visible to whoever handles the worker being killed (TW-DLG-006).
+        self._asking = 0
         # True when the binding belongs to the CALLER's context rather than to `__aenter__`'s. A
         # `contextvars.Token` may only be reset in the context that created it, and a scope entered
         # from a synchronous frame is entered inside a task of its own whose context is discarded

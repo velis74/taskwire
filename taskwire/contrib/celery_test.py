@@ -165,6 +165,17 @@ def test_the_worker_owns_the_terminal_write_and_runs_without_a_loop():
 
 
 @pytest.mark.usefixtures("_unthrottled")
+class _KilledWhileAsking(MemoryStore):
+    """A store whose wait never returns: the worker is killed inside it.
+
+    Which is what a soft time limit does to a worker parked in `ask()` - the signal is raised at
+    whatever the thread is executing, and the thread is executing the wait.
+    """
+
+    async def await_dialog(self, key: str, did: str):  # noqa: A002, ANN201, ARG002
+        raise SoftTimeLimitExceeded
+
+
 def test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable():
     """TW-DLG-006 / TW-CELERY-010: the blocked-worker problem is DELIBERATELY UNSOLVED.
 
@@ -172,13 +183,13 @@ def test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable():
     taskwire's job is to make that legible rather than to pretend it prevented it: `dialog_timeout`,
     `retryable: true`, and the open dialogs withdrawn.
     """
-    store = MemoryStore()
+    store = _KilledWhileAsking()
     configure_worker(store)
     token = new_token()
 
     @taskwire_task(result_kind="acme.report")
-    def asks_forever(*, reporter) -> None:  # noqa: ARG001
-        raise SoftTimeLimitExceeded
+    def asks_forever(*, reporter) -> None:
+        reporter.sync.ask("confirm", buttons=["ok"])
 
     failures: list[BaseException] = []
 
@@ -206,7 +217,7 @@ def test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable():
 @pytest.mark.usefixtures("_unthrottled")
 def test_the_dialog_timeout_error_reaches_the_client():
     """The same run, watched through a transport, so the reserved code is actually asserted."""
-    store = MemoryStore()
+    store = _KilledWhileAsking()
     seen: list = []
 
     class Recorder(taskwire.TaskwireTransport):
@@ -217,8 +228,8 @@ def test_the_dialog_timeout_error_reaches_the_client():
     token = new_token()
 
     @taskwire_task()
-    def asks_forever(*, reporter) -> None:  # noqa: ARG001
-        raise SoftTimeLimitExceeded
+    def asks_forever(*, reporter) -> None:
+        reporter.sync.ask("confirm", buttons=["ok"])
 
     def worker() -> None:
         try:
@@ -446,8 +457,10 @@ def test_an_execution_limit_still_writes_the_terminal_state():
         terminal = [e for e in seen if e.body.get("state") in {"done", "failed", "cancelled"}]
         assert len(terminal) == 1, f"one terminal envelope, got {[e.body.get('state') for e in terminal]}"
         assert terminal[-1].body["state"] == ProgressState.FAILED.value
-        assert terminal[-1].body["error"]["code"] == DIALOG_TIMEOUT
-        assert terminal[-1].body["error"]["retryable"] is True
+        # No question was open, so the code is the exception's own class rather than
+        # `dialog_timeout` - a reader told to answer a question nobody asked is worse off than one
+        # told the worker ran out of time (TW-DLG-006).
+        assert terminal[-1].body["error"]["code"] == "SoftTimeLimitExceeded"
     finally:
         loop.close()
         reset_configuration()

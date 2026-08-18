@@ -456,17 +456,3 @@ implementation:**
 **What the author may prefer instead:** amending note 19 and TW-CELERY-007 to the signature that
 works, or a different spelling of the two kwargs.
 
----
-
-## taskwire-spec.md §6.1 / TW-DLG-006 — `dialog_timeout` is written whether or not a dialog was open
-
-Both worker entries name `dialog_timeout` on `SoftTimeLimitExceeded` without checking whether the
-operation was holding an open question. A worker killed while grinding through rows therefore reports
-`code: "dialog_timeout"`, `retryable: true` — a code that tells the reader to answer a question
-nobody asked.
-
-TW-DLG-006 describes the death it diagnoses ("an unanswered dialog blocks its worker until Celery's
-own execution timeout kills the task") but states no test on the dialogs, and `waiting_input` is
-derived rather than stored (TW-PROG-010), so distinguishing the two costs a store read at the moment
-the worker is being killed. Left as it is, in both entries, rather than made inconsistent between
-them.
