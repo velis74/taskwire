@@ -112,11 +112,17 @@ something has to settle it.
 on `track()`.
 
 **What I assumed:** the terminal state settles it — `done` resolves with `undefined`, `failed` and
-`cancelled` reject with an `OperationFailed` carrying `progress.error`. A disappearance *after* the
-operation was seen with no terminal state (a TTL expiry) rejects with `OperationGone`; the
-"never written, `fn` settled" case of TW-TS-004 resolves, because nothing failed. A `run()` handle is
-untouched by all of this: TW-TS-002 says `await run(fn)` is `await fn(...)`, and an operation that ends
-`failed` after the start request succeeded must not retroactively reject what the caller already has.
+`cancelled` reject with an `OperationFailed` carrying `progress.error`. The handle reads that state
+off the operation's own document, which outlives the register by `tombstone_ttl` (TW-RET-004), so the
+settlement is reachable on every transport including one that only polls. A disappearance *after* the
+operation was seen with no terminal state rejects with `OperationGone`, which means that document's
+TTL ran out; the "never written, `fn` settled" case of TW-TS-004 resolves, because nothing failed. A
+`run()` handle is untouched by all of this: TW-TS-002 says `await run(fn)` is `await fn(...)`, and an
+operation that ends `failed` after the start request succeeded must not retroactively reject what the
+caller already has.
+
+**Still unstated:** TW-TS-004 carries the settlement rule for a document that exists. No document
+says that the `fn`-settled-and-never-written case resolves rather than rejects.
 
 ---
 
@@ -225,13 +231,13 @@ handle does not settle its promise: a departure is "terminal with nothing to col
 and inventing `done` or `failed` from an absence would be a guess. Nobody awaits an adopted handle —
 it was minted from a payload row, not from a call.
 
-**The questions go with it.** An adopted handle has no poller (TW-REG-002) and no payload ever
-carries the terminal document, so the departure is the only news it will ever get; a client that let
-it say nothing about the entry's open dialogs would leave a modal on screen, in every tab that did
-not start the operation, over a worker that has gone. TW-DLG-016 writes the close rule against the
-dialog's own state rather than against how that state was learnt, and TW-CANCEL-011 says a dialog
-never outlives its operation — so the departure withdraws them exactly as the terminal document and
-the `404` do.
+**The questions go with it.** An adopted handle has no poller (TW-REG-002) and no register payload
+carries a terminal document — the tombstone is reachable by token and by nothing else (TW-RET-004) —
+so the departure is the only news such a handle gets; a client that let it say nothing about the
+entry's open dialogs would leave a modal on screen, in every tab that did not start the operation,
+over a worker that has gone. TW-DLG-016 writes the close rule against the dialog's own state rather
+than against how that state was learnt, and TW-CANCEL-011 says a dialog never outlives its operation
+— so the departure withdraws them exactly as the terminal document and the `404` do.
 
 A visible entry that departs without any terminal state ever having been read leaves the visible
 collection at once rather than lingering: `progressUi.failureLinger` holds a row the client **saw**

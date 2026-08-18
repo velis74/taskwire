@@ -1,10 +1,11 @@
 """Server settings (specification §8.1) and the configured callables that are not settings.
 
-Two things are deliberately absent and their absence is load-bearing:
+There is no `dialog_timeout`: a dialog has no deadline at all (TW-DLG-005), and it may not be
+reintroduced under another name.
 
-There is no `terminal_ttl`: a terminal operation with nothing to collect is **dropped** in the same
-step that makes it terminal (TW-REG-007), not aged out. There is no `dialog_timeout`: a dialog has
-no deadline at all (TW-DLG-005). Neither may be reintroduced under another name.
+Retention is state-driven (TW-RET-001). `active_ttl` covers an operation that is queued, running or
+asking, `result_ttl` an uncollected result, and `tombstone_ttl` the terminal document after the
+register has let it go. There is no timer that ages out a live operation.
 """
 
 from __future__ import annotations
@@ -24,6 +25,15 @@ class Settings:
 
     active_ttl: float = 3600.0
     """Document TTL while the operation is `queued`, `running` or asking. Seconds."""
+
+    tombstone_ttl: float = 900.0
+    """How long a terminal document stays readable at its own address after it leaves the register
+    (TW-RET-004). Seconds; 15 minutes.
+
+    A client that was not looking at the moment an operation ended learns *that* it ended from the
+    absence of a row - and nothing at all about why. The tombstone is what carries the reason: the
+    terminal state, its `error`, and the dialogs in the state the withdrawal left them. It is
+    unlistable and uncountable; only the token reaches it."""
 
     result_ttl: float = 604800.0
     """Backstop on an uncollected result. Seconds; 7 days. Must be aligned with the application's

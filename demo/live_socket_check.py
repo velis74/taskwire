@@ -226,9 +226,10 @@ async def check_export_and_cancel(peer: Any, http: httpx.AsyncClient, pushes: Pu
     """Progress arrives unasked, and a cancel taken over the socket ends the operation.
 
     The 202 is an acknowledgement and not a completion (TW-CANCEL-003): it says the flag was written,
-    and the job stops when its own next `set()` looks. A terminal operation with nothing to collect
-    leaves the store in the same step (TW-REG-007), so the read after it is a 404 rather than a
-    `cancelled` document sitting around.
+    and the job stops when its own next `set()` looks. The terminal write takes the operation out of
+    the register in the same step (TW-REG-007) and leaves the document at its own address for
+    `tombstone_ttl` (TW-RET-004), so the read after it is a `cancelled` document that no listing
+    mentions.
     """
     token = await start(http, EXPORT_JOB, connection)
     if token is None:
@@ -261,8 +262,17 @@ async def check_export_and_cancel(peer: Any, http: httpx.AsyncClient, pushes: Pu
         shape(pushes.of(token)),
     )
 
-    status, _ = await call(peer, "GET", f"/taskwire/{token}")
-    check("the cancelled operation left the store", status == 404, f"status={status}")
+    status, ended = await call(peer, "GET", f"/taskwire/{token}")
+    check("the cancelled operation is readable at its own address", status == 200, f"status={status}")
+    check(
+        "and the document says which of the three endings this was",
+        isinstance(ended, dict) and (ended.get("progress") or {}).get("state") == "cancelled",
+        json.dumps(ended)[:160],
+    )
+
+    status, register = await call(peer, "GET", "/taskwire")
+    listed = [entry.get("token") for entry in (register or {}).get("operations") or []]
+    check("and no listing mentions it", token not in listed, str(listed))
 
 
 async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes, connection: str | None) -> None:
@@ -321,10 +331,29 @@ async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes
 
     reply = {"button": "release", "values": {}}
     status, _ = await call(peer, "POST", f"/taskwire/{token}/dialogs/{dialog.get('id')}", reply)
-    # 410 while the document is still there, 404 once it is dropped, and never a 500: a reply arriving
-    # after a withdrawal is ordinary, and the client closes its modal without a word either way
-    # (TW-DLG-011).
-    check("answering a withdrawn question is 404 or 410", status in {404, 410}, f"status={status}")
+    # A reply arriving after a withdrawal is ordinary and never a 500. It is a 410 rather than a 404
+    # because the document the question belonged to is still there to answer for it (TW-RET-004); the
+    # client closes its modal without a word either way (TW-DLG-011).
+    check("answering a withdrawn question is 410", status == 410, f"status={status}")
+
+    # The reason the terminal document is worth keeping: a reader that was not here for any of the
+    # above still learns which ending this was and why. An absence carries neither.
+    status, remains = await call(peer, "GET", f"/taskwire/{token}")
+    check("the ended operation is readable at its own address", status == 200, f"status={status}")
+    progress = (remains or {}).get("progress") or {}
+    check(
+        "a reader arriving after the end learns the state and the reason",
+        progress.get("state") == "failed" and (progress.get("error") or {}).get("code") == "dialog_timeout",
+        json.dumps(progress)[:200],
+    )
+    check(
+        "and finds the withdrawn question in it, cancelled",
+        any(
+            entry.get("id") == dialog.get("id") and entry.get("state") == "cancelled"
+            for entry in (remains or {}).get("dialogs") or []
+        ),
+        json.dumps((remains or {}).get("dialogs"))[:200],
+    )
 
 
 async def main() -> int:

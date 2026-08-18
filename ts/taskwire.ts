@@ -236,9 +236,9 @@ function normaliseBasePath(path: string): string {
  * resolves in 50 ms while the work runs for a minute, so settling `fn` may not end the search on the
  * spot. One more read decides it.
  *
- * A terminal snapshot is the last document that will ever exist for the token - the store commits the
- * terminal state, publishes it and drops the document in one step (TW-REG-007) - so the loop stops on
- * it and the `404` that follows is never even issued, let alone treated as an error.
+ * A terminal snapshot is the last state the token will ever be in - the store freezes it there
+ * (TW-STORE-010) and the entry leaves the register in the step that writes it (TW-REG-007) - so the
+ * loop stops on it and reads no further, whatever the document does afterwards.
  */
 class TokenPoller {
   private readonly ladder = new PollLadder();
@@ -966,8 +966,8 @@ export class Taskwire implements OperationHost, RegisterClient {
    *
    * None of the three moves any state here. A cancel changes nothing until the operation notices
    * (TW-CANCEL-001), and a release leaves the register in the same step it releases (TW-REG-007) -
-   * which arrives as the terminal document over a socket, and as the next read's absence without
-   * one (TW-CORE-002).
+   * which arrives as the terminal document, over a socket as the push and without one as the next
+   * read (TW-CORE-002).
    */
   async cancel(token: string): Promise<void> {
     try {

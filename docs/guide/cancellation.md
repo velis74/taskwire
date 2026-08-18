@@ -57,3 +57,17 @@ timeout, this is the only thing that can wake such a worker.
 
 An operation holding an **uncollected result** refuses a cancel with `409`: its work is over and
 there is nothing left to interrupt. The affordance there is dismiss, not cancel.
+
+## Learning about it afterwards
+
+A cancelled operation leaves the register at once, but its document stays readable at
+`GET /taskwire/{token}` for `settings.tombstone_ttl` (900 s), carrying `cancelled` and the dialogs
+the cancel withdrew. That is how a client that was not watching finds out: a missing row says only
+that nothing is running, while the document says the user stopped it — as against a crash, a clean
+finish, or a token whose 15 minutes are up.
+
+The same read is what the endpoints answer from. Cancelling an operation that has already ended is
+`409 already_terminal`, not `404`, and replying to a question it withdrew is `410`.
+
+Once the tombstone expires the token is unknown again, and that is the one case in which a client
+genuinely cannot say why an operation ended.

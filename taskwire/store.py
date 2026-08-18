@@ -339,7 +339,13 @@ class MemoryStore(TaskwireStore):
 
             # TW-KEY-003: indexed only if shared. The privacy decision was made at the opening
             # write and is read back off the stored document, never off this call's argument.
-            if written.is_shared:
+            #
+            # A terminal document is never in the register (TW-REG-007), and the store enforces that
+            # rather than trusting the caller to follow a write with a de-registration: the two would
+            # be two steps, and a reader between them would see a `failed` row.
+            if written.is_terminal:
+                self._index.get(ns, {}).pop(token, None)
+            elif written.is_shared:
                 self._index.setdefault(ns, {})[token] = written.created_at
             return Commit(rev=rev, cancelled=entry.cancel_requested)
 
@@ -622,6 +628,10 @@ class MemoryStore(TaskwireStore):
             progress.result = None
             progress.state = ProgressState.DONE
             entry.rev = max(self._now_ms(), entry.rev + 1)
+            # The write that ends an operation takes it out of the register, wherever that write
+            # happens (TW-REG-007). This one ends it as surely as a terminal `commit` does.
+            ns, token = split_key(key)
+            self._index.get(ns, {}).pop(token, None)
             return released
 
 

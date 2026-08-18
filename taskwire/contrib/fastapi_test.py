@@ -93,9 +93,9 @@ def _make_app(memory: object) -> FastAPI:
             result_kind="report",
             store=memory,
         ):
-            # Read the opening document from inside the block: a terminal operation with nothing to
-            # collect leaves the store in the same step it becomes terminal (TW-REG-007), so there
-            # is nothing to observe after the `async with`.
+            # Read the opening document from inside the block: `origin_session` and
+            # `origin_connection` are what this asserts, and inside the block is where they are
+            # written (TW-PROG-006).
             snapshot = await memory.snapshot(taskwire.key(client.session, token))
         return {
             "token": token,

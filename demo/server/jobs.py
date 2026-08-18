@@ -246,8 +246,8 @@ async def hold_the_line(reporter: Reporter) -> None:
     **Start it, watch the question arrive, and then leave it alone.** Fifteen seconds later the
     question disappears from every tab of the namespace and the operation leaves the register,
     `failed` with code `dialog_timeout` and `retryable: true`; a tab that was part-way through
-    answering gets 410 while the document is still there and 404 once it is dropped, and closes its
-    modal without a word either way (TW-DLG-011).
+    answering gets 410 for as long as the terminal document is readable and 404 once it has expired,
+    and closes its modal without a word either way (TW-DLG-011).
 
     Those fifteen seconds belong to **this function**. `ask()` has no timeout and must never grow
     one (TW-DLG-005), so a deadline has to be written where the cost of waiting is actually known:

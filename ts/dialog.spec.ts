@@ -206,6 +206,10 @@ describe('dialogs', () => {
     await store.resolveDialog(key(token), did, { button: 'ok', values: {} });
     await done;
     expect(await store.listOperations(NS)).toEqual([]);
+    // Terminal: out of the register in the same step (TW-REG-007), and readable at its own address
+    // afterwards like any other tombstone - privacy governs listing and fan-out, never reach
+    // (TW-PRIV-002).
+    expect((await store.snapshot(key(token)))?.progress.state).toBe('done');
   });
 
   it('reserves the cancellation sentinel so it is never a button a user can press', () => {

@@ -401,8 +401,8 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('a terminal entry is gone from the very next payload', async () => {
-    // TW-REG-007 / TW-INV-021: the terminal write and the drop are one step, so the client never
-    // sees a `done` row - it sees a shorter list. That is not an error and not a reason to retry.
+    // TW-REG-007 / TW-INV-021: the terminal write and the departure are one step, so the client
+    // never sees a `done` row - it sees a shorter list. That is not an error and not a reason to retry.
     const going = new_token();
     const staying = new_token();
     server.list(summaryWire(going), summaryWire(staying, { createdAt: '2026-01-01T00:00:02.000Z' }));
@@ -442,7 +442,7 @@ describe('tw.register (TW-REG-001..007)', () => {
 
   it('a question on a departed entry closes with the entry (TW-CANCEL-011, TW-DLG-016)', async () => {
     // An entry this loop adopted has no poller of its own (TW-REG-002), and no payload ever carries
-    // the terminal document - it is written and dropped in one step (TW-REG-007). So the departure
+    // the terminal document - the write that makes it terminal de-indexes it (TW-REG-007). So the departure
     // is the only news a tab that did not start the operation will ever get, and a client that let
     // it say nothing about the question would leave a modal on screen over a worker that is gone.
     const elsewhere = new_token();
@@ -679,7 +679,7 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     expect(tokensOf(tw.operations)).toEqual([failed.token]);
     // A corpse costs nothing: no poll of either token while it is held on screen.
     expect(server.requests.slice(after).some((request) => request.url.endsWith(failed.token))).toBe(false);
-    // And it is in no register and no aggregate - the server dropped it, so there is nothing to count.
+    // And it is in no register and no aggregate - the server took it out, so there is nothing to count.
     expect(tw.register).toEqual([]);
     expect(tw.aggregate).toBeNull();
 
@@ -951,8 +951,9 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
   });
 
   it('a terminal push is a departure, and needs no read to be one (TW-REG-007)', async () => {
-    // The server drops a terminal entry in the same step that ends it, so the row has left every
-    // register there is and the envelope that announced the state announced the departure too.
+    // The server takes a terminal entry out of the register in the same step that ends it, so the row
+    // has left every register there is and the envelope that announced the state announced the
+    // departure too.
     const token = new_token();
     server.list(summaryWire(token));
     await poll(2);

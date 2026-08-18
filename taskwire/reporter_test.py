@@ -62,8 +62,8 @@ class RecordingStore(MemoryStore):
     """A `MemoryStore` that remembers what it was asked to do, in the order it was asked.
 
     `calls` is what proves the commit/publish ordering (TW-CORE-001); `commits` keeps a shallow copy
-    of every committed document, which is the only way to observe a terminal write - the document
-    itself is dropped in the same step (TW-REG-007).
+    of every committed document, so a terminal write is observable as the write it is rather than
+    only through what it left behind.
     """
 
     def __init__(self, *, record_bodies: bool = True, clock: Any = None) -> None:
@@ -168,12 +168,11 @@ async def test_commit_precedes_publish():
     assert len(ordering) % 2 == 0
     assert ordering == ["commit", "publish"] * (len(ordering) // 2)
 
-    # And the drop is last of all: the terminal envelope goes out before the document that would
-    # have told a client the same thing disappears (TW-REG-007). Asserting only that `drop` came
-    # last would hold for a drop that preceded a non-terminal publish, so the envelope's own body
-    # is what is checked - it is the last thing any client will ever hear about this operation.
-    assert store.calls[-1][0] == "drop"
-    assert store.calls[-2][0] == "publish"
+    # And the terminal envelope is the last thing published: it is what a watching client hears,
+    # and the tombstone the write leaves behind (TW-RET-004) is what an unwatching one reads. The
+    # envelope's own body is what is checked rather than merely the ordering, because a `publish`
+    # last would also hold for a non-terminal one.
+    assert store.calls[-1][0] == "publish"
     last_ns, last_envelope = store.published[-1]
     assert last_ns == NS
     assert last_envelope.token == token
@@ -496,8 +495,12 @@ async def test_terminal_entry_is_absent_from_the_very_next_read():
         listed = await store.list_operations(NS)
         assert [snapshot.token for snapshot in listed] == [token]
 
-    assert await store.snapshot(key) is None
     assert await store.list_operations(NS) == []
+    # The document itself outlives the register for `tombstone_ttl` (TW-RET-004), carrying the one
+    # thing the absence cannot: which of the three terminal states this was.
+    tombstone = await store.snapshot(key)
+    assert tombstone is not None
+    assert tombstone.progress.state is ProgressState.DONE
 
     register = build_register(await store.list_operations(NS), client)
     assert register.operations == []
@@ -851,19 +854,23 @@ def _running(snapshot: Snapshot) -> Progress:
     return progress
 
 
-async def test_mark_failed_writes_the_error_and_drops_the_entry():
+async def test_mark_failed_writes_the_error_and_leaves_the_register():
     """TW-CELERY-004's shape: a dispatch that never reached a worker still ends the operation.
 
-    It drops the entry in the same step, exactly as `operation()`'s exit does - a terminal entry
-    with nothing to collect does not linger (TW-REG-007).
+    It takes the entry out of the register in the same step, exactly as `operation()`'s exit does
+    (TW-REG-007), and leaves the document readable at its own address (TW-RET-004) - the caller is
+    already watching this token, and a `404` would tell it nothing about why nothing ever started.
     """
     store = MemoryStore()
     token = new_token()
     await mark_queued(token, session="ns", result_kind="k", store=store)
 
     await mark_failed(token, session="ns", error=RuntimeError("broker unreachable"), store=store)
-    assert await store.snapshot(make_key("ns", token)) is None, "dropped in the same step"
-    assert await store.list_operations("ns") == []
+    assert await store.list_operations("ns") == [], "out of the register in the same step"
+    ended = await store.snapshot(make_key("ns", token))
+    assert ended is not None
+    assert ended.progress.state is ProgressState.FAILED
+    assert ended.progress.error.message.text == "broker unreachable"
 
     # Unknown token, absent namespace and absent store are all quiet no-ops.
     await mark_failed(new_token(), session="ns", error=RuntimeError("x"), store=store)

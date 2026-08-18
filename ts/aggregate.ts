@@ -46,7 +46,7 @@ const DOMINANCE: Record<AggregateState, number> = {
  * TW-REG-004 and TW-PROG-010 say the same thing from two directions: `waiting_input` comes from the
  * entry's own open dialogs and its uncollected result, never from whatever the last writer left in
  * `progress.state`. A terminal state cannot reach here from a register payload at all (TW-REG-007
- * dropped the entry), and one that arrives from a locally merged copy is reported as `running`, so
+ * took the entry out), and one that arrives from a locally merged copy is reported as `running`, so
  * no count and no domination can ever see one.
  */
 export function entryState(snapshot: Snapshot): AggregateState {

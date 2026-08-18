@@ -41,7 +41,14 @@ def operation(token: str | None, *, session: str | None = None,
 ```
 
 An **async and synchronous** context manager. Entering writes `running`; leaving writes exactly one
-terminal state and drops the entry in the same step. It re-raises in every failure case.
+terminal state, which takes the entry out of the register in the same step. It re-raises in every
+failure case.
+
+That write leaves a **tombstone**: the document stays readable at `GET /taskwire/{token}` for
+`settings.tombstone_ttl`, carrying the terminal state, its `error` and the dialogs the terminal write
+withdrew. It is in no register and no count — only the token reaches it — and it is how a client that
+was not watching learns whether the operation was `done`, `failed` or `cancelled` rather than merely
+gone.
 
 The one exception to "one terminal state" is a parked result: an operation whose body called
 `set_result()` leaves in `waiting_input` holding the result, and the release is what ends it
@@ -69,6 +76,11 @@ async def mark_failed(token, *, session, error: BaseException | Error, store=Non
 
 The web side's writes. `mark_queued` fixes `result_kind` and `origin_connection` for the operation's
 whole life; the worker that later enters `operation()` inherits them and cannot change them.
+
+`mark_failed` is the terminal write for a job that never reached a worker — a broker that refused the
+task, a command that raised before dispatch. It leaves exactly what `operation()`'s exit leaves: the
+entry out of the register, and a tombstone carrying `failed` and the `error` for `tombstone_ttl`, so
+the token the caller is already watching answers with the failure instead of hanging.
 
 ### `migrate_namespace(...)`
 
@@ -230,8 +242,8 @@ class Commit:                    # frozen: the new rev, and the flag that write 
     cancelled: bool
 
 class TaskwireStore(ABC):
-    async def commit(self, key, progress, ttl) -> Commit
-    async def snapshot(self, key) -> Snapshot | None
+    async def commit(self, key, progress, ttl) -> Commit       # a terminal write de-indexes
+    async def snapshot(self, key) -> Snapshot | None           # a tombstone answers like any other
     async def touch(self, key, ttl) -> bool
     async def list_operations(self, ns) -> list[Snapshot]
     async def put_dialog(self, key, dialog, ttl) -> int
@@ -242,7 +254,7 @@ class TaskwireStore(ABC):
     async def request_cancel(self, key) -> int
     async def is_cancelled(self, key) -> bool
     async def publish(self, ns, envelope) -> None              # never raises
-    async def drop(self, key) -> None
+    async def drop(self, key) -> None                          # removes a document outright
     async def migrate(self, from_ns, to_ns) -> int
 
 class TaskwireTransport(ABC):
@@ -280,6 +292,7 @@ rule is wrong and the specification changes — not the suite.
 |---|---|---|
 | `active_ttl` | 3600 s | document TTL while queued, running or asking |
 | `result_ttl` | 604800 s | backstop on an uncollected result |
+| `tombstone_ttl` | 900 s | how long a terminal document answers at its own address after it leaves the register |
 | `progress_interval` | 0.25 s | latest-wins coalescing window |
 | `push_timeout` | 2 s | bound on any single `notify()` |
 | `max_data_bytes` | 16384 | encoded cap on `data`, dialog `params`, `result` |
@@ -288,19 +301,28 @@ rule is wrong and the specification changes — not the suite.
 | `rest_prefix` | `/taskwire` | mount point |
 | `keepalive_period` | `active_ttl / 4` | derived, not configurable: how often a long silent phase touches the TTL |
 
-There is no `terminal_ttl` and no `dialog_timeout`: a terminal operation with nothing to collect is
-dropped rather than aged out, and a dialog has no deadline at all.
+There is no `terminal_ttl` and no `dialog_timeout`. A terminal operation is out of the register in
+the step that ends it, never aged out of it, and `tombstone_ttl` is not that TTL under another name:
+it times how long one document answers **by token**, and what it times is neither listed nor counted.
+A dialog has no deadline at all.
 
 ## REST
 
 | Method & path | Success | Failures |
 |---|---|---|
 | `GET {prefix}` | `200` `Register` | — |
-| `GET {prefix}/{token}` | `200` `Snapshot` | `404` |
-| `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410`, `422` |
-| `POST {prefix}/{token}/cancel` | `202` | `404`, `409` |
-| `POST {prefix}/{token}/collect` | `204` | `404`, `409` |
-| `POST {prefix}/{token}/dismiss` | `204` | `404`, `409` |
+| `GET {prefix}/{token}` | `200` `Snapshot`, terminal ones included | `404` unknown, foreign, or a tombstone that has expired |
+| `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410` withdrawn, `422` |
+| `POST {prefix}/{token}/cancel` | `202` | `404`; `409` `already_terminal` or `holds_an_uncollected_result` |
+| `POST {prefix}/{token}/collect` | `204` | `404`; `409` `no_uncollected_result` |
+| `POST {prefix}/{token}/dismiss` | `204` (idempotent, unknown tokens included) | `404` malformed token; `409` `no_uncollected_result` |
 
 Unknown and foreign tokens both return **404, never 403** — a 403 would confirm the token exists in
 somebody's namespace.
+
+While the tombstone is readable these endpoints answer about a token they still know, which is what
+separates "this operation has ended" from "no such token": a cancel on a finished operation is `409
+already_terminal`, a reply to a dialog its terminal write withdrew is `410`, and a second collect is
+`409 no_uncollected_result`. A second dismiss stays `204` — an operation that has already ended is
+the state a dismissing caller asked for. Once the tombstone expires the token is unknown again:
+cancel and collect answer `404`, and dismiss still answers `204`.

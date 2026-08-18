@@ -84,8 +84,14 @@ aggregate's `waiting_input` state lights the indicator either way.
 ## Terminal entries leave immediately
 
 An operation that reaches a terminal state **with nothing to collect leaves the register in the same
-step** — there is no `terminal_ttl`, no linger and no tombstone. The terminal envelope *is* the
-notification, and the awaiting caller already has its answer.
+step** — there is no `terminal_ttl` and no linger. The terminal envelope *is* the notification, and
+the awaiting caller already has its answer. The store enforces it off the document's own state, so
+no read of the list can catch a `failed` row on its way out.
+
+Leaving the list is not disappearing. The document itself answers at `GET /taskwire/{token}` for
+`settings.tombstone_ttl` (900 s), so a client that missed the envelope can still ask which of `done`,
+`failed` and `cancelled` this was. That **tombstone** is reachable by token only: it is in no
+register, in no count, and there is never more than one of it per operation.
 
 If you want a failed row to stay on screen a moment longer, that is `progressUi.failureLinger`, and
 it is purely the client holding on to a row it watched depart.

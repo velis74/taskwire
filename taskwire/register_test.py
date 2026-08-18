@@ -271,32 +271,38 @@ async def test_aggregate_never_reports_done_or_failed():
     seen_states = {state for state, _, _ in store.samples}
     assert terminal_names <= seen_states, f"the terminal writes must have been sampled: {seen_states}"
 
+    counted = 0
     for envelope_state, sampled, listed in store.samples:
-        # Never skipped silently: an aggregate that came back `None` here would make every
-        # assertion below vacuous, and the `keeper` operation exists precisely so none does.
-        assert sampled is not None, f"the {envelope_state!r} envelope was published over an empty register"
+        assert not any(s in TERMINAL_STATES for s in listed), (
+            f"a {envelope_state!r} entry was listed: the terminal write takes it out of the register "
+            f"in the same step (TW-REG-007), so no read can ever catch one"
+        )
+        if sampled is None:
+            # The last operation of the namespace ending leaves an empty register, which reports
+            # nothing at all rather than a zeroed document (TW-REG-017).
+            assert not listed
+            continue
+        counted += 1
         assert sampled.state in {ProgressState.QUEUED, ProgressState.RUNNING, ProgressState.WAITING_INPUT}, (
             f"the aggregate published alongside a {envelope_state!r} envelope was {sampled.state}"
         )
         assert set(sampled.data) == COUNT_KEYS, "there is no `done` or `failed` count to carry one"
         assert listed, f"the {envelope_state!r} sample listed no operations at all"
 
-    # The assertions above must have been made *against a terminal document*, otherwise they only
-    # prove that a register of running entries aggregates to `running`. The terminal write and the
-    # publish happen before the drop (TW-REG-007), so this window exists and is exactly the one
-    # TW-REG-015 has to survive.
-    observed_in_window = [
-        state
-        for state, _, listed in store.samples
-        if state in terminal_names and any(s in TERMINAL_STATES for s in listed)
-    ]
-    assert terminal_names <= set(observed_in_window), (
-        f"no sample caught each terminal document while it was still listed: {store.samples}"
-    )
+    assert counted, "every sample was an empty register; the assertions above proved nothing"
 
-    # ...and the reason: the entries are gone, not merely uncounted.
+    # And each of the three terminal envelopes was published while its own document was already out
+    # of the register - which is what leaves the aggregate with nothing terminal to dominate over.
+    terminal_samples = [state for state, _, _ in store.samples if state in terminal_names]
+    assert terminal_names <= set(terminal_samples), f"a terminal envelope was never sampled: {store.samples}"
+
+    # ...and the reason: the entries left the register. The documents themselves are readable at
+    # their own addresses for `tombstone_ttl` (TW-RET-004), which is what tells a late reader that
+    # `breaks` failed rather than merely vanished.
     assert await store.list_operations(NS) == []
-    assert await store.snapshot(key(NS, "breaks")) is None
+    broken = await store.snapshot(key(NS, "breaks"))
+    assert broken is not None
+    assert broken.progress.state is ProgressState.FAILED
     assert build_register([], _client()).aggregate is None
 
 
@@ -388,8 +394,12 @@ async def test_private_operations_are_not_in_the_register_or_the_aggregate():
             assert await register_tokens() == [shared]
             assert await total() == 1
 
-        # terminal: it left the store in the same step (TW-PRIV-005, TW-REG-007).
-        assert await store.snapshot(key(NS, private)) is None
+        # terminal: out of the register in the same step (TW-PRIV-005, TW-REG-007), and readable
+        # at its own address afterwards like any other tombstone - privacy governs listing and
+        # fan-out, never reach (TW-PRIV-002).
+        ended = await store.snapshot(key(NS, private))
+        assert ended is not None
+        assert ended.progress.state is ProgressState.DONE
         assert await register_tokens() == [shared]
         assert await total() == 1
 

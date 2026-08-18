@@ -109,7 +109,10 @@ async def test_a_dispatch_failure_is_retryable():
         assert terminal, "the failure must reach the client as an envelope"
         assert terminal[-1].body["error"]["code"] == DISPATCH_FAILED
         assert terminal[-1].body["error"]["retryable"] is True
-        assert await store.snapshot(make_key(NS, token)) is None, "and the entry is dropped (TW-REG-007)"
+        ended = await store.snapshot(make_key(NS, token))
+        assert ended is not None, "the tombstone carries the failure a late reader would otherwise miss"
+        assert ended.progress.error.code == DISPATCH_FAILED
+        assert await store.list_operations(NS) == [], "and the entry is out of the register (TW-REG-007)"
     finally:
         reset_configuration()
 
@@ -153,8 +156,11 @@ def test_the_worker_owns_the_terminal_write_and_runs_without_a_loop():
     assert observed == ["body ran"]
     assert result == ["imported"]
 
-    # The worker owns the terminal write, and a terminal entry with nothing to collect is dropped.
-    assert asyncio.run(store.snapshot(make_key(NS, token))) is None
+    # The worker owns the terminal write, and it takes the entry out of the register while leaving
+    # the document readable (TW-REG-007, TW-RET-004).
+    ended = asyncio.run(store.snapshot(make_key(NS, token)))
+    assert ended is not None
+    assert ended.progress.state is ProgressState.DONE
     reset_configuration()
 
 
@@ -189,9 +195,11 @@ def test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable():
     thread.join(timeout=15)
     assert not failures, failures
 
-    # The document is dropped with the terminal write, so the error is observed on the envelope -
-    # which is exactly how a client sees it.
-    assert asyncio.run(store.snapshot(make_key(NS, token))) is None
+    # The error is observed on the envelope, which is how a watching client sees it, and on the
+    # tombstone, which is how one that was not watching reads it afterwards.
+    ended = asyncio.run(store.snapshot(make_key(NS, token)))
+    assert ended is not None
+    assert ended.progress.error.code == DIALOG_TIMEOUT
     reset_configuration()
 
 
@@ -311,8 +319,12 @@ def test_an_action_reports_through_the_ambient_reporter():
         )
         assert run(action(**kwargs)) == "4 rows"
 
-        # One terminal write, and the entry left the store in the same step (TW-REG-007).
-        assert asyncio.run(store.snapshot(make_key(NS, token))) is None
+        # One terminal write, and it took the entry out of the register in the same step
+        # (TW-REG-007) while leaving the document readable at its own address.
+        ended = asyncio.run(store.snapshot(make_key(NS, token)))
+        assert ended is not None
+        assert ended.progress.state is ProgressState.DONE
+        assert asyncio.run(store.list_operations(NS)) == []
     finally:
         loop.close()
         reset_configuration()

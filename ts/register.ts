@@ -22,10 +22,11 @@
  * explicit `show()` - and five out: `hide()`, `done`, `failureLinger` elapsed after
  * `failed`/`cancelled`, `close()` and dispose.
  *
- * **`failureLinger` holds a corpse, not a row.** The server drops a terminal entry in the same step
- * that ends it (TW-REG-007), so the client is holding its own last copy of a row it saw depart
- * (TW-REG-015). It causes no re-poll, does not resurrect the entry into `tw.register`, and is not
- * counted in the recomputed aggregate - the lingering handle is in the visible collection only.
+ * **`failureLinger` holds a corpse, not a row.** The server takes a terminal entry out of the
+ * register in the same step that ends it (TW-REG-007), so the client is holding its own last copy of
+ * a row it saw depart (TW-REG-015). It causes no re-poll, does not resurrect the entry into
+ * `tw.register`, and is not counted in the recomputed aggregate - the lingering handle is in the
+ * visible collection only.
  *
  * **Nothing here is persisted and nothing is restored** (TW-REG-018, TW-REG-020). A reconnecting
  * client reads the register and rebuilds from the payload; the visible collection, the selection and
@@ -589,8 +590,9 @@ export class RegisterState {
   }
 
   /**
-   * A terminal state is a departure (TW-REG-007): the server drops the entry in the same step that
-   * ends it, so the row has left every register there is and no read has to say so.
+   * A terminal state is a departure (TW-REG-007): the server takes the entry out of the register in
+   * the same step that ends it, so the row has left every register there is and no read has to say
+   * so.
    *
    * Dropping it here is what lets the aggregate and the selection follow a push while the ladder is
    * held. The visible collection is unaffected: `failureLinger` holds its own last copy of a row it

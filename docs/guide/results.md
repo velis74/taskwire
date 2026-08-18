@@ -79,10 +79,19 @@ POST /taskwire/{token}/dismiss    ->  204   "I do not want it"
 arbiter, so a collect racing a dismiss releases exactly once — which matters because each release
 fires the hook, and an application deleting its own artefact there would otherwise delete it twice.
 
+**The release is what ends the operation.** The body of an operation holding a result finished long
+ago; `done` is written by the collect or the dismiss, and that write is what takes the entry out of
+the register. The document stays readable at `GET /taskwire/{token}` for `settings.tombstone_ttl`
+afterwards, so a tab that collected in another window sees `done` rather than a hole. The
+`result_ttl` backstop is the third release and the one exception: it releases by expiry, so it
+leaves nothing behind to read.
+
 They differ in exactly one way, for that same reason:
 
 - **dismiss is idempotent** — dismissing twice is harmless, so a second call answers `204` again;
-- **collect is not** — a second call answers `404`.
+- **collect is not** — a second call answers `409 no_uncollected_result`. The token is known and
+  there is nothing left to hand back, which is a different answer from "no such token", and it is
+  the tombstone that lets the endpoint tell them apart.
 
 Both refuse with `409` an operation that is `queued`, `running`, or holding an open dialog. Releasing
 is not cancelling, and a blocked worker is not a collectable result. For the same reason an operation

@@ -136,9 +136,12 @@ async def test_contextvar_does_not_leak_across_sequential_operations():
 
     assert current_reporter() is None
 
-    # The first operation is terminal and dropped (TW-REG-007), so nothing of the second's could have
-    # landed on it - but assert the key is gone rather than inferring it.
-    assert await store.snapshot(make_key("ns", first_token)) is None
+    # The first operation is terminal, so nothing of the second's could have landed on it - but read
+    # its tombstone rather than inferring it: it failed at its own 10 %, not at the second's 77 %.
+    first = await store.snapshot(make_key("ns", first_token))
+    assert first is not None
+    assert first.progress.state is ProgressState.FAILED
+    assert first.progress.percent == pytest.approx(10.0)
 
 
 @pytest.mark.usefixtures("_unthrottled")

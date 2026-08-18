@@ -94,7 +94,13 @@ redis.call('SET', progress_key, cjson.encode(doc), 'EX', ttl)
 if redis.call('EXISTS', cancel_key) == 1 then redis.call('EXPIRE', cancel_key, ttl) end
 
 -- TW-KEY-003: indexed only if shared, and the decision is read off the STORED document.
-if doc.result_kind ~= nil and doc.result_kind ~= cjson.null then
+--
+-- A terminal document is never in the register (TW-REG-007). De-indexing it here rather than in a
+-- second call from the caller is what makes that true of every read: two steps would leave a window
+-- in which a `failed` row is listed, and the register is read continuously.
+if doc.state == 'done' or doc.state == 'failed' or doc.state == 'cancelled' then
+  redis.call('ZREM', index_key, token)
+elseif doc.result_kind ~= nil and doc.result_kind ~= cjson.null then
   redis.call('ZADD', index_key, created_at, token)
 end
 
@@ -189,8 +195,8 @@ return withdrawn
 """
 
 _RELEASE_RESULT = """
-local progress_key, rev_key, dialogs_key = KEYS[1], KEYS[2], KEYS[3]
-local now_ms = tonumber(ARGV[1])
+local progress_key, rev_key, dialogs_key, index_key = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local now_ms, token = tonumber(ARGV[1]), ARGV[2]
 
 local raw = redis.call('GET', progress_key)
 if not raw then return nil end
@@ -213,6 +219,10 @@ local previous_rev = tonumber(redis.call('GET', rev_key) or '0')
 local rev = now_ms
 if previous_rev + 1 > rev then rev = previous_rev + 1 end
 redis.call('SET', rev_key, rev, 'KEEPTTL')
+
+-- The write that ends an operation takes it out of the register, wherever that write happens
+-- (TW-REG-007). This one ends it as surely as a terminal commit does.
+redis.call('ZREM', index_key, token)
 return released
 """
 
@@ -475,8 +485,8 @@ class RedisStore(TaskwireStore):
     async def release_result(self, key: str) -> Result | None:  # noqa: A002
         k = self._keys(key)
         released = await self._release_result(
-            keys=[k["progress"], k["rev"], k["dialogs"]],
-            args=[self._now_ms()],
+            keys=[k["progress"], k["rev"], k["dialogs"], k["index"]],
+            args=[self._now_ms(), k["token"]],
         )
         if released is None:
             return None

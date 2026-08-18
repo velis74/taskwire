@@ -148,9 +148,11 @@ def test_a_cancelled_export_stops_without_the_job_asking(http: TestClient) -> No
 
     assert http.post(f"/taskwire/{token}/cancel").status_code == 202
 
-    # A terminal operation with nothing to collect leaves the store in the same step (TW-REG-007),
-    # so "gone" is the expected end state rather than a `cancelled` document sitting around.
-    assert _wait(http, token, lambda s: s["progress"]["state"] == "cancelled") is None
+    # The operation leaves the register in the same step it ends (TW-REG-007) and stays readable at
+    # its own address (TW-RET-004), which is how a page that was not watching learns it was
+    # cancelled rather than merely gone.
+    ended = _wait(http, token, lambda s: s["progress"]["state"] == "cancelled")
+    assert ended is not None, "the tombstone must say `cancelled`"
     assert http.get("/taskwire").json()["operations"] == []
 
 
@@ -215,8 +217,8 @@ def test_an_unanswered_question_dies_with_the_worker_that_asked_it(http: TestCli
     The deadline here is `hold_the_line`'s own `asyncio.wait_for` - taskwire has none to offer
     (TW-DLG-005) and the demo has no Celery to impose one. When it expires the operation goes
     `failed` and the question goes with it, so nothing is left on screen pointing at a worker that
-    is no longer running. A reply arriving after that is 404 rather than an error the client has to
-    explain (TW-DLG-011).
+    is no longer running. A reply arriving after that is a 410 - the question was withdrawn under
+    the answerer - rather than an error the client has to explain (TW-DLG-011).
     """
     token = _start(http, "hold")
     snapshot = _wait(http, token, lambda s: any(d["state"] == "open" for d in s["dialogs"]))
@@ -225,11 +227,14 @@ def test_an_unanswered_question_dies_with_the_worker_that_asked_it(http: TestCli
     dialog = next(d for d in snapshot["dialogs"] if d["state"] == "open")
 
     # Nobody answers, which is the whole test.
-    assert _wait(http, token, lambda _s: False) is None
+    ended = _wait(http, token, lambda s: s["progress"]["state"] == "failed")
+    assert ended is not None, "the deadline must end the operation"
+    assert ended["progress"]["error"]["code"] == "dialog_timeout"
+    assert all(d["state"] == "cancelled" for d in ended["dialogs"]), "the question went with it"
     assert http.get("/taskwire").json()["operations"] == []
 
     late = http.post(f"/taskwire/{token}/dialogs/{dialog['id']}", json={"button": "release", "values": {}})
-    assert late.status_code in (404, 410)
+    assert late.status_code == 410
 
 
 def test_two_sessions_never_see_each_others_work(http: TestClient) -> None:

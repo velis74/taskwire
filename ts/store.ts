@@ -403,7 +403,13 @@ export class MemoryStore implements TaskwireStore {
 
     // TW-KEY-003: indexed only if shared. The privacy decision was made at the opening write and is
     // read back off the stored document, never off this call's argument.
-    if (isShared(written)) {
+    //
+    // A terminal document is never in the register (TW-REG-007), and the store enforces that rather
+    // than trusting the caller to follow a write with a de-registration: the two would be two steps,
+    // and a reader between them would see a `failed` row.
+    if (isTerminal(written)) {
+      this.index.get(ns)?.delete(token);
+    } else if (isShared(written)) {
       const index = this.index.get(ns) ?? new Map<string, string>();
       index.set(token, written.createdAt);
       this.index.set(ns, index);
@@ -711,6 +717,10 @@ export class MemoryStore implements TaskwireStore {
     progress.result = null;
     progress.state = 'done';
     entry.rev = Math.max(this.nowMs(), entry.rev + 1);
+    // The write that ends an operation takes it out of the register, wherever that write happens
+    // (TW-REG-007). This one ends it as surely as a terminal `commit` does.
+    const [ns, token] = splitKey(key);
+    this.index.get(ns)?.delete(token);
     return released;
   }
 }

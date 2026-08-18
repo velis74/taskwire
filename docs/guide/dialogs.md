@@ -70,9 +70,12 @@ whether it left for `answered` or `cancelled`. Never render a countdown: a dialo
 deadline for any party to renegotiate, so there is no field to count down.
 
 A withdrawal announces itself through no envelope of its own. The operation's terminal state, the
-`404` that follows the drop, and the entry leaving the register are the three ways a client learns
-it, and the TypeScript client settles the question on all three — so a modal drawn from an entry
-closes whichever of them arrives, in the tab that started the operation and in every other.
+entry leaving the register, and the `404` once the document's TTL is up are the three ways a client
+learns it, and the TypeScript client settles the question on all three — so a modal drawn from an
+entry closes whichever of them arrives, in the tab that started the operation and in every other.
+
+A reply that arrives after the withdrawal answers `410` for as long as the operation's terminal
+document is readable, and `404` after that; `answer()` resolves quietly on both.
 
 ## Putting one on screen
 

@@ -13,10 +13,11 @@ lifecycle events: `mark_queued()` writes `queued`, entering `operation()` writes
 leaving it writes exactly one of the three terminal states. A caller that could write `state` could
 park an operation in `waiting_input` that nothing will ever release (TW-INV-006).
 
-**The terminal write and the drop are one step** (TW-REG-007, TW-INV-021). Exit commits the terminal
-state, publishes the terminal envelope, then drops the document - in that order, so the envelope
-that tells every client the operation ended goes out before the document that would have told them
-the same thing disappears.
+**The terminal write is what ends the operation, and it ends it once** (TW-REG-007, TW-INV-021).
+Exit commits the terminal state and publishes the terminal envelope, in that order. The write takes
+the entry out of the register - the store does that off the document's own state - and leaves the
+document readable at its own address for `tombstone_ttl` (TW-RET-004), which is what a client that
+was not watching reads to learn which of the three terminal states this was.
 """
 
 from __future__ import annotations
@@ -389,7 +390,7 @@ class Reporter:
         if self._last_commit is None or (now - self._last_commit) >= interval:
             await self._commit()
 
-    async def _commit(self, *, state: ProgressState | None = None) -> int:
+    async def _commit(self, *, state: ProgressState | None = None, ttl: float | None = None) -> int:
         """Write, then publish, in that order and never the other (TW-CORE-001, TW-INV-001).
 
         A client that saw a push whose state a later read contradicts has no way to recover: it is
@@ -403,7 +404,9 @@ class Reporter:
         # One write, and both of its answers: the new `rev`, and the sticky cancel flag as that
         # write saw it (TW-STORE-014). Asking the store a second time would be a second round trip
         # per commit against anything that is not a dictionary.
-        written = await self._store.commit(self._key, self._progress, settings.active_ttl)
+        written = await self._store.commit(
+            self._key, self._progress, settings.active_ttl if ttl is None else ttl
+        )
         self._rev = written.rev
         self._last_commit = self._clock()
         self._cancelled = written.cancelled
@@ -453,7 +456,8 @@ class Reporter:
         `fail()` is the wrong tool for that: it commits, and the exit then commits a second terminal
         state over it - two completions where TW-API-001 allows exactly one, and a terminal envelope
         followed by another one. This names the error and leaves the single write to the exit, which
-        withdraws the dialogs and drops the entry in the same step (TW-CANCEL-011, TW-REG-007).
+        withdraws the dialogs and takes the entry out of the register in the same step
+        (TW-CANCEL-011, TW-REG-007).
         """
         self._progress.error = Error(code=code, message=message, retryable=retryable)
 
@@ -904,14 +908,17 @@ class OperationScope:
             await reporter._store.touch(reporter._key, settings.result_ttl)
             return False
 
-        # Write, publish, then drop - in that order (TW-REG-007). The terminal envelope is what a
-        # client sees; a poll arriving afterwards finds nothing, and that is correct.
-        # TW-CANCEL-011: withdraw before the drop, so a dialog can never outlive the operation that
-        # asked it - and so anyone blocked in `ask()` is woken rather than left on a question whose
-        # operation has already ended.
+        # TW-CANCEL-011: withdraw first, so a dialog can never outlive the operation that asked it,
+        # and anyone blocked in `ask()` is woken rather than left on a question whose operation has
+        # already ended.
+        #
+        # The terminal write takes the entry out of the register in the same step (TW-REG-007, which
+        # the store enforces off the state) and leaves the document readable at its own address for
+        # `tombstone_ttl` (TW-RET-004). The envelope is still what a watching client sees; the
+        # tombstone is what a client that was not watching can read afterwards, and it is the only
+        # thing that can tell it `done` from `failed` from `cancelled`.
         await reporter._store.withdraw_dialogs(reporter._key)
-        await reporter._commit(state=state)
-        await reporter._store.drop(reporter._key)
+        await reporter._commit(state=state, ttl=settings.tombstone_ttl)
 
         # TW-API-001: re-raise in every failure case. Returning True here would swallow the
         # application's exception behind a progress-reporting context manager, which is never what
@@ -1080,8 +1087,9 @@ async def mark_failed(
 ) -> None:
     """Write `failed` from outside the operation - a dispatch that never reached a worker.
 
-    Drops the entry in the same step, exactly as `operation()`'s exit does: a terminal entry with
-    nothing to collect does not linger (TW-REG-007).
+    Takes the entry out of the register in the same step and leaves the document readable at its own
+    address, exactly as `operation()`'s exit does (TW-REG-007, TW-RET-004): the caller is already
+    watching a token, and a `404` would tell it nothing about why the work never started.
     """
     if session is None:
         return None
@@ -1102,12 +1110,11 @@ async def mark_failed(
     )
     progress.updated_at = now_iso()
     progress.state = ProgressState.FAILED
-    written = await store.commit(k, progress, settings.active_ttl)
+    written = await store.commit(k, progress, settings.tombstone_ttl)
     await store.publish(
         session,
         Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict()),
     )
-    await store.drop(k)
     return None
 
 

@@ -83,7 +83,13 @@ async def test_loop_with_no_cancellation_code_raises_and_ends_cancelled():
     terminal = [e for e in seen if e.kind is EnvelopeKind.PROGRESS and e.body.get("state") in {"cancelled", "failed"}]
     assert terminal, "no terminal envelope was published"
     assert terminal[-1].body["state"] == ProgressState.CANCELLED.value
-    assert await store.snapshot(key) is None, "terminal with nothing to collect is dropped (TW-REG-007)"
+    # TW-REG-007 takes it out of the register; TW-RET-004 leaves the terminal document readable at
+    # its own address, which is the only way a client that was not watching learns it was cancelled
+    # rather than merely gone.
+    tombstone = await store.snapshot(key)
+    assert tombstone is not None, "the terminal document is readable for tombstone_ttl"
+    assert tombstone.progress.state is ProgressState.CANCELLED
+    assert await store.list_operations(NS) == [], "and it is in no register (TW-REG-007)"
 
 
 @pytest.mark.usefixtures("_unthrottled", "_raising_default")
@@ -321,13 +327,19 @@ async def test_cancel_publishes_a_cancel_envelope(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_terminal_operation_refuses_a_cancel_with_409(configured_store):
-    """There is nothing left to interrupt, and 202 would promise something that cannot happen."""
+    """There is nothing left to interrupt, and 202 would promise something that cannot happen.
+
+    The tombstone is what makes this a `409` rather than a `404` (TW-RET-004): for as long as the
+    terminal document is readable, the endpoint can say *why* it refuses, and a caller can tell a
+    finished operation from a token that was never written.
+    """
     store = configured_store
     token = new_token()
     async with operation(token, session=NS, result_kind="k", store=store):
         pass
-    # The document is dropped in the same step, so the token is simply unknown afterwards.
-    assert (await request_cancel(Client(session=NS), token))[0] == 404
+    status, payload = await request_cancel(Client(session=NS), token)
+    assert status == 409, "already terminal, and the tombstone says so"
+    assert payload["detail"] == "already_terminal"
 
 
 @pytest.mark.usefixtures("_unthrottled")
@@ -359,7 +371,7 @@ async def test_dialog_reply_after_a_cancel_is_410(configured_store):
         await asyncio.wait_for(task, timeout=5)
 
     status, _payload = await reply_to_dialog(Client(session=NS), token, did, {"button": "ok"})
-    assert status == 404, "the operation and its document are gone; the token is unknown"
+    assert status == 410, "the question was withdrawn under the answerer, and the tombstone says so"
 
 
 @pytest.mark.usefixtures("_unthrottled")

@@ -69,8 +69,8 @@ interface Entry {
  * end-to-end test below runs the same code against `MemoryStore` itself.
  *
  * `calls` is what proves the commit/publish ordering (TW-CORE-001); `commits` keeps a shallow copy
- * of every committed document, which is the only way to observe a terminal write - the document
- * itself is dropped in the same step (TW-REG-007).
+ * of every committed document, so a terminal write is observable as the write it is rather than
+ * only through what it left behind.
  */
 class RecordingStore implements ReporterStore {
   /** `ask()` writes through these two, so the double has to answer them. */
@@ -166,8 +166,12 @@ class RecordingStore implements ReporterStore {
     entry.rev = rev;
     entry.expiresAt = this.clock() + ttl;
     this.entries.set(k, entry);
-    if (isShared(written)) {
-      const ns = k.slice(0, k.lastIndexOf(':'));
+    // TW-REG-007: a terminal document is de-indexed by the write that makes it terminal, which is
+    // what the register reads and what the tests below assert the departure through.
+    const ns = k.slice(0, k.lastIndexOf(':'));
+    if (isTerminal(written)) {
+      this.index.get(ns)?.delete(k);
+    } else if (isShared(written)) {
       const tokens = this.index.get(ns) ?? new Set<string>();
       tokens.add(k);
       this.index.set(ns, tokens);
@@ -199,12 +203,6 @@ class RecordingStore implements ReporterStore {
       this.calls.push(['publish', ns]);
       this.published.push([ns, envelope]);
     }
-  }
-
-  async drop(k: string): Promise<void> {
-    if (this.recordBodies) this.calls.push(['drop', k]);
-    this.entries.delete(k);
-    this.index.get(k.slice(0, k.lastIndexOf(':')))?.delete(k);
   }
 
   /** TW-CANCEL-001: sticky, and never cleared. Setting it does not by itself change `state`. */
@@ -468,7 +466,7 @@ describe('the throttle', () => {
 });
 
 describe('operation()', () => {
-  it('orders every write before its push, and the drop after both (TW-CORE-001, TW-REG-007)', async () => {
+  it('orders every write before its push, and publishes the terminal state last (TW-CORE-001)', async () => {
     // A client that saw a push whose state a later read contradicts cannot recover: it is entitled
     // to current state only (TW-CORE-005), and current state just disagreed with what it was told.
     const store = new RecordingStore();
@@ -485,12 +483,11 @@ describe('operation()', () => {
     expect(ordering.length % 2).toBe(0);
     expect(ordering).toEqual(Array.from({ length: ordering.length / 2 }, () => ['commit', 'publish']).flat());
 
-    // And the drop is last of all: the terminal envelope goes out before the document that would
-    // have told a client the same thing disappears (TW-REG-007). Asserting only that `drop` came
-    // last would hold for a drop that preceded a non-terminal publish, so the envelope's own body is
-    // what is checked - it is the last thing any client will ever hear about this operation.
-    expect(store.calls[store.calls.length - 1][0]).toBe('drop');
-    expect(store.calls[store.calls.length - 2][0]).toBe('publish');
+    // And the terminal envelope is the last thing published: it is what a watching client hears,
+    // and the tombstone the write leaves behind (TW-RET-004) is what an unwatching one reads. The
+    // envelope's own body is what is checked rather than merely the ordering, because a `publish`
+    // last would also hold for a non-terminal one.
+    expect(store.calls[store.calls.length - 1][0]).toBe('publish');
     const [lastNs, lastEnvelope] = store.published[store.published.length - 1];
     expect(lastNs).toBe(NS);
     expect(lastEnvelope.token).toBe(token);
@@ -553,9 +550,9 @@ describe('operation()', () => {
     expect(returned).toEqual({ rows: 12 });
   });
 
-  it('drops the entry in the same step, so the very next read is empty (TW-REG-007)', async () => {
-    // There is no linger to wait out - the very next read is already empty, and this test issues it
-    // with no clock advance and no sleep between the write and the read.
+  it('leaves the register in the same step, so the very next listing is empty (TW-REG-007)', async () => {
+    // There is no linger to wait out - the very next listing is already empty, and this test issues
+    // it with no clock advance and no sleep between the write and the read.
     const store = new RecordingStore();
     const token = new_token();
 
@@ -565,8 +562,12 @@ describe('operation()', () => {
       expect(listed.map((snapshot) => snapshot.token)).toEqual([token]);
     });
 
-    expect(await store.snapshot(key(token))).toBeNull();
     expect(await store.listOperations(NS)).toEqual([]);
+    // The document itself outlives the register for `tombstoneTtl` (TW-RET-004), carrying the one
+    // thing the absence cannot: which of the three terminal states this was.
+    const tombstone = await store.snapshot(key(token));
+    expect(tombstone).not.toBeNull();
+    expect(tombstone?.progress.state).toBe('done');
   });
 
   it('runs a keepalive without the operation cooperating (TW-RET-002)', async () => {
@@ -632,7 +633,9 @@ describe('operation()', () => {
     });
   });
 
-  it('writes failed from outside the operation and drops the entry (TW-REG-007)', async () => {
+  it('writes failed from outside the operation and leaves the register (TW-REG-007)', async () => {
+    // The caller is already watching this token, and a `404` would tell it nothing about why the
+    // work never started - so the failure is readable at its own address (TW-RET-004).
     const store = new RecordingStore();
     const token = new_token();
     await markQueued({ ns: NS, store, token, resultKind: 'report' });
@@ -643,7 +646,10 @@ describe('operation()', () => {
     expect(terminal).toHaveLength(1);
     expect(terminal[0].state).toBe('failed');
     expect(terminal[0].error?.message.text).toBe('dispatch never reached a worker');
-    expect(await store.snapshot(key(token))).toBeNull();
+    expect(await store.listOperations(NS)).toEqual([]);
+    const ended = await store.snapshot(key(token));
+    expect(ended?.progress.state).toBe('failed');
+    expect(ended?.progress.error?.message.text).toBe('dispatch never reached a worker');
 
     // An error document is accepted as readily as a thrown error, and nothing is written for an
     // operation that does not exist.
@@ -876,9 +882,10 @@ describe('one language, one process (TW-SYM-001)', () => {
     const revs = heard.map((envelope) => envelope.rev);
     expect(revs).toEqual([...revs].sort((left, right) => left - right));
 
-    // Terminal with nothing to collect leaves the register in the same step (TW-REG-007).
-    expect(await store.snapshot(key(token))).toBeNull();
+    // Terminal with nothing to collect leaves the register in the same step (TW-REG-007) and stays
+    // readable at its own address (TW-RET-004).
     expect(await store.listOperations(NS)).toEqual([]);
+    expect((await store.snapshot(key(token)))?.progress.state).toBe('done');
   });
 });
 
@@ -898,7 +905,6 @@ describe('the Reporter port', () => {
       putDialog: async () => 1,
       awaitDialog: async () => ({ button: 'ok', values: {} }),
       publish: async () => undefined,
-      drop: async () => undefined,
     };
     const token = new_token();
     const reporter = new Reporter({

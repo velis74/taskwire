@@ -55,6 +55,17 @@ export interface ReporterSettings {
   activeTtl: number;
 
   /**
+   * How long a terminal document stays readable at its own address after it leaves the register
+   * (TW-RET-004). Seconds; 15 minutes.
+   *
+   * A client that was not looking at the moment an operation ended learns *that* it ended from the
+   * absence of a row - and nothing at all about why. The tombstone is what carries the reason: the
+   * terminal state, its `error`, and the dialogs in the state the withdrawal left them. It is
+   * unlistable and uncountable; only the token reaches it.
+   */
+  tombstoneTtl: number;
+
+  /**
    * Backstop on an uncollected result. Seconds; 7 days.
    *
    * Must be aligned with the application's own artefact retention (TW-RET-003) - taskwire
@@ -72,6 +83,7 @@ export interface ReporterSettings {
 /** §8.1's published defaults. `operation({ settings })` overrides them one field at a time. */
 export const DEFAULT_SETTINGS: ReporterSettings = {
   activeTtl: 3600,
+  tombstoneTtl: 900,
   resultTtl: 604800,
   progressInterval: 0.25,
   maxDataBytes: 16384,
@@ -84,21 +96,20 @@ export function keepalivePeriod(settings: ReporterSettings): number {
 }
 
 /**
- * The part of the store port (§5.3, TW-STORE-001) the operating half calls: eight of the fourteen
- * methods - `commit`, `snapshot`, `touch`, `isCancelled`, `publish`, `drop`, `putDialog` and
- * `awaitDialog`.
+ * The part of the store port (§5.3, TW-STORE-001) the operating half calls: seven of the fourteen
+ * methods - `commit`, `snapshot`, `touch`, `isCancelled`, `publish`, `putDialog` and `awaitDialog`.
  *
  * Derived from `TaskwireStore` rather than restated, so the two can never disagree about a
  * signature, and narrowed rather than used whole so that a caller with a purpose-built store hands
- * in eight methods instead of stubbing six it will never be asked for. `MemoryStore` satisfies it by
- * being a `TaskwireStore`, which is all `operation({ store })` asks of its argument.
+ * in seven methods instead of stubbing seven it will never be asked for. `MemoryStore` satisfies it
+ * by being a `TaskwireStore`, which is all `operation({ store })` asks of its argument.
  *
  * The import is type-only: nothing in this module depends on a store implementation at runtime, and
  * the reporter is never the thing that chooses one.
  */
 export type ReporterStore = Pick<
   TaskwireStore,
-  'commit' | 'snapshot' | 'touch' | 'isCancelled' | 'publish' | 'drop' | 'putDialog' | 'awaitDialog'
+  'commit' | 'snapshot' | 'touch' | 'isCancelled' | 'publish' | 'putDialog' | 'awaitDialog'
 >;
 
 /** The three states `operation()`'s exit may write, and the only ones it may (TW-PROG-011). */
@@ -437,10 +448,14 @@ export class Reporter {
    * It takes a `TerminalState` and nothing wider, so it is not the `state` back door TW-PROG-012
    * closes: there is no argument to it that could park an operation in `waiting_input` for nothing
    * to release.
+   *
+   * `ttl` is the caller's, because how long the terminal document survives is the lifecycle's
+   * decision rather than the reporter's: `operation()`'s exit writes it with `tombstoneTtl`
+   * (TW-RET-004).
    */
-  async writeTerminal(state: TerminalState, error?: TaskwireError | null): Promise<number> {
+  async writeTerminal(state: TerminalState, error?: TaskwireError | null, ttl?: number): Promise<number> {
     if (error !== undefined && error !== null) this.progress.error = error;
-    return this.commit(state);
+    return this.commit(state, ttl);
   }
 
   // -------------------------------------------------------------- results and dialogs
@@ -731,7 +746,7 @@ export class Reporter {
    * entitled to current state only (TW-CORE-005), and current state just disagreed with what it was
    * told.
    */
-  private async commit(state?: ProgressState): Promise<number> {
+  private async commit(state?: ProgressState, ttl?: number): Promise<number> {
     if (state !== undefined) this.progress.state = state;
     this.progress.updatedAt = nowIso();
 
@@ -742,7 +757,7 @@ export class Reporter {
     // One write, and both of its answers: the new `rev`, and the sticky cancel flag as that write
     // saw it (TW-STORE-014). Asking the store a second time would be a second round trip per commit
     // against anything that is not a map.
-    const written = await this.store.commit(this.key, this.progress, this.settings.activeTtl);
+    const written = await this.store.commit(this.key, this.progress, ttl ?? this.settings.activeTtl);
     this.revValue = written.rev;
     this.lastCommit = this.clock();
     this.cancelledValue = written.cancelled;

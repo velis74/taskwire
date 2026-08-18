@@ -63,7 +63,7 @@ and both are visible in the demo with two tabs open and no transport.
    q2's, with no delay and no `present()` call. TW-TAB-003's rule is skipped rather than delayed. The
    fix is in the page: hold the dialog **id** that was adopted, not the operation.
 
-## 6. Five things the end-to-end run walked past
+## 6. Four things the end-to-end run walked past
 
 Found while chasing the socket and the cancel, none of them the defect being chased. In descending
 order of what they cost someone who hits them:
@@ -92,14 +92,23 @@ order of what they cost someone who hits them:
    sticky flag is re-read inside `_commit` (`taskwire/reporter.py:385,401`), which runs only when the
    throttle window has elapsed - so `set()` called every 0.2 s still raises up to 0.25 s after the
    cancel landed. Bounded and small, but it is not "the next progress call" as TW-CANCEL-002 reads.
-5. **`taskwire/cancel_test.py:352`** is named `test_dialog_reply_after_a_cancel_is_410` and asserts
-   `404`. The assertion is right - the document is dropped, so the token is unknown - and the name is
-   not.
 
-A sixth, which is a question rather than a defect: a client that renders only `tw.operations` never
+A fifth, which is a question rather than a defect: a client that renders only `tw.operations` never
 starts the register loop (TW-REG-021), so `readOnce()` returns immediately and a push naming an
 unknown token asks for nothing. Whether that client is entitled to TW-TS-009's guarantee at all is
 the same question `GAPS.md` records under "when does the register poll start?".
+
+## 7. The `result_ttl` backstop releases nothing
+
+TW-RES-010 names three release paths and says all three are arbitrated by `store.release_result`, so
+that `result_released` fires exactly once per artefact. Two of them are: collect and dismiss. The
+third is not implemented at all - an uncollected result reaching `result_ttl` is a key expiring,
+which fires no hook, writes no `done` and leaves no tombstone. An application that deletes its own
+artefact in that hook therefore never hears about the results nobody collected.
+
+Whoever implements it needs a sweeper, and a sweeper is a timer over the keyspace - which is the
+shape TW-RET-001 keeps out of the retention rules. The alternative is to strike the third path from
+TW-RES-010 and say plainly that an uncollected result expires unreleased.
 
 ## Open questions for the author
 

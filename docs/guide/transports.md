@@ -34,7 +34,10 @@ transport at all still works: a client that only polls sees the same states, the
 same cancellations and the same results, just later.
 
 There is no event log, no sequence numbers and no replay endpoint. A client is entitled to current
-state, and asking for it is always enough.
+state, and asking for it is always enough — including after the operation ended: a terminal document
+answers at its own address for `settings.tombstone_ttl` after it has left the register, so a client
+that was asleep for the whole job asks once and learns whether it was `done`, `failed` or
+`cancelled`. What it never gets is the states in between.
 
 ## In-process: no wire at all
 

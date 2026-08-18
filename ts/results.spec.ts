@@ -126,7 +126,11 @@ describe('collectable results', () => {
     expect(after?.progress.state).toBe('done');
     expect(after?.progress.result).toBeNull();
 
-    await store.drop(key(token));
+    // The release is what ends the operation (TW-RES-010), and writing the ended document is what
+    // takes it out of the register (TW-REG-007) and puts it on `tombstoneTtl` (TW-RET-004): the row
+    // is gone and the outcome is still readable by token.
+    await store.commit(key(token), after!.progress, DEFAULT_SETTINGS.tombstoneTtl);
     expect(await store.listOperations(NS)).toEqual([]);
+    expect((await store.snapshot(key(token)))?.progress.state).toBe('done');
   });
 });

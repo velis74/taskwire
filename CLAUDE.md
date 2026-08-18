@@ -17,8 +17,8 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 272 pass, 9 skip
-npx vitest run                                            # 396 pass
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 273 pass, 9 skip
+npx vitest run                                            # 397 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npx eslint ts --fix && npx vue-tsc --noEmit
 python demo.py                                            # both halves, Ctrl-C stops the pair
@@ -46,8 +46,15 @@ through, and `attachMuxws` swaps the implementation under it.
 **The workflow**: the front end mints a token and sends it with its own command
 (`X-Taskwire-Token`); the server writes `queued` and hands off; the job reports under that token;
 the front end awaits the token and watches its progress; the job parks a result; the client collects
-or dismisses it. **The token is the entire link between a command and its commentary** — taskwire
-never carries the command itself (TW-CORE-007).
+or dismisses it, and that release is what writes `done`. **The token is the entire link between a
+command and its commentary** — taskwire never carries the command itself (TW-CORE-007).
+
+**A terminal operation leaves the register and outlives it.** The terminal commit de-indexes the
+document off its own state, so no listing can ever show a `failed` row; the document itself answers
+at `GET {prefix}/{token}` for `settings.tombstone_ttl` (900 s). That tombstone is what a client that
+was not watching reads to learn *why* an operation ended, and what lets the write endpoints refuse a
+known token with a reason — `409 already_terminal`, `410` on a withdrawn dialog — instead of a 404
+(TW-RET-004).
 
 ## fastapi-viewsets
 

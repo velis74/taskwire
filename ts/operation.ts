@@ -71,9 +71,10 @@ export class OperationFailed extends Error {
  * One rule for all four writes, because they answer the same three statuses for the same reason. A
  * `409` is somebody else having got there first - another tab answered the question, released the
  * result, or the work ended before the cancel arrived. A `404` is that race one step further on: the
- * entry left every register there is in the step that ended it (TW-REG-007). A `410` is a withdrawn
- * question (TW-DLG-011). None of the three is a fault, so no application error handler is shown one;
- * everything else, `422` included, is a programming error and is left to travel.
+ * document itself is gone, the tombstone its terminal write left having expired too (TW-RET-004). A
+ * `410` is a withdrawn question (TW-DLG-011). None of the three is a fault, so no application error
+ * handler is shown one; everything else, `422` included, is a programming error and is left to
+ * travel.
  */
 function lostTheRace(raised: unknown): boolean {
   const status = (raised as { response?: { status?: number } } | null | undefined)?.response?.status;
@@ -399,8 +400,8 @@ export class Operation<T> implements PromiseLike<T> {
    * Give the result up: the same act as `collect()` with the value thrown away, and idempotent
    * (TW-REST-008).
    *
-   * A second dismiss releases nothing and is answered `204`, a `404` is the entry already dropped and
-   * a `409` is nothing left to release. All three are the state the caller asked for.
+   * A second dismiss releases nothing and is answered `204`, a `404` is the document gone altogether
+   * and a `409` is nothing left to release. All three are the state the caller asked for.
    */
   async dismiss(): Promise<void> {
     try {
@@ -416,10 +417,9 @@ export class Operation<T> implements PromiseLike<T> {
    * `#markDialogSettled` makes for an answered question, for the other write that settles something.
    *
    * The release is acknowledged, so the stored document carries no result any more (TW-RES-010) and
-   * a handle still offering one would offer a second collect over a row the server dropped in the
-   * same step (TW-REG-007). Only the result moves: which state the operation ends in is the wire's
-   * to say, and it arrives as the terminal document the release publishes or as the absence the next
-   * read finds (TW-TS-004).
+   * a handle still offering one would offer a second collect over a row the server took out of the
+   * register in the same step (TW-REG-007). Only the result moves: which state the operation ends in
+   * is the wire's to say, and it arrives as the terminal document the release publishes (TW-TS-004).
    */
   #markResultReleased(): void {
     const progress = this.#progress;
@@ -559,10 +559,10 @@ export class Operation<T> implements PromiseLike<T> {
    * The questions go with it. A dialog can never outlive the operation that asked it
    * (TW-CANCEL-011), and TW-DLG-016 writes the client's close rule against dialog state rather than
    * against how that state was learnt - so an absence carries the withdrawal exactly as the terminal
-   * document does. The two are not alternatives on the REST wire: a cancel drops the entry in the
-   * same step that ends it (TW-REG-007), so the terminal document exists for microseconds and the
-   * next read on the ladder finds the `404` instead. A handle that withdrew questions only on the
-   * document would leave a modal on screen over a worker that ended, on every wire without a push.
+   * document does. The two are not alternatives on the REST wire: a document expires under a worker
+   * that stopped saying anything, and the next read on the ladder finds the `404` with no terminal
+   * state ever having arrived. A handle that withdrew questions only on the document would leave a
+   * modal on screen over a worker that ended, on every wire without a push.
    */
   markGone(): void {
     this.#settle(() => this.#reject?.(new OperationGone(this.token)));
@@ -575,8 +575,8 @@ export class Operation<T> implements PromiseLike<T> {
    * (TW-REG-002): the loop that adopted it is the only reader it has.
    *
    * An entry leaves a payload when the operation ended, and no payload ever carries the terminal
-   * document - it is written, published and dropped in one step (TW-REG-007) - so for a handle with
-   * nothing else reading the token, the departure is the entire announcement. It carries the
+   * document - the write that makes it terminal is the one that de-indexes it (TW-REG-007) - so for a
+   * handle with nothing else reading the token, the departure is the entire announcement. It carries the
    * withdrawal exactly as the terminal document and the `404` do, because TW-DLG-016 writes the
    * close rule against the dialog's own state and not against how that state was learnt: without
    * this, a tab that did not start the operation keeps a question on screen over a worker that is

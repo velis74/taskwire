@@ -67,6 +67,9 @@ import { attachMuxws, detachMuxws } from '../../dist/muxws.js';
 const SESSION_COOKIE = 'taskwire_demo_session';
 const BASE_PATH = '/taskwire';
 
+/** The three states an operation can end in. Everything else is still running. */
+const TERMINAL = new Set(['done', 'failed', 'cancelled']);
+
 /** Long enough to bound a failure, never long enough to pace a success: every wait is on an event. */
 const T = {
   row: 15_000,
@@ -275,10 +278,34 @@ class Harness {
     return handle;
   }
 
-  /** The server's own answer for a token: `404` once it has left the store (TW-REG-007). */
+  /**
+   * The server's own answer for a token, or `null` when there is nothing left to read.
+   *
+   * An ending is not an absence. The terminal write takes the operation out of the register
+   * (TW-REG-007) and leaves the document at its own address for `tombstone_ttl` (TW-RET-004), so a
+   * `404` here means expired or another namespace's - never "the work is over".
+   */
   async serverSnapshot(token) {
     const response = await this.probe.get(`${BASE_PATH}/${token}`);
     return response.status === 200 ? response.data : null;
+  }
+
+  /** The tokens the register lists for this namespace. The register is the only listing there is. */
+  async serverRegisterTokens() {
+    const response = await this.probe.get(BASE_PATH);
+    return response.status === 200 ? (response.data.operations ?? []).map((entry) => entry.token) : [];
+  }
+
+  /**
+   * Whether the operation is over, as the server tells it: the row has left the register and the
+   * document reads terminal at its own address. Answers with that terminal progress, so a caller can
+   * say *which* ending and, for a failure, why.
+   */
+  async serverEnded(token) {
+    const [listed, snapshot] = await Promise.all([this.serverRegisterTokens(), this.serverSnapshot(token)]);
+    if (listed.includes(token)) return null;
+    const progress = snapshot?.progress ?? null;
+    return progress !== null && TERMINAL.has(progress.state) ? progress : null;
   }
 
   async serverDialogState(token, id) {
@@ -297,7 +324,7 @@ class Harness {
   async cleanup(token) {
     await this.probe.post(`${BASE_PATH}/${token}/cancel`);
     await this.probe.post(`${BASE_PATH}/${token}/dismiss`);
-    await until(async () => (await this.serverSnapshot(token)) === null, 12_000, 200);
+    await until(() => this.serverEnded(token), 12_000, 200);
   }
 }
 
@@ -353,8 +380,8 @@ class Observer {
  *
  * Cancellation is asserted **on the server** rather than on the row. A 202 is an acknowledgement and
  * not a completion (TW-CANCEL-003) and the row's own departure would follow it by a poll, so what is
- * waited for is the document leaving the store or reading `cancelled` - the thing the user pressing
- * Cancel is actually asking for.
+ * waited for is the operation leaving the register with `cancelled` written at its own address - the
+ * thing the user pressing Cancel is actually asking for.
  */
 async function phaseExport(h) {
   const { ledger } = h;
@@ -375,9 +402,9 @@ async function phaseExport(h) {
     waited === null ? 'the command never answered' : `${waited} ms, on a ${h.wire} client`,
   );
   if (listed === null) {
-    // Every check below reads that row. A `404` for a token the client never placed would make the
-    // cancellation check pass for the wrong reason - "the operation is not in the store" is what it
-    // waits for - so they are recorded as unreached instead.
+    // Every check below reads that row, and the cancellation check reads the document the terminal
+    // write leaves at its own address. A token whose row never appeared gives neither of them
+    // anything to be true or false about, so they are recorded as unreached instead.
     ['progress.moves', 'cancel.ends'].forEach((id) => ledger.blocked(id, id, 'the register row never appeared'));
     ledger.blocked(
       h.wire === 'websocket' ? 'ws.no_ladder_polling' : 'http.ladder_polls',
@@ -440,15 +467,14 @@ async function phaseExport(h) {
 
   const live = h.row(token) ?? op;
   await live.cancel();
-  const ended = await until(async () => {
-    const snapshot = await h.serverSnapshot(token);
-    return snapshot === null || snapshot.progress?.state === 'cancelled';
-  }, T.settles, 250);
+  const ended = await until(() => h.serverEnded(token), T.settles, 250);
   ledger.check(
     'cancel.ends',
-    "the register row's Cancel ends the operation",
-    ended !== null,
-    'the operation is still running on the server after entry.cancel() resolved',
+    "the register row's Cancel ends the operation - it leaves the register reading `cancelled`",
+    ended !== null && ended.state === 'cancelled',
+    ended === null
+      ? 'the operation is still listed, or has no terminal document, after entry.cancel() resolved'
+      : `it ended ${ended.state}`,
   );
 
   await h.cleanup(token);
@@ -568,12 +594,14 @@ async function phaseDialogs(h) {
   }
 
   await h.row(token).collect();
-  const gone = await until(async () => h.row(token) === null && (await h.serverSnapshot(token)) === null, T.settles, 200);
+  const released = await until(async () => (h.row(token) === null ? await h.serverEnded(token) : null), T.settles, 200);
   ledger.check(
     'result.collect_clears_row',
-    'Collect on a parked result takes the row out of the register',
-    gone !== null,
-    'the operation is still in the store after entry.collect() resolved',
+    'Collect on a parked result takes the row out of the register, and the operation reaches `done`',
+    released !== null && released.state === 'done',
+    released === null
+      ? `the row is ${h.row(token) === null ? 'gone' : 'present'} and the server still lists the operation`
+      : `it ended ${released.state}`,
   );
   await h.cleanup(token);
 }
@@ -581,11 +609,11 @@ async function phaseDialogs(h) {
 /**
  * `reconcile`, cancelled while it is parked on a question: the modal has to go.
  *
- * The one case where the terminal document is unreadable. A cancel wakes the worker at once
- * (TW-CANCEL-007), and the worker's terminal write drops the entry in the same step (TW-REG-007) -
- * so `cancelled` exists for microseconds and a client on the ladder meets the `404` instead, never
- * the state. The withdrawal has to travel on that absence (TW-DLG-016, TW-CANCEL-011) or a question
- * outlives the operation that asked it and the page keeps a modal up over a worker that is gone.
+ * A cancel wakes the worker at once (TW-CANCEL-007) and its terminal write withdraws every open
+ * question in the same step, announcing that withdrawal with nothing (TW-CANCEL-011). So what the
+ * client has to close its modal on is the row's departure and the state it reads afterwards
+ * (TW-DLG-016) - a question that outlived the operation that asked it is a modal over a worker that
+ * is gone.
  *
  * Asserted on the handle rather than on the row, because the row is exactly what leaves: the
  * register drops a departed operation, and the modal the page is drawing is bound to the entry it
@@ -608,12 +636,14 @@ async function phaseCancelWhileAsking(h) {
   const entry = h.row(token);
   await entry.cancel();
 
-  const released = await until(async () => (await h.serverSnapshot(token)) === null, T.settles, 200);
+  const released = await until(() => h.serverEnded(token), T.settles, 200);
   ledger.check(
     'cancel.releases_the_worker',
     'a cancel under an open question ends the operation - the worker is not left parked in ask()',
-    released !== null,
-    'the operation is still in the store after entry.cancel() resolved',
+    released !== null && released.state === 'cancelled',
+    released === null
+      ? 'the operation is still listed, or has no terminal document, after entry.cancel() resolved'
+      : `it ended ${released.state}`,
   );
 
   const closed = await until(
@@ -648,14 +678,44 @@ async function phaseDismiss(h) {
   }
 
   await h.row(token).dismiss();
-  const gone = await until(async () => h.row(token) === null && (await h.serverSnapshot(token)) === null, T.settles, 200);
+  const released = await until(async () => (h.row(token) === null ? await h.serverEnded(token) : null), T.settles, 200);
   ledger.check(
     'result.dismiss_clears_row',
-    'Dismiss on a parked result takes the row out of the register',
-    gone !== null,
-    'the operation is still in the store after entry.dismiss() resolved',
+    'Dismiss on a parked result takes the row out of the register, and the operation reaches `done`',
+    released !== null && released.state === 'done',
+    released === null
+      ? `the row is ${h.row(token) === null ? 'gone' : 'present'} and the server still lists the operation`
+      : `it ended ${released.state}`,
   );
   await h.cleanup(token);
+}
+
+/**
+ * A client that was not here: it opens after the operation ended, calls `track()`, and reads what it
+ * is told.
+ *
+ * Its own client and, over a socket, its own connection - nothing it knows can have come from having
+ * watched. The one read a held ladder still owes (TW-TS-007) is the only one it takes.
+ */
+async function lateReader(h, token) {
+  const http = axios.create({ baseURL: h.base, headers: h.headers });
+  const tw = use_taskwire({ basePath: BASE_PATH, axiosInstance: http });
+  let peer = null;
+  try {
+    if (h.wire === 'websocket') {
+      peer = await connect(`${h.base.replace(/^http/, 'ws')}/ws`, { headers: h.headers });
+      await attachMuxws(tw, peer).announce();
+    }
+    const op = tw.track(token);
+    return await until(() => {
+      const progress = op.progress;
+      return progress !== null && TERMINAL.has(progress.state) ? progress : null;
+    }, T.settles, 100);
+  } finally {
+    if (peer !== null) detachMuxws(tw);
+    tw.dispose();
+    await peer?.close();
+  }
 }
 
 /**
@@ -680,9 +740,15 @@ async function phaseHold(h) {
 
   const asked = await until(() => h.row(token)?.dialog ?? null, T.question);
   if (asked === null) {
-    ['hold.question', 'hold.ends', 'hold.question_cleared', 'hold.other_tab_sees_it', 'hold.other_tab_cleared'].forEach(
-      (id) => ledger.blocked(id, id, 'hold never asked'),
-    );
+    [
+      'hold.question',
+      'hold.ends',
+      'hold.record_survives_the_register',
+      'hold.question_cleared',
+      'hold.other_tab_sees_it',
+      'hold.other_tab_cleared',
+      'hold.late_reader_learns_why',
+    ].forEach((id) => ledger.blocked(id, id, 'hold never asked'));
     await elsewhere.close();
     await h.cleanup(token);
     return;
@@ -709,18 +775,24 @@ async function phaseHold(h) {
     watched === null ? 'the question never reached the second tab' : `it holds ${watched.dialog?.id}, not ${asked.id}`,
   );
 
-  const ended = await until(async () => h.row(token) === null && (await h.serverSnapshot(token)) === null, T.holdEnds, 250);
+  const ended = await until(async () => (h.row(token) === null ? await h.serverEnded(token) : null), T.holdEnds, 250);
   ledger.check(
     'hold.ends',
     "the worker's own deadline expires and the operation leaves the register",
     ended !== null,
-    'the row is still in the register after the deadline',
+    `the row is ${h.row(token) === null ? 'gone' : 'still in the register'} after the deadline`,
+  );
+  ledger.check(
+    'hold.record_survives_the_register',
+    'what it left behind is readable at its own address, and names the deadline that ended it',
+    ended !== null && ended.state === 'failed' && ended.error?.code === 'dialog_timeout',
+    ended === null ? 'nothing was left at the address' : `it reads ${ended.state} / ${ended.error?.code}`,
   );
 
   // Waited for rather than sampled. The two ends of this are on separate clocks: the row departs
-  // when the register is next read, and the handle learns of the withdrawal from its own poller's
-  // `404` - and both of those ladders are at the five second ceiling while a question is open, so
-  // which arrives first is not a property of anything.
+  // when the register is next read, and the handle learns of the withdrawal from the terminal state
+  // its own poller reads - and both of those ladders are at the five second ceiling while a question
+  // is open, so which arrives first is not a property of anything.
   const settled = await until(
     () => (op.dialogs.find((dialog) => dialog.id === asked.id)?.state ?? 'gone') !== 'open',
     T.settles,
@@ -751,6 +823,17 @@ async function phaseHold(h) {
     );
   }
   await elsewhere.close();
+
+  // What the record is for, and the one thing an absence cannot do. This client did not exist while
+  // the operation ran: it starts at `track()`, on a token that is already over, and TW-RET-004 is
+  // what lets it be told `failed` and `dialog_timeout` instead of that there is nothing there.
+  const late = await lateReader(h, token);
+  ledger.check(
+    'hold.late_reader_learns_why',
+    'a client that starts watching only after the operation ended still learns the state and the reason',
+    late !== null && late.state === 'failed' && late.error?.code === 'dialog_timeout',
+    late === null ? 'it never read a document at all' : `it read ${late.state} / ${late.error?.code}`,
+  );
 
   if (h.wire === 'websocket') {
     const closes = h.envelopes.filter((e) => e.token === token && e.kind === 'dialog.close');

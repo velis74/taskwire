@@ -65,13 +65,20 @@ operation.onChange(cb); operation.close();
 ```
 
 `answer()`, `cancel()`, `collect()` and `dismiss()` **resolve quietly on 404, 409 and 410** — another
-tab getting there first is the normal outcome of a namespace-wide question, not a fault. Everything
+tab getting there first is the normal outcome of a namespace-wide question, not a fault, and so is
+an operation that ended before the call arrived: while its tombstone is readable the server names
+which of those it was (`409 already_terminal`, `410` for a withdrawn dialog, `409
+no_uncollected_result` for a second collect), and afterwards the token is simply unknown. Everything
 else rejects, including a 422 (a malformed reply), a 500 and a transport failure.
 
 Awaiting a handle: a `run()` handle settles with **the request's** own promise (`await run(fn)` is
-`await fn(...)`), and a `track()` handle settles on the operation — `done` resolves, `failed` and
-`cancelled` reject with `OperationFailed`, and a document that vanishes after it was seen rejects
-with `OperationGone`.
+`await fn(...)`), and a `track()` handle settles on the operation's own terminal document — `done`
+resolves, `failed` and `cancelled` reject with `OperationFailed` carrying `progress.error`.
+
+That document is readable at its own address for `tombstone_ttl` after the operation has left the
+register, so the ordinary end of an operation is something a handle **reads**, on every transport
+including a page that only polls. `OperationGone` is the other case, and only that one: the document
+vanished after the handle had seen it, which means its TTL ran out before the client came back.
 
 ### `subscribe()`
 

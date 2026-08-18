@@ -325,6 +325,36 @@ async def test_migrate_is_idempotent_and_preserves_rev(make_store: StoreFactory)
     assert await store.migrate(anon, account) == 0, "a second call changes nothing"
 
 
+async def test_terminal_commit_leaves_the_register_and_stays_readable(make_store: StoreFactory) -> None:
+    """TW-REG-007 / TW-RET-004: the commit that makes a document terminal is the one that de-indexes
+    it, and the document survives it.
+
+    Both halves are the store's, and a store that implements one without the other is broken in a
+    way no other check sees: de-indexing alone loses the reason an operation ended, and keeping the
+    document alone puts a `failed` row in every listing the register draws.
+    """
+    store = make_store()
+    ending = make_key(NS, "ending")
+    running = make_key(NS, "running")
+    await store.commit(ending, _progress(), 60)
+    await store.commit(running, _progress(), 60)
+    listed = sorted(snapshot.token for snapshot in await store.list_operations(NS))
+    assert listed == ["ending", "running"], listed
+
+    failing = _progress(state=ProgressState.FAILED)
+    failing.error = Error(code="import_failed", message=Text(text="boom"), retryable=False)
+    await store.commit(ending, failing, 60)
+
+    listed = sorted(snapshot.token for snapshot in await store.list_operations(NS))
+    assert listed == ["running"], listed
+
+    tombstone = await store.snapshot(ending)
+    assert tombstone is not None, "the terminal document is readable at its own address"
+    assert ProgressState(tombstone.progress.state) is ProgressState.FAILED
+    assert tombstone.progress.error is not None
+    assert tombstone.progress.error.code == "import_failed"
+
+
 async def test_terminal_document_can_still_be_dropped(make_store: StoreFactory) -> None:
     """TW-REG-007's store-side half: nothing prevents dropping a terminal document."""
     store = make_store()
@@ -431,6 +461,7 @@ CHECKS: tuple[Callable[[StoreFactory], Awaitable[None]], ...] = (
     test_list_operations_includes_a_private_operation_only_while_it_asks,
     test_resolve_dialog_accepts_exactly_once,
     test_withdraw_and_resolve_race_has_one_winner,
+    test_terminal_commit_leaves_the_register_and_stays_readable,
     test_terminal_document_can_still_be_dropped,
     test_error_survives_a_round_trip,
 )

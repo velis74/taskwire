@@ -18,9 +18,9 @@ from dataclasses import replace
 from typing import Any
 
 from .delivery import Client
-from .models import DialogReply, DialogState, Envelope, EnvelopeKind, INPUT_TYPES, now_iso
+from .models import DialogReply, DialogState, Envelope, EnvelopeKind, INPUT_TYPES, now_iso, ProgressState
 from .register import build_register, CEILING_POLL_MS, poll_after_ms
-from .settings import configured
+from .settings import configured, settings
 from .store import DialogResolution, key as make_key
 
 logger = logging.getLogger("taskwire.rest")
@@ -244,27 +244,36 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
     key = make_key(client.session, token)
     snapshot = await store.snapshot(key)
     if snapshot is None:
-        # Dismiss is idempotent: an entry already released and dropped is exactly the state the
-        # caller asked for. Collect is not - there is nothing to hand back.
+        # Nothing at this address: unknown, foreign, or a tombstone whose TTL is up. Dismiss is
+        # idempotent, and that is exactly the state a dismissing caller asked for. Collect is not -
+        # there is nothing to hand back.
         return (204, None) if idempotent else _not_found()
 
     if snapshot.progress.result is None:
-        # Queued, running, or holding an open dialog. Releasing is not cancelling, and a blocked
+        # Nothing to release. A document that has already ended is a tombstone (TW-RET-004), and
+        # that is exactly the state a dismissing caller asked for, so dismiss stays idempotent; a
+        # queued, running or asking one is not, because releasing is not cancelling and a blocked
         # worker is not a collectable result (TW-REST-008).
+        if idempotent and snapshot.progress.is_terminal:
+            return 204, None
         return 409, {"detail": "no_uncollected_result"}
 
     released = await store.release_result(key)
     if released is None:
         return (204, None) if idempotent else (409, {"detail": "no_uncollected_result"})
 
+    # TW-RES-010: the release is what ends the operation, so this is where `done` is written. One
+    # write and one envelope: it takes the entry out of the register (TW-REG-007) and leaves the
+    # tombstone a client that was not watching reads afterwards (TW-RET-004) - which is the only
+    # thing that can tell it "collected and finished" from "expired".
     after = await store.snapshot(key)
     if after is not None:
+        ended = replace(after.progress, state=ProgressState.DONE, updated_at=now_iso())
+        written = await store.commit(key, ended, settings.tombstone_ttl)
         await store.publish(
             client.session,
-            Envelope(token=token, rev=after.rev, kind=EnvelopeKind.PROGRESS, body=after.progress.to_dict()),
+            Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=ended.to_dict()),
         )
-    # TW-REG-007: `done` with nothing left to collect leaves the register in the same step.
-    await store.drop(key)
     # TW-RES-010: the event must CARRY THE RELEASED RESULT. `release_result` clears `result` off the
     # document as part of the same atomic step, so a snapshot read afterwards has none - and an
     # application that deletes its own artefact in this hook would have nothing to delete it by.

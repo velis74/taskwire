@@ -204,7 +204,11 @@ async def test_dismiss_is_idempotent_and_collect_is_not(configured_store):
     async with operation(other, session=NS, result_kind="k", store=store) as reporter:
         await reporter.set_result(Result.panel("k", value=1))
     assert (await collect_result(Client(session=NS), other))[0] == 204
-    assert (await collect_result(Client(session=NS), other))[0] == 404, "collect is not"
+    # Not idempotent, and the tombstone is what lets the refusal say which "no": the token is known
+    # and there is nothing left to hand back, rather than the token being unknown (TW-RET-004).
+    status, payload = await collect_result(Client(session=NS), other)
+    assert status == 409, "collect is not"
+    assert payload["detail"] == "no_uncollected_result"
 
 
 @pytest.mark.usefixtures("_unthrottled")
@@ -261,7 +265,10 @@ async def test_the_release_hook_cannot_prevent_the_release(configured_store):
         await reporter.set_result(Result.panel("k", value=1))
 
     assert (await collect_result(Client(session=NS), token))[0] == 204
-    assert await store.snapshot(make_key(NS, token)) is None, "released regardless"
+    ended = await store.snapshot(make_key(NS, token))
+    assert ended is not None, "released regardless"
+    assert ended.progress.result is None, "and the result is off the document"
+    assert ended.progress.state is ProgressState.DONE, "and the release is what wrote `done`"
 
 
 @pytest.mark.usefixtures("_unthrottled")

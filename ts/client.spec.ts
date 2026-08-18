@@ -547,12 +547,10 @@ describe('track distinguishes not-written-yet from gone (TW-TS-004)', () => {
   });
 
   it('withdraws an open question when the operation disappears (TW-CANCEL-011, TW-DLG-016)', async () => {
-    // The cancel case, and it is the ordinary one on a wire with no push. A cancel wakes a worker
-    // parked in `ask()` at once (TW-CANCEL-007) and the terminal write drops the entry in the same
-    // step (TW-REG-007), so `cancelled` exists for microseconds and the ladder's next read finds the
-    // `404` rather than the state. If the withdrawal travelled only on the terminal document, the
-    // question would outlive the operation that asked it and the page would keep a modal up over a
-    // worker that ended - with buttons that now answer `404`.
+    // The document is gone and no terminal state ever reached this handle - a TTL expiry under a
+    // stalled worker, or a tombstone this client came to too late. If the withdrawal travelled only
+    // on the terminal document, the question would outlive the operation that asked it and the page
+    // would keep a modal up over a worker that ended - with buttons that now answer `404`.
     const token = new_token();
     const asking = snapshotPayload(token, 'running', { rev: 3, dialogs: [OPEN_DIALOG] });
     server.handler = script(token, [{ status: 200, data: asking }, { status: 404 }]);
@@ -589,7 +587,7 @@ describe('track distinguishes not-written-yet from gone (TW-TS-004)', () => {
     expect(rejected).toBeNull();
   });
 
-  it('a terminal operation vanishes from the server immediately and track survives it', async () => {
+  it('stops reading on the terminal document, whatever a later read would find', async () => {
     const token = new_token();
     server.handler = script(token, [
       { status: 200, data: snapshotPayload(token, 'running', { rev: 1 }) },
@@ -597,8 +595,8 @@ describe('track distinguishes not-written-yet from gone (TW-TS-004)', () => {
         status: 200,
         data: snapshotPayload(token, 'done', { rev: 2, progress: progressPayload('done', { percent: 100 }) }),
       },
-      // TW-REG-007: the terminal write and the drop are one step, so this is what a further poll
-      // would find. The handle must never issue it, and must never treat it as an error.
+      // What a poll after the tombstone expired would find (TW-RET-004). The handle must never
+      // issue it, and must never treat it as an error.
       { status: 404 },
     ]);
 
@@ -1328,7 +1326,7 @@ describe('the write path (TW-REST-004)', () => {
     await entry.dismiss();
     expect(entry.result).toBeNull();
     // What the release publishes: the document as it stands after it, which is `done` with nothing
-    // left to collect. The entry is dropped in the same step, so this is the last one it sends.
+    // left to collect. The entry leaves the register in that step, so this is the last one it sends.
     socket.push(token, 2, 'progress', pushedProgress('done'));
     expect(tw.register).toEqual([]);
     expect(entry.closed).toBe(true);
@@ -1441,8 +1439,8 @@ describe('the members that never leave this client', () => {
     // sent - the two POSTs below are the whole of what left.
     await expect(handle.answer('ok')).resolves.toBeUndefined();
     await expect(handle.collect()).rejects.toThrow(/no uncollected result/);
-    // A write on a token this server has never heard of is a race lost rather than a fault: the
-    // entry left every register there is in the step that ended it (TW-REG-007).
+    // A write on a token this server has never heard of is a race lost rather than a fault: there is
+    // nothing left of the operation to write to.
     await expect(handle.cancel()).resolves.toBeUndefined();
     await expect(handle.dismiss()).resolves.toBeUndefined();
     expect(server.posts()).toEqual([

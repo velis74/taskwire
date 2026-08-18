@@ -177,7 +177,9 @@ adapters to things outside the process, never a capability the core lacks.
   Test: `conformance` — `test_release_result_fires_once_under_concurrency`.
 - **TW-STORE-007** `drop(key)` MUST remove the operation from the document space, from the namespace
   index and from the asking set (TW-KEY-005), MUST be idempotent, and MUST leave every other
-  operation in that namespace untouched.
+  operation in that namespace untouched. It is how a document is removed **outright** — `migrate`
+  discards a clashing token with it — and it is not how a terminal operation leaves the register:
+  that is `commit`'s own de-indexing (TW-REG-007), which keeps the document (TW-RET-004).
 - **TW-STORE-008** `publish(ns, envelope)` MUST NOT raise.
 - **TW-STORE-009** **No read writes anything.** `snapshot()` and `list_operations()` MUST leave every
   key's TTL and content byte-identical. Test: `conformance` — `test_reads_have_no_side_effects`.
@@ -448,10 +450,16 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-REG-006** While an operation is running it MUST always be in the register (if it is shared).
   There MUST be no liveness detection, no orphan grace and no listing filter.
 - **TW-REG-007** **An operation that reaches a terminal state with no uncollected result MUST leave
-  the register immediately**, by `store.drop()` in the same step that writes the terminal state.
-  There MUST be no `terminal_ttl` and no terminal linger of any kind on the server. Most operations
-  are short and must never accumulate; the terminal envelope *is* the notification, and the awaiting
-  caller already has its answer. Test: register harness —
+  the register immediately**, in the same step that writes the terminal state. The store MUST enforce
+  this off the **document's own state**, de-indexing inside the same atomic write rather than
+  trusting a caller to follow the write with a second call: two steps leave a window in which a
+  reader lists a `failed` row. There MUST be no `terminal_ttl` and no terminal linger in the
+  register. Most operations are short and must never accumulate; the terminal envelope *is* the
+  notification, and the awaiting caller already has its answer.
+
+  Leaving the register is not ceasing to exist. The document itself remains readable at its own
+  address for `tombstone_ttl` (TW-RET-004), which is what a client that was not watching reads to
+  learn *why* the operation ended. Test: register harness —
   `test_terminal_entry_is_absent_from_the_very_next_read`.
 - **TW-REG-008** An operation MUST NEVER be cancelled, deleted or shortened because a watcher
   vanished. A disconnect is not a statement of intent.
@@ -557,17 +565,23 @@ adapters to things outside the process, never a capability the core lacks.
   (`POST {prefix}/{token}/collect`), **explicit dismissal** (`POST {prefix}/{token}/dismiss`), or the
   **`result_ttl` backstop** — all three arbitrated by `store.release_result` (TW-STORE-016) so
   exactly one wins. Each MUST fire a `result_released(operation)` application event carrying the
-  released `Result`, so the application can delete its own artefact. The operation then reaches
-  `done` and leaves the register by TW-REG-007.
+  released `Result`, so the application can delete its own artefact. **The release is what writes
+  `done`**: an operation holding a result is ended by the release and not by the exit of its body
+  (TW-RES-004), so a collect or a dismiss writes the terminal state, the entry leaves the register by
+  TW-REG-007 and the document is committed with `tombstone_ttl` (TW-RET-004). The `result_ttl`
+  backstop releases by expiry and leaves no document behind, which is what the backstop is for.
 - **TW-RES-011** `result_released` MUST be an application hook configured beside `session_resolver`,
   MUST be allowed to be absent, and MUST NOT be able to prevent the release: an exception out of it
   MUST be swallowed and logged. taskwire deletes nothing on the application's behalf.
-- **TW-RET-001** **Retention MUST be state-driven, not timer-driven, and only two TTLs survive:**
-  `active_ttl` while the operation is `queued`, `running` or holding an open dialog, and `result_ttl`
-  as the backstop on an operation holding an uncollected result. `terminal_ttl` and the
-  ephemeral/durable `lifetime` that selected between terminal TTLs are **removed**: a terminal
-  operation with nothing to collect is dropped rather than aged out, and an operation with something
-  to collect is not terminal and therefore does not age out on the running clock.
+- **TW-RET-001** **Retention MUST be state-driven, not timer-driven, and exactly three TTLs
+  survive**, one per state a document can be in: `active_ttl` while the operation is `queued`,
+  `running` or holding an open dialog, `result_ttl` as the backstop on an operation holding an
+  uncollected result, and `tombstone_ttl` once it is terminal (TW-RET-004). The ephemeral/durable
+  `lifetime` that selected between terminal TTLs is **removed**: which TTL a document is on follows
+  from its state and from nothing a caller declares. An operation holding something to collect is not
+  terminal and therefore does not age out on the running clock; a terminal one is not aged out of the
+  register at all, because the register drops it in the same step that ends it (TW-REG-007) and only
+  the document is left to age out.
 - **TW-RET-002** `operation()` MUST own a keepalive calling `store.touch(key, active_ttl)` every
   `active_ttl / 4` for as long as the block is open, running **without the operation's cooperation**
   (an asyncio task where a loop runs, a daemon thread in the synchronous form). Test: end-to-end —
@@ -576,6 +590,30 @@ adapters to things outside the process, never a capability the core lacks.
   keepalive MUST run against it — nobody is running, which is the point. The docs MUST state, next to
   the `Result.ref` example, that `result_ttl` must be set no longer than the application's own
   artefact retention.
+- **TW-RET-004** A terminal write MUST commit the document with `settings.tombstone_ttl`
+  (default 900 s), leaving it readable at `GET {prefix}/{token}` for that long after it has left the
+  register. The document carries the terminal state, its `error`, and the operation's dialogs in the
+  state the terminal write left them — `cancelled` for any that were still open (TW-CANCEL-011).
+  After the TTL the token answers `404` like any other unknown one.
+
+  This **tombstone** MUST be unlistable and uncountable: `list_operations` MUST NOT return it and no
+  aggregate may count it (TW-REG-007, TW-REG-015), so the token is the only thing that reaches it,
+  and privacy is unaffected — a shared operation's tombstone is no more listed than a private one's.
+  It is one document, the last one written; a second MUST NOT accumulate beside it, because it is a
+  document and not an event log (TW-CORE-005).
+
+  It exists because absence answers only *whether* an operation is still going. A client that was not
+  watching at the moment one ended cannot tell `done` from `failed` from `cancelled` — nor a
+  cancellation from an expiry — from a missing row, and over a transport with no push it has nothing
+  else to read. The same document is what lets the write endpoints refuse a known token with a
+  reason rather than a `404` (TW-REST-004). Tests: `conformance` —
+  `test_terminal_commit_leaves_the_register_and_stays_readable`, which every store must pass;
+  `reporter_test.py` — `test_terminal_entry_is_absent_from_the_very_next_read` (out of the register,
+  readable at its address); `cancel_test.py` — `test_loop_with_no_cancellation_code_raises_and_ends_cancelled`
+  (`cancelled`, and in no register), `test_a_terminal_operation_refuses_a_cancel_with_409`,
+  `test_dialog_reply_after_a_cancel_is_410`; `results_test.py` —
+  `test_dismiss_is_idempotent_and_collect_is_not`; `register_test.py` —
+  `test_aggregate_never_reports_done_or_failed`.
 
 ### 2.13 The transport port (`TW-TR-*`)
 
@@ -712,11 +750,21 @@ adapters to things outside the process, never a capability the core lacks.
   | Method & path | Success | Failures |
   |---|---|---|
   | `GET {prefix}` | `200` `Register` | — |
-  | `GET {prefix}/{token}` | `200` `Snapshot` | `404` unknown, expired, or another namespace's |
+  | `GET {prefix}/{token}` | `200` `Snapshot`, terminal ones included until the tombstone expires | `404` unknown, expired, or another namespace's |
   | `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410`, `422` per §6.2 |
-  | `POST {prefix}/{token}/cancel` | `202` requested | `404` unknown token; `409` already terminal |
-  | `POST {prefix}/{token}/collect` | `204` result released | `404` unknown token; `409` no uncollected result |
-  | `POST {prefix}/{token}/dismiss` | `204` (idempotent) | `404` unknown token; `409` not releasable |
+  | `POST {prefix}/{token}/cancel` | `202` requested | `404` unknown token; `409` `already_terminal`, or `holds_an_uncollected_result` |
+  | `POST {prefix}/{token}/collect` | `204` result released | `404` unknown token; `409` `no_uncollected_result` |
+  | `POST {prefix}/{token}/dismiss` | `204` (idempotent) | `404` malformed token or no namespace; `409` `no_uncollected_result` |
+
+  The failure columns turn on the tombstone. While the terminal document is readable
+  (TW-RET-004) the endpoints answer about a token they still know: a cancel on a finished operation
+  is `409 already_terminal` rather than `404`, a reply to a dialog the terminal write withdrew is the
+  `410` of §6.2, and a second collect is `409 no_uncollected_result` — the token is known and there
+  is nothing left to hand back, which is not the same answer as "unknown token". A second dismiss
+  stays `204`: an operation that has already ended is exactly the state a dismissing caller asked
+  for, and dismiss is idempotent for the same reason on a tombstone as on an unknown token. Once the
+  tombstone expires the token is unknown again — a `404` everywhere the token had to be known, and
+  still a `204` on dismiss.
 
   > **Scope clarified.** These six are the whole request/response surface, and they are the surface
   > on **every** transport that carries one: `route_viewset` publishes the same six routes over REST
@@ -967,9 +1015,10 @@ adapters to things outside the process, never a capability the core lacks.
   again when its last dialog closes, and its `result_kind` never changes (TW-PROG-006). The reason is
   TW-INV-005's, unchanged: a question nobody can see is a worker nobody can free, and ten of those is
   a wedged pool arrived at through a scoping rule.
-- **TW-PRIV-005** A private operation MUST leave the register — and the store — the moment it is
-  terminal (TW-REG-007), and MUST NOT be countable in the aggregate at any point except while
-  TW-PRIV-004 has it listed. Test: `delivery_test.py::test_private_operation_is_invisible_to_a_second_socket`
+- **TW-PRIV-005** A private operation MUST leave the register the moment it is terminal
+  (TW-REG-007), and MUST NOT be countable in the aggregate at any point except while TW-PRIV-004 has
+  it listed. Its tombstone is reachable by token exactly as a shared operation's is (TW-RET-004,
+  TW-PRIV-002): privacy governs listing and fan-out, never reach. Test: `delivery_test.py::test_private_operation_is_invisible_to_a_second_socket`
   and `..._becomes_visible_while_it_asks`.
 
 ### 2.22 Language symmetry (`TW-SYM-*`)
@@ -1178,15 +1227,16 @@ there is no column for one: `set(state=...)` does not exist (TW-PROG-012).
 | ↓state \ event→ | `mark_queued` | `operation()` enter | `set(...)` | `ask()` opens dialog | dialog resolves | `set_result()` | `operation()` exits clean | exits `OperationCancelled` | exits other exception | result released |
 |---|---|---|---|---|---|---|---|---|---|---|
 | *(absent)* | write doc → `queued` | write doc → `running` | write doc → `running` | n/a | n/a | n/a | n/a | n/a | write doc → `failed` | n/a |
-| `queued` | idempotent → `queued` | → `running` | → `running` | → `waiting_input` | n/a | records result → `queued` | → `done`, dropped | → `cancelled`, dropped | → `failed`, dropped | n/a |
-| `running` | reject | → `running` | → `running` | → `waiting_input` | n/a | records result → `running` | result written → `waiting_input`; none → `done`, dropped | → `cancelled`, dropped | → `failed`, dropped | n/a |
-| `waiting_input` (dialog) | reject | → `waiting_input` | fields update | → `waiting_input` (2nd dialog) | last dialog closed → `running`; others open → `waiting_input` | records result | result written → `waiting_input` (result); none → `done`, dropped | → `cancelled`, dropped | → `failed`, dropped | n/a |
-| `waiting_input` (result) | reject | reject | `label`/`data`/`updated_at` only | reject | n/a | reject (write-once) | reject | reject (TW-CANCEL-010) | reject | → `done`, dropped |
+| `queued` | idempotent → `queued` | → `running` | → `running` | → `waiting_input` | n/a | records result → `queued` | → `done`, unlisted | → `cancelled`, unlisted | → `failed`, unlisted | n/a |
+| `running` | reject | → `running` | → `running` | → `waiting_input` | n/a | records result → `running` | result written → `waiting_input`; none → `done`, unlisted | → `cancelled`, unlisted | → `failed`, unlisted | n/a |
+| `waiting_input` (dialog) | reject | → `waiting_input` | fields update | → `waiting_input` (2nd dialog) | last dialog closed → `running`; others open → `waiting_input` | records result | result written → `waiting_input` (result); none → `done`, unlisted | → `cancelled`, unlisted | → `failed`, unlisted | n/a |
+| `waiting_input` (result) | reject | reject | `label`/`data`/`updated_at` only | reject | n/a | reject (write-once) | reject | reject (TW-CANCEL-010) | reject | → `done`, unlisted |
 | `done` / `failed` / `cancelled` | reject | reject | `label`/`data`/`updated_at` only | reject | n/a | reject | reject | reject | reject | n/a |
 
-"dropped" means the entry leaves the register and the store in the same step (TW-REG-007), so the
-three terminal rows describe a window measured in milliseconds — the terminal envelope is what a
-client sees, not a later read.
+"unlisted" means the entry leaves the register in the same step that makes it terminal
+(TW-REG-007). The document does not go with it: it stays readable at its own address for
+`tombstone_ttl` (TW-RET-004), so the three terminal rows are reachable by token — by a client that
+watched and by one that only comes back afterwards — and unreachable by any listing or count.
 
 A cancel request sets the sticky flag and does **not** by itself change `state`; the state becomes
 `cancelled` only when `operation()` writes it (TW-CANCEL-002, TW-CANCEL-006). Every terminal write
@@ -1334,8 +1384,8 @@ class Commit:
     cancelled: bool          # the sticky flag as this write saw it (TW-STORE-014)
 
 class TaskwireStore(ABC):
-    async def commit(self, key: str, progress: Progress, ttl: float) -> Commit: ...
-    async def snapshot(self, key: str) -> Snapshot | None: ...
+    async def commit(self, key: str, progress: Progress, ttl: float) -> Commit: ...  # terminal → de-indexed
+    async def snapshot(self, key: str) -> Snapshot | None: ...       # a tombstone answers like any other
     async def touch(self, key: str, ttl: float) -> bool: ...
     async def list_operations(self, ns: str) -> list[Snapshot]: ...   # shared, plus anything asking
     async def put_dialog(self, key: str, dialog: DialogRequest, ttl: float) -> int: ...
@@ -1346,7 +1396,7 @@ class TaskwireStore(ABC):
     async def request_cancel(self, key: str) -> int: ...
     async def is_cancelled(self, key: str) -> bool: ...
     async def publish(self, ns: str, envelope: Envelope) -> None: ...
-    async def drop(self, key: str) -> None: ...
+    async def drop(self, key: str) -> None: ...                      # removes a document outright
     async def migrate(self, from_ns: str, to_ns: str) -> int: ...
 
 class TaskwireTransport(ABC):
@@ -1481,7 +1531,7 @@ interface Reporter {
   does. A `Symbol.asyncDispose` form MAY additionally be exported as sugar, but MUST NOT be the only
   form: `await using` needs TypeScript 5.2 and a runtime with explicit resource management, and
   TW-SYM-001 does not get to depend on either. Test:
-  `operation.spec.ts::a throwing body still writes failed and drops the entry`.
+  `reporter.spec.ts::writes exactly one terminal state and re-throws in every failure case`.
 - **TW-TS-015** The TypeScript `Reporter` MUST implement TW-THR-001..006 and TW-NEST-001..014 with
   the same numbers and the same guarantees as Python's, against an injected clock. Throttling MUST
   check the clock inline in `set()` (TW-THR-002); a `setInterval` flush MUST NOT be relied on, for
@@ -1532,6 +1582,12 @@ function use_register(): { entries: Ref<Operation<unknown>[]>; aggregate: Ref<Ag
   initial absence until either the operation appears or `fn`'s promise settles, at which point an
   operation with no document is dropped silently. A disappearance *after* the operation has been
   seen terminates the handle. Test: `client.spec.ts::track tolerates initial absence`.
+
+  A terminal document is readable (TW-RET-004), so the ordinary end of an operation is a **read**,
+  not a disappearance: the handle settles on the state that document carries — `done` resolves,
+  `failed` and `cancelled` reject with `OperationFailed` carrying `progress.error` — on every
+  transport, including one that only polls. `OperationGone` therefore means the tombstone expired
+  before the client came back, and never "the operation ended".
 - **TW-TS-005** Identity MUST be the token, everywhere. `:key="op.token"` in templates. Nothing —
   not keys, routing, dedup or removal — MAY depend on `streamId`.
 - **TW-TS-006** The pending dialog MUST hang on its own entry. There MUST be no global `tw.dialog`
@@ -1609,18 +1665,19 @@ execution timeout while blocked on a question produces `failed` with `code: "dia
 | `ACCEPTED` | `204` | the store arbitrated in your favour — the only trustworthy signal | close the dialog |
 | `NOT_FOUND` | `404` | unknown token, unknown dialog, or another namespace's | resolve `answer()` quietly, close |
 | `ALREADY_ANSWERED` | `409` | another tab won; **body carries the dialog with the winning reply** | resolve `answer()` quietly, apply the reply, close; never an error or toast |
-| `CANCELLED` | `410` | the question was withdrawn — the operation was cancelled, failed or ended | resolve `answer()` quietly, close |
+| `CANCELLED` | `410` | the question was withdrawn — the operation was cancelled, failed or ended, and its tombstone still says so (TW-RET-004) | resolve `answer()` quietly, close |
 
 ### 6.3 Other HTTP statuses
 
 | Endpoint | Status | Meaning |
 |---|---|---|
+| `GET {prefix}/{token}` | `200` | including a terminal document, for `tombstone_ttl` after it left the register |
 | `GET {prefix}/{token}` | `404` | unknown, expired, or another namespace's — indistinguishable by design |
 | `POST .../cancel` | `202` | requested, not confirmed |
 | `POST .../cancel` | `409` | already terminal, or holding an uncollected result (TW-CANCEL-010) |
 | `POST .../collect` | `204` | result released; `result_released` fired |
-| `POST .../collect` | `409` | there is no uncollected result — collect is not idempotent |
-| `POST .../dismiss` | `204` | result released and discarded, or already gone (idempotent) |
+| `POST .../collect` | `409` | there is no uncollected result — collect is not idempotent, and a collected operation answers this rather than `404` for as long as its tombstone lives |
+| `POST .../dismiss` | `204` | result released and discarded, or the operation has already ended, or the token is unknown (idempotent) |
 | `POST .../dismiss` | `409` | `queued`, `running`, or blocked on a dialog — dismiss is not cancel |
 
 ---
@@ -1696,6 +1753,7 @@ Each of these is violable from more than one place; each names the failure it pr
 |---|---|---|---|---|
 | `active_ttl` | seconds | 3600 | > 0 | document TTL while the operation is `queued`, `running` or asking |
 | `result_ttl` | seconds | 604800 (7 d) | > 0, never 0 | backstop on an uncollected result; MUST be aligned with artefact retention (TW-RET-003) |
+| `tombstone_ttl` | seconds | 900 (15 min) | > 0 | how long a terminal document answers at its own address after it leaves the register (TW-RET-004) |
 | *(derived)* reply-list TTL | – | the operation's own | – | not configurable; TW-KEY-004 |
 | *(derived)* keepalive period | seconds | `active_ttl / 4` | – | not configurable; TW-RET-002 |
 | `progress_interval` | seconds (float) | 0.25 | > 0 | latest-wins coalescing window (TW-THR-001) |
@@ -1705,9 +1763,12 @@ Each of these is violable from more than one place; each names the failure it pr
 | `raise_on_cancel` | bool | `True` | – | global default; overridden per action and per call |
 | REST prefix | path | `/taskwire` | – | mount point of the handlers |
 
-**Removed, and not by oversight:** `terminal_ttl` (a terminal entry is dropped, not aged out —
-TW-REG-007) and `dialog_timeout` (dialogs have no deadline — TW-DLG-005). `durable_ttl` survives
-under the name `result_ttl`, because the only thing it still times is an uncollected result.
+**Absent, and not by oversight:** `terminal_ttl` and `dialog_timeout`. There is no terminal linger
+in the register — a terminal entry is out of it in the step that ends it (TW-REG-007) — and
+`tombstone_ttl` is not that linger under another name: it times how long one document answers by
+token, and nothing it times is listed or counted. A dialog has no deadline at all (TW-DLG-005).
+`durable_ttl` survives under the name `result_ttl`, because the only thing it still times is an
+uncollected result.
 
 Configured callables (not settings, not ports): `session_resolver` (required; the only namespace
 producer), `push_filter` (optional, default `lambda client, operation: True`) and `result_released`

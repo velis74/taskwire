@@ -392,6 +392,36 @@ export async function migrateIsIdempotentAndPreservesRev(makeStore: StoreFactory
   equal(await store.migrate(anon, account), 0, 'a second call changes nothing');
 }
 
+/**
+ * TW-REG-007 / TW-RET-004 (`test_terminal_commit_leaves_the_register_and_stays_readable`): the
+ * commit that makes a document terminal is the one that de-indexes it, and the document survives it.
+ *
+ * Both halves are the store's, and a store that implements one without the other is broken in a way
+ * no other check sees: de-indexing alone loses the reason an operation ended, and keeping the
+ * document alone puts a `failed` row in every listing the register draws.
+ */
+export async function terminalCommitLeavesTheRegisterAndStaysReadable(makeStore: StoreFactory): Promise<void> {
+  const store = makeStore();
+  const ending = makeKey(NS, 'ending');
+  const running = makeKey(NS, 'running');
+  await store.commit(ending, sampleProgress(), 60);
+  await store.commit(running, sampleProgress(), 60);
+  equal(tokensOf(await store.listOperations(NS)), ['ending', 'running'], 'precondition: both are listed');
+
+  await store.commit(
+    ending,
+    sampleProgress({ state: 'failed', error: { code: 'import_failed', message: { text: 'boom' }, retryable: false } }),
+    60,
+  );
+
+  equal(tokensOf(await store.listOperations(NS)), ['running'], 'a terminal document is in no listing');
+
+  const tombstone = await store.snapshot(ending);
+  ok(tombstone !== null, 'the terminal document is readable at its own address');
+  equal(tombstone.progress.state, 'failed', 'and it carries which of the three terminal states this was');
+  equal(tombstone.progress.error?.code, 'import_failed', 'along with the reason the absence cannot carry');
+}
+
 /** TW-REG-007's store-side half (`test_terminal_document_can_still_be_dropped`). */
 export async function terminalDocumentCanStillBeDropped(makeStore: StoreFactory): Promise<void> {
   const store = makeStore();
@@ -441,6 +471,7 @@ export const CHECKS: readonly ConformanceCheck[] = [
   dropIsIdempotentAndLeavesSiblings,
   publishNeverRaises,
   migrateIsIdempotentAndPreservesRev,
+  terminalCommitLeavesTheRegisterAndStaysReadable,
   terminalDocumentCanStillBeDropped,
   errorSurvivesARoundTrip,
 ];

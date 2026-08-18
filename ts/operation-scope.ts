@@ -12,10 +12,11 @@
  * writes `failed` with an `error`. The original throw is re-thrown in every failure case: swallowing
  * the application's exception behind a progress-reporting helper is never what the caller meant.
  *
- * **The terminal write and the drop are one step** (TW-REG-007, TW-INV-021). Exit commits the
- * terminal state, publishes the terminal envelope, then drops the document - in that order, so the
- * envelope that tells every client the operation ended goes out before the document that would have
- * told them the same thing disappears. The very next `listOperations()` is already empty.
+ * **The terminal write takes the entry out of the register** (TW-REG-007, TW-INV-021). The very next
+ * `listOperations()` is already empty, because the store de-indexes off the state it is writing. The
+ * document itself stays readable at its own address for `tombstoneTtl` (TW-RET-004): a client that
+ * was not watching learns from the absence of a row only *that* the operation ended, and the
+ * tombstone is the one thing that can tell it `done` from `failed` from `cancelled`.
  *
  * There is deliberately **no ambient reporter and no `progress` singleton** here (TW-SYM-004,
  * TW-TS-017). `TW-AMB-*` rests on `contextvars`; Node's `AsyncLocalStorage` is the near-equivalent
@@ -209,7 +210,7 @@ export async function operation<T>(opts: OperationOptions, body: (reporter: Repo
     ran = { ok: false, raised: error };
   } finally {
     // Stopped before the terminal write, so no keepalive can touch a key the next lines are about to
-    // make terminal and drop, and resurrect its TTL behind them.
+    // put on `tombstoneTtl`, and stretch it back to a running operation's TTL behind them.
     clearInterval(keepalive);
   }
 
@@ -222,6 +223,10 @@ export async function operation<T>(opts: OperationOptions, body: (reporter: Repo
     // to perform it.
     await (store as { withdrawDialogs?: (k: string) => Promise<string[]> }).withdrawDialogs?.(k);
     await reporter.flush();
+    // TW-RET-003: an uncollected result waits on `resultTtl`, not on the interval a running
+    // operation is kept alive by - the flush above wrote at `activeTtl`, and this is what the
+    // Python exit does in the same position.
+    await store.touch(k, settings.resultTtl);
     return ran.value;
   }
 
@@ -231,10 +236,11 @@ export async function operation<T>(opts: OperationOptions, body: (reporter: Repo
   // this is guarded: a purpose-built store need not implement what it never uses.
   await (store as { withdrawDialogs?: (k: string) => Promise<string[]> }).withdrawDialogs?.(k);
 
-  // Write, publish, then drop - in that order (TW-REG-007). The terminal envelope is what a client
-  // sees; a poll arriving afterwards finds nothing, and that is correct.
-  await reporter.writeTerminal(outcome.state, outcome.error);
-  await store.drop(k);
+  // The terminal write takes the entry out of the register in the same step (TW-REG-007, which the
+  // store enforces off the state) and leaves the document readable at its own address for
+  // `tombstoneTtl` (TW-RET-004). The envelope is still what a watching client sees; the tombstone is
+  // what a client that was not watching can read afterwards.
+  await reporter.writeTerminal(outcome.state, outcome.error, settings.tombstoneTtl);
 
   // TW-API-001: re-thrown in every failure case. Returning quietly here would swallow the
   // application's exception behind a progress-reporting helper.
@@ -269,8 +275,9 @@ export async function markQueued(opts: OperationOptions): Promise<void> {
 /**
  * Write `failed` from outside the operation - a dispatch that never reached a worker.
  *
- * Drops the entry in the same step, exactly as `operation()`'s exit does: a terminal entry with
- * nothing to collect does not linger (TW-REG-007).
+ * Takes the entry out of the register in the same step and leaves the document readable at its own
+ * address, exactly as `operation()`'s exit does (TW-REG-007, TW-RET-004): the caller is already
+ * watching a token, and a `404` would tell it nothing about why the work never started.
  */
 export async function markFailed(opts: OperationOptions & { error: TaskwireError | Error }): Promise<void> {
   const settings: ReporterSettings = { ...DEFAULT_SETTINGS, ...opts.settings };
@@ -291,6 +298,5 @@ export async function markFailed(opts: OperationOptions & { error: TaskwireError
     progress: existing.progress,
     clock: opts.clock,
   });
-  await reporter.writeTerminal('failed', error);
-  await store.drop(k);
+  await reporter.writeTerminal('failed', error, settings.tombstoneTtl);
 }
