@@ -687,6 +687,36 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     expect(tw.operations).toEqual([]);
   });
 
+  it('a lingering row can be dismissed from its own handle (§4.3, §5.5)', async () => {
+    // The row `failureLinger` is holding is a **closed** handle - the terminal state settled and
+    // closed it - so the ✕ a footer draws on it calls `hide()` on a handle that has stopped
+    // watching. The purely local members must survive that: they are this tab's own view of its own
+    // collection and reach no server, and a `hide()` that reached nothing would leave the row with
+    // no way off the screen but its own timer.
+    const failed = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report' });
+    server.documents.set(failed.token, snapshotWire(failed.token, { state: 'running' }));
+    await failed;
+    await vi.advanceTimersByTimeAsync(300);
+    expect(tokensOf(tw.operations)).toEqual([failed.token]);
+
+    server.documents.set(failed.token, snapshotWire(failed.token, { state: 'failed', rev: 2 }));
+    await poll();
+    const [row] = tw.operations;
+    expect(row.token).toBe(failed.token);
+    expect(row.closed).toBe(true);
+
+    row.hide();
+    expect(tw.operations).toEqual([]);
+
+    // And the writes are what closing silenced: a corpse asks the server for nothing.
+    const posts = (): number => server.requests.filter((request) => request.method === 'post').length;
+    const before = posts();
+    await row.cancel();
+    await row.dismiss();
+    await expect(row.collect()).rejects.toThrow(/no uncollected result/);
+    expect(posts()).toBe(before);
+  });
+
   it('hide, close and dispose each remove an entry and nothing else does', async () => {
     // §4.3's four ways out, and no fifth.
     const tokens = [new_token(), new_token(), new_token()];

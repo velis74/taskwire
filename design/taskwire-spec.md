@@ -1489,6 +1489,13 @@ class Operation<T> implements PromiseLike<T> {
 }
 ```
 
+**Closing stops the watching, not the view.** A handle closes on the terminal state: its poller is
+released and `answer`, `cancel`, `collect` and `dismiss` become quiet no-ops, because an operation
+that has ended has nothing left to answer, cancel or release. `show`, `hide` and the override map
+MUST keep working on a closed handle - they reach no server, and the row `progressUi.failureLinger`
+holds after a failure is a closed handle, so a `hide()` that reached nothing would leave it with no
+way off the screen but its own timer.
+
 ### 5.5a TypeScript — the operating half (TW-SYM-001)
 
 Everything above reads an operation somebody else is running. This half *is* the operation, and it

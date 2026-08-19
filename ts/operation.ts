@@ -173,6 +173,9 @@ export class Operation<T> implements PromiseLike<T> {
 
   #closed = false;
 
+  /** Whether `release()` has run. `close()` may be called twice; the client must be told once. */
+  #released = false;
+
   #host: OperationHost | null;
 
   readonly #listeners = new Set<(operation: Operation<T>) => void>();
@@ -325,7 +328,7 @@ export class Operation<T> implements PromiseLike<T> {
    */
   async answer(button: string, values?: Record<string, unknown>): Promise<void> {
     const dialog = this.dialog;
-    if (dialog === null) return;
+    if (dialog === null || this.#closed) return;
     try {
       await this.#host?.replyToDialog(this.token, dialog.id, button, values ?? {});
     } catch (raised) {
@@ -363,6 +366,7 @@ export class Operation<T> implements PromiseLike<T> {
    * and the affordance on such an entry is `dismiss()` rather than this (TW-CANCEL-010).
    */
   async cancel(): Promise<void> {
+    if (this.#closed) return;
     try {
       await this.#host?.cancel(this.token);
     } catch (raised) {
@@ -386,7 +390,9 @@ export class Operation<T> implements PromiseLike<T> {
    */
   async collect(): Promise<Result> {
     const result = this.result;
-    if (result === null) throw new Error(`taskwire: operation ${this.token} has no uncollected result`);
+    if (result === null || this.#closed) {
+      throw new Error(`taskwire: operation ${this.token} has no uncollected result`);
+    }
     try {
       await this.#host?.collect(this.token);
     } catch (raised) {
@@ -404,6 +410,7 @@ export class Operation<T> implements PromiseLike<T> {
    * and a `409` is nothing left to release. All three are the state the caller asked for.
    */
   async dismiss(): Promise<void> {
+    if (this.#closed) return;
     try {
       await this.#host?.dismiss(this.token);
     } catch (raised) {
@@ -453,13 +460,23 @@ export class Operation<T> implements PromiseLike<T> {
     this.#host?.clearOverride(this.token);
   }
 
-  /** Stop watching. Automatic on a terminal state; idempotent, because a caller may also ask. */
+  /**
+   * Stop watching. Automatic on a terminal state; idempotent, because a caller may also ask.
+   *
+   * What stops is the *watching*: the poller is released and the four writes go quiet, because an
+   * operation that has ended has nothing left to answer, cancel or release. The purely local members
+   * keep working - `show`, `hide` and the override map are this tab's own view and never reach a
+   * server, and the row a client holds on screen after a failure it saw (`progressUi.failureLinger`)
+   * is a closed handle by definition. A `hide()` that reached nothing would leave that row with no
+   * way off the screen but its own timer.
+   */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    const host = this.#host;
-    this.#host = null;
-    host?.release(this.token);
+    if (!this.#released) {
+      this.#released = true;
+      this.#host?.release(this.token);
+    }
     this.#notify();
   }
 

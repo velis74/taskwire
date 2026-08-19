@@ -285,26 +285,6 @@ site written against the spec changes.
 
 ---
 
-## taskwire-spec.md §5.5 — `Operation.hide()` cannot dismiss a lingering row
-
-**What I needed:** the ✕ on a failed row that `progressUi.failureLinger` is holding on screen.
-
-**What the spec says:** §4.3 makes `hide()` one of the ways an entry leaves the visible collection,
-and §5.5 puts `hide()` on `Operation`.
-
-**What I found:** a lingering row is by definition a **closed** handle — the terminal state settles
-and closes it — and `Operation.close()` drops its host reference, so `op.hide()` on a corpse
-reaches nothing. `tw.hide(token)` still works and is what `register.spec.ts` uses.
-
-**What I assumed:** this is a defect in `operation.ts` rather than in the register, and not mine to
-fix — `close()` nulls the host so `release()` cannot run twice, which is a rule worth keeping. The
-narrow fix is for `close()` to keep the host for the two purely-local members (`show`/`hide`), or for
-`Operation` to remember its client separately. Anything that offers a dismiss control on a lingering
-row needs one of the two, or has to call `tw.hide(op.token)`. The shipped `TaskwireFooter` renders no
-such control, so nothing depends on it today.
-
----
-
 ## `conformance/` — the corpus does not do what it says it does
 
 **What the documents claim**: `conformance/README.md` and the headers of `models_test.py` and

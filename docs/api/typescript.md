@@ -64,6 +64,12 @@ operation.mute(); operation.unmute(); operation.clearOverride();
 operation.onChange(cb); operation.close();
 ```
 
+A handle closes on the terminal state, and what closing stops is the *watching*: the poller is
+released and the four writes go quiet, because an operation that has ended has nothing left to
+answer, cancel or release. `show()`, `hide()` and the override map keep working — they are this tab's
+own view and reach no server, and the row `progressUi.failureLinger` holds after a failure is a
+closed handle by definition, so its ✕ is `hide()` on one.
+
 `answer()`, `cancel()`, `collect()` and `dismiss()` **resolve quietly on 404, 409 and 410** — another
 tab getting there first is the normal outcome of a namespace-wide question, not a fault, and so is
 an operation that ended before the call arrived: while its tombstone is readable the server names
