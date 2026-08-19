@@ -237,7 +237,7 @@ def test_raising_push_filter_treated_as_true(clean_configuration):  # noqa: ARG0
     assert calls == [TOKEN, TOKEN], "the predicate must actually have been consulted and have thrown"
 
 
-def test_client_is_derivable_from_either_a_peer_or_a_request(clean_configuration):  # noqa: ARG001 - fixture is state
+def test_a_client_comes_from_a_peer_or_a_request_never_both(clean_configuration):  # noqa: ARG001 - fixture is state
     """TW-DEL-005: a `Client` comes from a live socket peer **or** an HTTP request, never both.
 
     `session` is populated the same way on both paths - by `session_resolver`, the only producer of
@@ -255,10 +255,20 @@ def test_client_is_derivable_from_either_a_peer_or_a_request(clean_configuration
     assert from_peer.request is None
     assert from_request.request is request
     assert from_request.peer is None
-    # The two supported constructions, one per arrival path. Note the dataclass does not itself
-    # reject `peer=` and `request=` together; this states what a producer is required to build.
+    # The two supported constructions, one per arrival path.
     for client in (from_peer, from_request):
-        assert (client.peer is None) != (client.request is None), "exactly one of peer / request is set"
+        assert (client.peer is None) != (client.request is None), "one of peer / request is set"
+
+    # Both together is refused rather than merely discouraged: `effective_delivery` reads the peer's
+    # override map, and a Client carrying both would apply a socket's declarations to an HTTP read.
+    with pytest.raises(ValueError, match="never both"):
+        Client(session=NS, peer=peer, request=request)
+
+    # Neither is legal and ordinary: a caller reaching `taskwire.rest` directly - a server-rendered
+    # page, a script, this test - has a namespace and nothing else.
+    bare = Client(session=NS)
+    assert bare.peer is None
+    assert bare.request is None
 
     assert Client(session=NS).connection is None
     with pytest.raises(FrozenInstanceError):

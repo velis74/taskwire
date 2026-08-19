@@ -138,7 +138,9 @@ def push_filter(client: Client, operation: OperationRef) -> bool
 ```
 
 The application's own predicate, consulted for each pushed envelope. `Client` carries `session`,
-`connection` and exactly one of `peer` / `request`; `OperationRef` carries `token`, `progress` and the
+`connection` and at most one of `peer` / `request` — either names one caller, both name none, and
+constructing one with both raises. A `Client` with neither is ordinary: that is what a caller
+reaching `taskwire.rest` directly has. `OperationRef` carries `token`, `progress` and the
 `data` and `result_kind` shorthands a predicate almost always keys on.
 
 Two properties are load-bearing. **An exception out of the predicate is treated as `True`**: it is a

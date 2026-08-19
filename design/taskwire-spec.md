@@ -862,7 +862,11 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-DEL-004** `OperationRef` MUST expose the token plus the progress document the push is
   carrying, with `operation.data` as shorthand for the free-form bag.
 - **TW-DEL-005** `Client` MUST be derivable from **either** a live muxws peer **or** an HTTP request,
-  with `session` populated the same way on both. Exactly one of `peer` / `request` is set.
+  with `session` populated the same way on both. It MUST NOT carry both, and MUST refuse to be
+  constructed with both: either names one caller, and both name none - `effective_delivery` would
+  read a socket's override map on behalf of an HTTP read. Carrying **neither** is legal and ordinary:
+  a caller reaching `taskwire.rest` directly has a namespace and nothing else. Test:
+  `delivery_test.py::test_a_client_comes_from_a_peer_or_a_request_never_both`.
 - **TW-DEL-006** The `watch` message MUST declare the **whole** override map, not a delta:
   `{"kind": "watch", "overrides": {token: bool}}`. `false` = suppress, `true` = revive, absent =
   defer to `push_filter`, `{}` = return everything to the predicate. It MUST be idempotent and

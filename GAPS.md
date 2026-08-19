@@ -59,22 +59,6 @@ not added on a guess.
 
 ---
 
-## taskwire-spec.md §5.3 — TW-DEL-005
-
-**What I needed:** to know whether `Client` should enforce its own invariant.
-
-**What the spec says:** "**Exactly one** of `peer` / `request` is set."
-
-**What I assumed:** it is a rule about how a `Client` is *produced*, not one the dataclass enforces.
-`Client(session=..., peer=object(), request=object())` is accepted without complaint. Both paths now
-exist — the socket half builds one from a peer, the REST half from a request — and neither produces
-a `Client` carrying both. A `__post_init__` guard would be one line; a frozen dataclass that raises
-is a different contract from one that does not.
-
-**Still needs deciding:** whether the guard is added or the rule stays advisory.
-
----
-
 ## taskwire-spec.md §3.1 vs §3.3 — `params` on `Text` and on `Result`
 
 `Text.to_dict` omits `params` on falsiness (`if self.params:`), so `Text(params={})` serialises

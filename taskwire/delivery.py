@@ -26,6 +26,19 @@ class Client:
     peer: Any = None
     request: Any = None
 
+    def __post_init__(self) -> None:
+        """TW-DEL-005: a `Client` comes from a socket or from a request, never from both.
+
+        Either names one caller; both name none, and `effective_delivery` would then read a socket's
+        override map on behalf of an HTTP read. Carrying **neither** is legal and ordinary: a caller
+        that reaches `taskwire.rest` directly - a server-rendered page, a script, a test - has a
+        namespace and nothing else.
+        """
+        if self.peer is not None and self.request is not None:
+            raise ValueError(
+                "taskwire: a Client comes from a socket or from a request, never both (TW-DEL-005)"
+            )
+
 
 @dataclass(frozen=True)
 class OperationRef:
