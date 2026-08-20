@@ -141,8 +141,28 @@ await operation({ ns: 'local', store, token: new_token(), resultKind: 'report' }
 });
 ```
 
-`operation()` takes its body as a **callback**; there is no `await using` form. The callback form
-writes the terminal state on the way out whether the body returned or threw, and re-throws.
+`operation()` takes its body as a **callback**, and writes the terminal state on the way out whether
+the body returned or threw, before re-throwing.
+
+There is a block form too, holding the same operation open for the length of an `await using`:
+
+```ts
+import { operationScope } from 'taskwire';
+
+await using op = await operationScope({ ns: 'local', store, token: new_token() });
+try {
+  await work(op.reporter);
+} catch (error) {
+  await op.failed(error);   // without this line the block ends `done`
+  throw error;
+}
+```
+
+**The two are not equivalent.** `Symbol.asyncDispose` is handed no arguments: the disposal runs
+whether the block returned or threw and cannot ask which, so a scope that ends without `failed()`
+ends `done` — including one whose block threw. A callback the library calls is a callback it can
+watch fail; a block it does not call is not, which is why `operation(opts, body)` is the form to
+reach for and this one is for callers who want the lifecycle tied to a scope.
 
 `markQueued` and `markFailed`, imported from the same entry point, are the web side's two writes and
 the twins of the Python ones: a browser that starts work elsewhere writes `queued` under the token

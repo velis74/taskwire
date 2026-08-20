@@ -1551,10 +1551,17 @@ interface Reporter {
 
 - **TW-TS-014** `operation()` MUST take its body as a callback and MUST write the terminal state on
   the way out of it, whether the callback returned or threw, exactly as the Python context manager
-  does. A `Symbol.asyncDispose` form MAY additionally be exported as sugar, but MUST NOT be the only
-  form: `await using` needs TypeScript 5.2 and a runtime with explicit resource management, and
-  TW-SYM-001 does not get to depend on either. Test:
-  `reporter.spec.ts::writes exactly one terminal state and re-throws in every failure case`.
+  does. It MUST be the recommended form, and MUST NOT be the only one: `operationScope()` holds the
+  same operation open for the length of an `await using` block.
+
+  **The two forms are not equivalent, and the difference MUST be documented wherever the block form
+  is.** `Symbol.asyncDispose` is handed no arguments: the disposal runs whether the block returned or
+  threw and cannot ask which, so the block form ends `done` unless the caller named the error with
+  `failed(error)` first. A callback the library calls is a callback the library can watch fail; a
+  block it does not call is not. Tests:
+  `reporter.spec.ts::writes exactly one terminal state and re-throws in every failure case` and
+  `reporter.spec.ts::the await using form writes the same terminal state, and \`done\` when nobody
+  said otherwise`.
 - **TW-TS-015** The TypeScript `Reporter` MUST implement TW-THR-001..006 and TW-NEST-001..014 with
   the same numbers and the same guarantees as Python's, against an injected clock. Throttling MUST
   check the clock inline in `set()` (TW-THR-002); a `setInterval` flush MUST NOT be relied on, for

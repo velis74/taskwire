@@ -11,6 +11,7 @@ import {
   operation,
   OperationCancelled,
   type OperationOptions,
+  operationScope,
 } from './operation-scope';
 import { DEFAULT_SETTINGS, encodedSize, InertReporter, Reporter, type ReporterStore } from './reporter';
 import { type Commit, key as storeKey, MemoryStore } from './store';
@@ -494,6 +495,57 @@ describe('operation()', () => {
     expect(lastEnvelope.v).toBe(WIRE_VERSION);
     expect(lastEnvelope.kind).toBe('progress');
     expect(lastEnvelope.body.state).toBe('done');
+  });
+
+  it('the await using form writes the same terminal state, and `done` when nobody said otherwise', async () => {
+    // TW-TS-014: the same lifecycle, spelled as a block. `operation()` is written on top of this, so
+    // what is asserted here is the half `operation()` cannot do for a caller who writes the block.
+    const clean = new RecordingStore();
+    const token = new_token();
+    {
+      await using op = await operationScope(options(clean, token, new Clock()));
+      await op.reporter.set({ percent: 10 });
+      // Disposed by hand and then again by the block: exactly one terminal state leaves an
+      // operation (TW-API-001), whoever asks for it and however often.
+      await op[Symbol.asyncDispose]();
+    }
+    let terminal = terminalCommits(clean);
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].state).toBe('done');
+
+    // A block that throws and says so: `failed()` names the error, the disposal writes it once.
+    const named = new RecordingStore();
+    await expect(
+      (async () => {
+        await using op = await operationScope(options(named, new_token()));
+        try {
+          await op.reporter.set({ percent: 10 });
+          throw new Error('boom');
+        } catch (error) {
+          await op.failed(error);
+          throw error;
+        }
+      })(),
+    ).rejects.toThrow(/boom/);
+    terminal = terminalCommits(named);
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].state).toBe('failed');
+    expect(terminal[0].error?.message).toEqual({ text: 'boom' });
+
+    // And the trap this form carries, asserted rather than described: `Symbol.asyncDispose` is
+    // handed no arguments, so a block that throws WITHOUT calling `failed()` ends `done`. That is
+    // the reason `operation(opts, body)` exists - it is the one form that can see the exception.
+    const silent = new RecordingStore();
+    await expect(
+      (async () => {
+        await using op = await operationScope(options(silent, new_token()));
+        await op.reporter.set({ percent: 10 });
+        throw new Error('unreported');
+      })(),
+    ).rejects.toThrow(/unreported/);
+    terminal = terminalCommits(silent);
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].state).toBe('done');
   });
 
   it('writes exactly one terminal state and re-throws in every failure case (TW-API-001)', async () => {

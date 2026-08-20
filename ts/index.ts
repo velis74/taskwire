@@ -82,7 +82,15 @@ export {
 } from './tab-hints';
 
 // §5.5a - the operating half: this is what makes a browser-only program a first-class deployment.
-export { markFailed, markQueued, operation, OperationCancelled, type OperationOptions } from './operation-scope';
+export {
+  markFailed,
+  markQueued,
+  operation,
+  OperationCancelled,
+  type OperationOptions,
+  type OperationScope,
+  operationScope,
+} from './operation-scope';
 
 export {
   checkSize,

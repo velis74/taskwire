@@ -141,21 +141,64 @@ function errorFor(raised: unknown): TaskwireError {
 }
 
 /**
- * Open an operation, run `body`, and write exactly one terminal state on the way out (TW-TS-014).
+ * One operation, held open for the length of a block (TW-TS-014).
  *
- * Inert but live-looking when `token`, `ns` or `store` is null (TW-AMB-010 / TW-AMB-009): the body
- * still runs, every progress call is accepted and validated, nothing is written anywhere, and the
- * caller never branches on it. `ask()` is the exception - with no store to arbitrate a reply it
- * throws rather than returning one.
+ * The `await using` spelling of `operation()`, and the same lifecycle underneath: the opening
+ * `running` write, the keepalive, the withdrawal and the one terminal write are all here, and
+ * `operation()` is written on top of it.
+ *
+ * **The terminal state is the caller's in this form, and only in this form.** `Symbol.asyncDispose`
+ * is handed no arguments: the disposal runs whether the block returned or threw and cannot ask which,
+ * so a scope that ends without `failed()` having been called ends `done`. A body that throws must
+ * say so:
+ *
+ * ```ts
+ * await using op = await operationScope({ ns, store, token });
+ * try {
+ *   await risky(op.reporter);
+ * } catch (error) {
+ *   await op.failed(error);   // without this line the block ends `done`
+ *   throw error;
+ * }
+ * ```
+ *
+ * Which is why `operation(opts, body)` is the form to reach for: it does that for you, from the one
+ * place that can see the exception.
  */
-export async function operation<T>(opts: OperationOptions, body: (reporter: Reporter) => Promise<T>): Promise<T> {
+export interface OperationScope extends AsyncDisposable {
+  /** What the body reports through. Live and inert alike, so a caller never branches. */
+  readonly reporter: Reporter;
+  /**
+   * Name the error that ended this block, before it does.
+   *
+   * Records, never writes: the one terminal write is still the disposal's (TW-API-001), and the
+   * state comes from the error - `OperationCancelled` ends `cancelled`, everything else `failed`
+   * (TW-CANCEL-006). Calling it twice keeps the first error, because the first one is the one that
+   * ended the block.
+   */
+  failed(error: unknown): Promise<void>;
+}
+
+/**
+ * Open an operation and hand back the scope holding it (TW-TS-014).
+ *
+ * Inert but live-looking when `token`, `ns` or `store` is null (TW-AMB-010 / TW-AMB-009): the
+ * reporter accepts and validates every progress call, nothing is written anywhere, and the disposal
+ * has nothing to do. `ask()` is the exception - with no store to arbitrate a reply it throws.
+ */
+export async function operationScope(opts: OperationOptions): Promise<OperationScope> {
   const settings: ReporterSettings = { ...DEFAULT_SETTINGS, ...opts.settings };
   const { ns, store, token } = opts;
 
   if (ns === null || store === null || token === null || token === undefined) {
     // No namespace, no store or no token is an application opting this call out. Not an error, and
     // not a reason to make the caller write `if (reporter !== null)`.
-    return body(new InertReporter(settings));
+    const inert = new InertReporter(settings);
+    return {
+      reporter: inert,
+      failed: async () => undefined,
+      [Symbol.asyncDispose]: async () => undefined,
+    };
   }
 
   // The opening `data` is capped exactly as `set({ data })` is (TW-PROG-008): the same document
@@ -203,49 +246,75 @@ export async function operation<T>(opts: OperationOptions, body: (reporter: Repo
     keepalivePeriod(settings) * 1000,
   );
 
-  let ran: { ok: true; value: T } | { ok: false; raised: unknown };
+  let outcome: { state: TerminalState; error?: TaskwireError } = { state: 'done' };
+  let ended = false;
+
+  return {
+    reporter,
+
+    async failed(error: unknown): Promise<void> {
+      if (outcome.state === 'done') outcome = terminalFor(error);
+    },
+
+    async [Symbol.asyncDispose](): Promise<void> {
+      if (ended) return;
+      ended = true;
+      // Stopped before the terminal write, so no keepalive can touch a key the next lines are about
+      // to put on `tombstoneTtl`, and stretch it back to a running operation's TTL behind them.
+      clearInterval(keepalive);
+
+      if (outcome.state === 'done' && reporter.hasParkedResult) {
+        // TW-RES-004: the work is over, the record is not. The operation parks in `waiting_input`
+        // and this returns immediately - it does not wait for collection (TW-RES-005), and neither
+        // does the caller awaiting it (TW-RES-006).
+        await (store as { withdrawDialogs?: (key: string) => Promise<string[]> }).withdrawDialogs?.(k);
+        await reporter.flush();
+        // TW-RET-003: an uncollected result waits on `resultTtl`, not on the interval a running
+        // operation is kept alive by - the flush above wrote at `activeTtl`.
+        await store.touch(k, settings.resultTtl);
+        return;
+      }
+
+      // TW-CANCEL-011: withdraw before the terminal write, so a dialog can never outlive the
+      // operation that asked it - and so anyone blocked in `ask()` is woken rather than left on a
+      // question whose operation has already ended. `withdrawDialogs` is optional on the reporter's
+      // store subset, so this is guarded: a purpose-built store need not implement what it never
+      // uses.
+      await (store as { withdrawDialogs?: (key: string) => Promise<string[]> }).withdrawDialogs?.(k);
+
+      // The terminal write takes the entry out of the register in the same step (TW-REG-007, which
+      // the store enforces off the state) and leaves the document readable at its own address for
+      // `tombstoneTtl` (TW-RET-004). The envelope is still what a watching client sees; the
+      // tombstone is what a client that was not watching can read afterwards.
+      await reporter.writeTerminal(outcome.state, outcome.error, settings.tombstoneTtl);
+    },
+  };
+}
+
+/**
+ * Open an operation, run `body`, and write exactly one terminal state on the way out (TW-TS-014).
+ *
+ * The form to reach for. It is `operationScope()` with the `try`/`catch` written once, here, where
+ * the exception is visible - which is the whole difference between the two: a callback the library
+ * calls is a callback the library can watch fail, and a block it does not call is not.
+ *
+ * Inert but live-looking when `token`, `ns` or `store` is null (TW-AMB-010 / TW-AMB-009): the body
+ * still runs, every progress call is accepted and validated, nothing is written anywhere, and the
+ * caller never branches on it. `ask()` is the exception - with no store to arbitrate a reply it
+ * throws rather than returning one.
+ */
+export async function operation<T>(opts: OperationOptions, body: (reporter: Reporter) => Promise<T>): Promise<T> {
+  const scope = await operationScope(opts);
   try {
-    ran = { ok: true, value: await body(reporter) };
+    return await body(scope.reporter);
   } catch (error) {
-    ran = { ok: false, raised: error };
+    await scope.failed(error);
+    // TW-API-001: re-thrown in every failure case. Swallowing the application's exception behind a
+    // progress-reporting helper is never what the caller meant.
+    throw error;
   } finally {
-    // Stopped before the terminal write, so no keepalive can touch a key the next lines are about to
-    // put on `tombstoneTtl`, and stretch it back to a running operation's TTL behind them.
-    clearInterval(keepalive);
+    await scope[Symbol.asyncDispose]();
   }
-
-  const outcome: { state: TerminalState; error?: TaskwireError } = ran.ok ? { state: 'done' } : terminalFor(ran.raised);
-
-  if (ran.ok && reporter.hasParkedResult) {
-    // TW-RES-004: the work is over, the record is not. The operation parks in `waiting_input` and
-    // this returns immediately - it does not wait for collection (TW-RES-005), and neither does the
-    // caller awaiting it (TW-RES-006). Collection is a separate act so calling code can decide how
-    // to perform it.
-    await (store as { withdrawDialogs?: (k: string) => Promise<string[]> }).withdrawDialogs?.(k);
-    await reporter.flush();
-    // TW-RET-003: an uncollected result waits on `resultTtl`, not on the interval a running
-    // operation is kept alive by - the flush above wrote at `activeTtl`, and this is what the
-    // Python exit does in the same position.
-    await store.touch(k, settings.resultTtl);
-    return ran.value;
-  }
-
-  // TW-CANCEL-011: withdraw before the terminal write, so a dialog can never outlive the operation
-  // that asked it - and so anyone blocked in `ask()` is woken rather than left on a question whose
-  // operation has already ended. `withdrawDialogs` is optional on the reporter's store subset, so
-  // this is guarded: a purpose-built store need not implement what it never uses.
-  await (store as { withdrawDialogs?: (k: string) => Promise<string[]> }).withdrawDialogs?.(k);
-
-  // The terminal write takes the entry out of the register in the same step (TW-REG-007, which the
-  // store enforces off the state) and leaves the document readable at its own address for
-  // `tombstoneTtl` (TW-RET-004). The envelope is still what a watching client sees; the tombstone is
-  // what a client that was not watching can read afterwards.
-  await reporter.writeTerminal(outcome.state, outcome.error, settings.tombstoneTtl);
-
-  // TW-API-001: re-thrown in every failure case. Returning quietly here would swallow the
-  // application's exception behind a progress-reporting helper.
-  if (!ran.ok) throw ran.raised;
-  return ran.value;
 }
 
 /**

@@ -31,20 +31,6 @@ opt-in import, e.g. `taskwire/node`. I did not add one.
 
 ---
 
-## taskwire-spec.md §5.5a — TW-TS-014
-
-**What I needed:** the TypeScript shape of `operation()`, which is a context manager in Python.
-
-**What the spec said:** nothing; §5.5 had no `operation()` at all.
-
-**What I assumed:** the callback form `operation(opts, async (reporter) => { ... })` is normative,
-because it works on every runtime and every TypeScript version. `await using` via
-`Symbol.asyncDispose` reads better but needs TypeScript 5.2 and a runtime with explicit resource
-management, which TW-SYM-001 has no business requiring. I noted in TW-TS-014 that the disposable
-form MAY be exported as additional sugar; I have not written one.
-
----
-
 ## taskwire-spec.md §3.1 vs §3.3 — `params` on `Text` and on `Result`
 
 `Text.to_dict` omits `params` on falsiness (`if self.params:`), so `Text(params={})` serialises
