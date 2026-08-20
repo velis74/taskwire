@@ -517,6 +517,11 @@ adapters to things outside the process, never a capability the core lacks.
   `reconnect.spec.ts::the only watch on on_reconnect declares an empty map`.
 - **TW-REG-021** `tw.operations` MUST NOT be populated wholesale from `tw.register`. Entries join the
   visible set two ways only: `startedHere` plus `progressUi.delay` elapsed, or an explicit `show()`.
+- **TW-REG-023** `tw.operations` MUST keep **insertion order**: a row appears where it entered and
+  does not move. TW-REG-005's sort is the register's, where the reader is choosing what to look at;
+  the visible collection is already on screen, and a row that reorders itself under the cursor
+  because a question opened somewhere else is worse than one that grows at the end. Test:
+  `register.spec.ts::tw.operations keeps the order entries were shown in`.
 - **TW-REG-022** The library MUST NOT ship cross-tab UI synchronisation and MUST NOT offer a hook for
   it. `BroadcastChannel`-based dialog mirroring and leader-elected polling are rejected, not omitted.
 
@@ -1571,6 +1576,9 @@ interface Reporter {
 - **TW-TS-013** `collect()` MUST resolve with the released `Result` and MUST NOT fetch anything
   behind a `ref` — collecting is telling the server the result is taken, and what the application
   does with the pointer is the application's (TW-RES-007).
+- **TW-TS-018** Every composable MUST take the optional `TaskwireOptions` — `{ basePath?,
+  axiosInstance? }` — that `use_taskwire` is keyed by. A page with two API clients has two taskwire
+  clients, and a composable that could not name one would reach only the default.
 
 ```ts
 // taskwire/vue
@@ -1579,8 +1587,9 @@ function use_operation(token: string | { token: string; basePath?: string; axios
     isRunning: ComputedRef<boolean>; isDone: ComputedRef<boolean>;
     answer(button: string, values?: Record<string, unknown>): Promise<void>;
     cancel(): Promise<void> };
-function use_operations(): Ref<Operation<unknown>[]>;
-function use_register(): { entries: Ref<Operation<unknown>[]>; aggregate: Ref<Aggregate | null>;
+function use_operations(options?: TaskwireOptions): Ref<Operation<unknown>[]>;
+function use_register(options?: TaskwireOptions):
+                         { entries: Ref<Operation<unknown>[]>; aggregate: Ref<Aggregate | null>;
                            selected: Ref<Operation<unknown> | null>;
                            show(op): void; collect(op): Promise<Result>;
                            dismiss(op): Promise<void>; mute(op): void };

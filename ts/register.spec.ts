@@ -687,6 +687,30 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     expect(tw.operations).toEqual([]);
   });
 
+  it('tw.operations keeps the order entries were shown in (TW-REG-023)', async () => {
+    // The register's own order is TW-REG-005's - `needs_attention` first, then `created_at` - and it
+    // is for a reader choosing what to look at. The visible collection is already on screen: a row
+    // that reordered itself under the cursor because a question opened somewhere else would be worse
+    // than one that grows at the end.
+    const tokens = [new_token(), new_token(), new_token()];
+    server.list(...tokens.map((token, index) => summaryWire(token, { createdAt: `2026-01-01T00:00:0${index}.000Z` })));
+    await poll();
+
+    // Shown youngest first, which is the opposite of the register's own order.
+    [...tw.register].reverse().forEach((entry) => entry.show());
+    expect(tokensOf(tw.operations)).toEqual([tokens[2], tokens[1], tokens[0]]);
+    expect(tokensOf(tw.register)).toEqual(tokens);
+
+    // A question on the last one moves it to the top of the register and nowhere in the collection.
+    server.list(
+      summaryWire(tokens[2], { createdAt: '2026-01-01T00:00:02.000Z', dialog: true, rev: 2 }),
+      ...tokens.slice(0, 2).map((token, index) => summaryWire(token, { createdAt: `2026-01-01T00:00:0${index}.000Z` })),
+    );
+    await poll();
+    expect(tokensOf(tw.register)).toEqual([tokens[2], tokens[0], tokens[1]]);
+    expect(tokensOf(tw.operations)).toEqual([tokens[2], tokens[1], tokens[0]]);
+  });
+
   it('a lingering row can be dismissed from its own handle (§4.3, §5.5)', async () => {
     // The row `failureLinger` is holding is a **closed** handle - the terminal state settled and
     // closed it - so the ✕ a footer draws on it calls `hide()` on a handle that has stopped

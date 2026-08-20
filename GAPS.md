@@ -242,33 +242,6 @@ register entry never returns, so "drop the pin" and "fall back while absent" are
 
 ---
 
-## taskwire-m1c-ts-register-and-vue.md §4 — the order of `tw.operations`
-
-**What I needed:** an order for the visible subset.
-
-**What the brief says:** TW-REG-005 orders `tw.register`. Nothing orders `tw.operations`.
-
-**What I assumed:** the order entries joined it — a `Map`'s insertion order. A visible row is
-something a user is watching, and re-sorting the list under them every time an entry's
-`needs_attention` flips would move the row they were reading. `tw.register` is where the specified
-sort applies.
-
----
-
-## taskwire-spec.md §5.5 — `use_operations()` and `use_register()` take no arguments
-
-**What I needed:** a way for a component to bind to a client that is not the memoised default —
-which is the same need `use_operation(token | { token, basePath, axiosInstance })` already has.
-
-**What the spec says:** `use_operations(): Ref<Operation<unknown>[]>` and `use_register(): {...}`,
-with no parameters at all.
-
-**What I assumed:** an **optional** `TaskwireOptions` argument on both, mirroring `use_operation`'s
-object form and `use_taskwire`'s. Called with no arguments they behave exactly as declared, so no call
-site written against the spec changes.
-
----
-
 ## `conformance/` — the corpus does not do what it says it does
 
 **What the documents claim**: `conformance/README.md` and the headers of `models_test.py` and
