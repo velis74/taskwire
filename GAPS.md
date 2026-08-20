@@ -45,20 +45,6 @@ form MAY be exported as additional sugar; I have not written one.
 
 ---
 
-## taskwire-spec.md §5.3 / §5.5a — TW-STORE-012
-
-**What I needed:** the import path of the TypeScript conformance suite.
-
-**What the spec said:** `taskwire.conformance` for Python only.
-
-**What I assumed:** nothing is published. `package.json` exports `.`, `/vue`, `/muxws` and
-`/vuetify`; the suite is reached inside this repository as `ts/conformance.ts` and runs under
-vitest. A subpath matching the Python name (`taskwire/conformance`) is the obvious answer and would
-be a fourth entry point for a test-time export rather than a capability, which is the reason it was
-not added on a guess.
-
----
-
 ## taskwire-spec.md §3.1 vs §3.3 — `params` on `Text` and on `Result`
 
 `Text.to_dict` omits `params` on falsiness (`if self.params:`), so `Text(params={})` serialises

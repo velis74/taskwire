@@ -7,9 +7,10 @@ Wire field names are `snake_case`; the TypeScript surface exposes them as `camel
 both directions. Module-level factories keep their Python names verbatim — `use_taskwire`,
 `configure_taskwire`, `new_token` — and there is no `newToken` alias.
 
-Four entry points: `taskwire`, `taskwire/vue`, `taskwire/muxws` and `taskwire/vuetify`. The main entry
-imports axios, the package's one required peer dependency; the other three each import the peer they
-are named for, and those are all optional.
+Five entry points: `taskwire`, `taskwire/vue`, `taskwire/muxws`, `taskwire/vuetify` and
+`taskwire/conformance`. The main entry imports axios, the package's one required peer dependency; the
+`/vue`, `/muxws` and `/vuetify` subpaths each import the optional peer they are named for, and
+`/conformance` imports nothing at all.
 
 ## The client
 
@@ -236,15 +237,15 @@ There is no cross-tab synchronisation anywhere: no `BroadcastChannel`, no leader
 ## Writing your own store
 
 ```ts
-import { runConformance } from './ts/conformance';
+import { runConformance } from 'taskwire/conformance';
 
 await runConformance((options) => new MyStore(options));
 ```
 
-The suite is `ts/conformance.ts` and is reached from a checkout of this repository: the published
-package exposes no `./conformance` entry point. It asserts the same behaviours as
-`taskwire.conformance` does in Python, check for check, so a store is judged by the same standard in
-either language.
+A fifth entry point, published for the same reason `taskwire.conformance` is importable in Python: a
+store is an application's to write — over IndexedDB in a browser, over whatever a service already
+runs — and this is what says whether the thing it wrote is one. It asserts the same behaviours as the
+Python suite, check for check, so a store is judged by the same standard in either language.
 
 ## The aggregate has no percentage
 

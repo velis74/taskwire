@@ -28,6 +28,10 @@
     "./vuetify": {
       "require": "./dist/vuetify.cjs",
       "import": "./dist/vuetify.js"
+    },
+    "./conformance": {
+      "require": "./dist/conformance.cjs",
+      "import": "./dist/conformance.js"
     }
   },
   "workspaces": [

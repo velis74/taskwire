@@ -1,12 +1,13 @@
 /**
  * The store conformance suite (TW-STORE-012).
  *
- * `runConformance` takes a factory for the store under test and runs every check against it. It is
- * reached from this file - the package publishes no `./conformance` entry point, so a store written
- * outside this repository runs the suite from a checkout of it:
+ * `runConformance` takes a factory for the store under test and runs every check against it. It is a
+ * published subpath, `taskwire/conformance`, exactly as `taskwire.conformance` is importable on the
+ * Python side: a store is an application's to write, and this is the only thing that says whether
+ * what it wrote is one.
  *
  * ```ts
- * import { runConformance } from './ts/conformance';
+ * import { runConformance } from 'taskwire/conformance';
  *
  * await runConformance((options) => new MyStore(options));
  * ```
