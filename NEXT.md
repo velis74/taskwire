@@ -5,25 +5,16 @@ done, not when it is ticked.
 
 ---
 
-## 1. Two questions the tab rule cannot answer
+## 1. `isStillOpen` is vacuous exactly when it matters
 
-Both are `DialogAdoption` reasoning over a register payload that is up to one ceiling interval old,
-and both are visible in the demo with two tabs open and no transport.
+`DialogAdoption`'s re-check after `dialogAdoptDelay` reads the entries the client holds, and without
+a socket those are a payload up to 5 s old - four times the 1200 ms delay it guards. Open a second
+tab about a second before `hold`'s deadline: its first read sees the question open, its timer fires
+half a second *after* the worker gave up, the re-check answers `true` from the stale payload, and a
+modal goes up for a question the store withdrew. It now clears on the next read rather than staying,
+so the cost is a few seconds of a modal about nothing.
 
-1. **`isStillOpen` is vacuous exactly when it matters.** The re-check after `dialogAdoptDelay` reads
-   the entries the client holds, and without a socket those are a payload up to 5 s old - four times
-   the 1200 ms delay it guards. Open a second tab about a second before `hold`'s deadline: its first
-   read sees the question open, its timer fires half a second *after* the worker gave up, the
-   re-check answers `true` from the stale payload, and a modal goes up for a question the store
-   withdrew. It now clears on the next read rather than staying, so the cost is a few seconds of a
-   modal about nothing.
-2. **The adopt delay governs the first question only.** `DialogAdoption` is keyed by dialog id and
-   `App.vue` holds an `Operation`, whose `dialog` is the *oldest open* one - so when `reconcile`'s
-   q1 is answered elsewhere and q2 opens, the watching tab's modal never closes and silently becomes
-   q2's, with no delay and no `present()` call. TW-TAB-003's rule is skipped rather than delayed. The
-   fix is in the page: hold the dialog **id** that was adopted, not the operation.
-
-## 2. Four things the end-to-end run walked past
+## 2. Three things the end-to-end run walked past
 
 Found while chasing the socket and the cancel, none of them the defect being chased. In descending
 order of what they cost someone who hits them:
@@ -35,25 +26,24 @@ order of what they cost someone who hits them:
    `X-Taskwire-Token` is never written, the server mints a token of its own, and the handle the
    caller holds polls an address nothing will ever write. Nothing reports it. The docstring at
    `ts/taskwire.ts:603` describes the mechanism; there is no guard and no diagnostic.
-2. **`mute()` / `unmute()` reach no socket.** `Taskwire.overrides` and
-   `MuxwsClientTransport.overrides` are two unconnected maps: only the transport's is ever sent, and
-   only `watch()` sends it. So the client-side half of TW-DEL-006 is inert, and TW-DEL-023's pruning
-   is implemented on the transport's copy alone. Three more client-side symbols have no caller
-   outside the specs and belong to the same hole: `ClientTransport.watch`, the transport's own
-   `forget()` — TW-DEL-023's client half — and `Operation.setStreamId`, which nothing writes.
-3. **A dropped push in the browser leaves no trace, and nothing re-reads.** Bare `catch {}` at
+2. **A dropped push in the browser leaves no trace, and nothing re-reads.** Bare `catch {}` at
    `ts/muxws.ts:150` and `ts/register.ts:440`, and a silent return when no consumer is attached. The
    Python side logs every equivalent drop at debug (`contrib/muxws.py:86,125,127`). The consequence is
    larger than the silence: a socket that is attached and healthy holds every ladder (TW-TS-007), so
    a terminal envelope that is dropped rather than delivered is never asked for again - the operation
    stays `running` on screen with an open question behind it until the socket is lost. The store is
    the truth, and in that arrangement nothing ever asks it.
-4. **A cancel is noticed one `settings.progress_interval` late for a job that does not ask.** The
+3. **A cancel is noticed one `settings.progress_interval` late for a job that does not ask.** The
    sticky flag is re-read inside `_commit` (`taskwire/reporter.py:385,401`), which runs only when the
    throttle window has elapsed - so `set()` called every 0.2 s still raises up to 0.25 s after the
    cancel landed. Bounded and small, but it is not "the next progress call" as TW-CANCEL-002 reads.
 
-A fifth, which is a question rather than a defect: a client that renders only `tw.operations` never
+Two client-side symbols still have no caller outside the specs: `Taskwire.overrides` is pruned only
+by an explicit `clearOverride()`, never when the operation it names ends - unlike
+`MuxwsClientTransport.overrides`, which TW-DEL-023 does prune on its own copy - and
+`Operation.setStreamId` (`ts/operation.ts:552`) is written nowhere.
+
+One more, which is a question rather than a defect: a client that renders only `tw.operations` never
 starts the register loop (TW-REG-021), so `readOnce()` returns immediately and a push naming an
 unknown token asks for nothing. Whether that client is entitled to TW-TS-009's guarantee at all is
 the same question `GAPS.md` records under "when does the register poll start?".
