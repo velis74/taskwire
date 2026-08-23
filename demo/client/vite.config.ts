@@ -13,6 +13,7 @@ export default defineConfig({
       // else: every import in `src/` is the published one, spelled the published way.
       'taskwire/muxws': fileURLToPath(new URL('../../ts/muxws.ts', import.meta.url)),
       'taskwire/vue': fileURLToPath(new URL('../../ts/vue.ts', import.meta.url)),
+      'taskwire/vuetify': fileURLToPath(new URL('../../ts/vuetify.ts', import.meta.url)),
       taskwire: fileURLToPath(new URL('../../ts/index.ts', import.meta.url)),
     },
   },

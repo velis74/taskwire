@@ -216,15 +216,22 @@ function script(token: string, replies: Reply[]): (url: string) => Reply {
 }
 
 /**
- * Every `.ts` under `ts/` that is not a test, **with its comments stripped**.
+ * Every `.ts` under `ts/` that is not a test and not an ambient type declaration, **with its
+ * comments stripped**.
  *
  * The stripping is not cosmetic: several of the rules below are stated in prose in the very files
  * they govern ("there is deliberately no `newToken` alias", "`extends Promise` would call the species
  * constructor"), and a static assertion that fires on its own explanation is a static assertion
  * nobody keeps.
+ *
+ * A `.d.ts` is excluded outright rather than exempted by name: it compiles to nothing, so an import
+ * type inside one can never reach a bundle the way an import in a real module would - and the rules
+ * below are about what a bundle carries.
  */
 function sources(): Map<string, string> {
-  const files = readdirSync(HERE).filter((name) => name.endsWith('.ts') && !name.endsWith('.spec.ts'));
+  const files = readdirSync(HERE).filter(
+    (name) => name.endsWith('.ts') && !name.endsWith('.spec.ts') && !name.endsWith('.d.ts'),
+  );
   return new Map(
     files.map((name) => [
       name,

@@ -10,6 +10,8 @@
  * file is the one place that has to notice.
  */
 declare module '@dynamicforms/vuetify-modal-form-kit' {
+  import type { App, Component } from 'vue';
+
   export interface ModalAction {
     name: string;
     label?: string;
@@ -34,4 +36,12 @@ declare module '@dynamicforms/vuetify-modal-form-kit' {
     yesNo(title: string, message: string, options?: ModalOptions): Promise<string>;
     isInstalled(): boolean;
   };
+
+  /** The Vue plugin an application installs once, before anything calls `modal.*`. */
+  export const DynamicFormsModalFormKit: {
+    install(app: App, options?: Record<string, unknown>): void;
+  };
+
+  /** The host `modal.*` renders into. Mount it once, anywhere under the installed app. */
+  export const ModalView: Component;
 }

@@ -14,11 +14,23 @@
  * The fourth line is muxws's own and taskwire has no part in it: a codec is registered by name at
  * bootstrap, before anything dials, because the name travels in the WebSocket subprotocol offer and
  * a peer that meets it unregistered can only fail the handshake.
+ *
+ * Vuetify and the modal kit are installed unconditionally, not behind the page's UI toggle: a Vue
+ * plugin is registered once at bootstrap, and `App.vue` switches only which dialog presenter and
+ * which register widget it mounts (`taskwire/vuetify`'s `useTaskwireDialogs` and `TaskwireFooter`
+ * versus the page's own hand-rolled equivalents).
  */
 
+import '@mdi/font/css/materialdesignicons.css';
+import 'vuetify/styles';
+
+import { DynamicFormsModalFormKit } from '@dynamicforms/vuetify-modal-form-kit';
 import { JsonCodec, registerCodec } from 'muxws';
 import { configure_taskwire } from 'taskwire';
 import { createApp } from 'vue';
+import { createVuetify } from 'vuetify';
+import * as components from 'vuetify/components';
+import * as directives from 'vuetify/directives';
 
 import App from './App.vue';
 
@@ -29,4 +41,6 @@ configure_taskwire({
   dialogAdoptDelay: 1200,
 });
 
-createApp(App).mount('#app');
+const vuetify = createVuetify({ components, directives, icons: { defaultSet: 'mdi' } });
+
+createApp(App).use(vuetify).use(DynamicFormsModalFormKit).mount('#app');

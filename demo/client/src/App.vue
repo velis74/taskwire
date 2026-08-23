@@ -36,13 +36,15 @@
  * decision about how a question should look, and which wire to dial.
  */
 
+import { ModalView } from '@dynamicforms/vuetify-modal-form-kit';
 import axios from 'axios';
 import { connect, type Peer } from 'muxws';
-import { computed, onMounted, onScopeDispose, ref, shallowRef } from 'vue';
+import { computed, effectScope, onMounted, onScopeDispose, ref, shallowRef } from 'vue';
 
 import { DialogAdoption, type Operation, taskwireConfig, use_taskwire } from 'taskwire';
 import { attachMuxws, detachMuxws } from 'taskwire/muxws';
 import { use_register } from 'taskwire/vue';
+import { TaskwireFooter, useTaskwireDialogs } from 'taskwire/vuetify';
 
 interface Position {
   symbol: string;
@@ -169,6 +171,39 @@ onScopeDispose(() => {
 });
 
 // ------------------------------------------------------------------------------------------------
+// Which dialog presenter and register widget this page mounts
+// ------------------------------------------------------------------------------------------------
+
+type Ui = 'plain' | 'vuetify';
+
+const ui = ref<Ui>('plain');
+
+/**
+ * `useTaskwireDialogs` registers its own teardown with `onScopeDispose`, which needs an active
+ * effect scope to attach to - and a scope is only active while `setup()` runs synchronously, not
+ * inside a click handler fired later. A detached `effectScope` gives it one to attach to on demand,
+ * and `.stop()` runs that teardown exactly as unmounting the component would.
+ */
+let vuetifyDialogs: ReturnType<typeof effectScope> | null = null;
+
+function chooseUi(next: Ui): void {
+  if (next === ui.value) return;
+  if (next === 'vuetify') {
+    vuetifyDialogs = effectScope(true);
+    vuetifyDialogs.run(() => useTaskwireDialogs({ client: tw }));
+    // The shipped adapter owns presentation from here - the page's own scrim must not also open
+    // for a dialog it is no longer watching.
+    asking.value = null;
+  } else {
+    vuetifyDialogs?.stop();
+    vuetifyDialogs = null;
+  }
+  ui.value = next;
+}
+
+onScopeDispose(() => vuetifyDialogs?.stop());
+
+// ------------------------------------------------------------------------------------------------
 // The question on screen
 // ------------------------------------------------------------------------------------------------
 
@@ -211,9 +246,11 @@ onScopeDispose(() => {
 });
 
 // Every register read, not only every push: a tab opened while a question was already outstanding
-// must adopt it too, so "arrives" has to include "was already there" (TW-TAB-004).
+// must adopt it too, so "arrives" has to include "was already there" (TW-TAB-004). Only in 'plain'
+// mode - in 'vuetify' mode the shipped adapter runs its own copy of this same loop.
 onScopeDispose(
   tw.onRegisterChange((operations) => {
+    if (ui.value !== 'plain') return;
     for (const entry of operations) {
       const dialog = entry.dialog;
       if (dialog === null) continue;
@@ -279,6 +316,9 @@ function resultText(entry: Operation<unknown>): string | null {
 </script>
 
 <template>
+  <!-- `v-app` supplies the theme context `TaskwireFooter`'s and `ModalView`'s Vuetify components
+       read - present regardless of `ui`, since switching modes must not remount it mid-question. -->
+  <v-app>
   <main>
     <header>
       <h1>Night batch</h1>
@@ -313,6 +353,15 @@ function resultText(entry: Operation<unknown>): string | null {
       <small v-else>polling, 400&nbsp;ms to 5&nbsp;s</small>
     </section>
 
+    <!-- 'Plain' is this file's own hand-rolled scrim and bar; 'Vuetify' is `useTaskwireDialogs` and
+         `TaskwireFooter` from `taskwire/vuetify` - the two shipped deliverables that were mounted
+         nowhere else. Both read the same register; only the presentation changes. -->
+    <section class="wire">
+      <span class="label">Dialogs</span>
+      <button type="button" :class="{ on: ui === 'plain' }" @click="chooseUi('plain')">Plain</button>
+      <button type="button" :class="{ on: ui === 'vuetify' }" @click="chooseUi('vuetify')">Vuetify</button>
+    </section>
+
     <section class="jobs">
       <button v-for="job in JOBS" :key="job.name" type="button" @click="start(job.name)">
         {{ job.label }}
@@ -329,6 +378,10 @@ function resultText(entry: Operation<unknown>): string | null {
         waiting &middot; {{ aggregate.data.total ?? 0 }} in the register
       </span>
     </section>
+
+    <!-- The shipped footer: one bar for the selected operation's own percentage, never an aggregate
+         one (TW-REG-013). It hides itself when the register is empty. -->
+    <TaskwireFooter v-if="ui === 'vuetify'" />
 
     <section v-if="entries.length" class="register">
       <article
@@ -390,8 +443,9 @@ function resultText(entry: Operation<unknown>): string | null {
     </section>
 
     <!-- The question. `params` is everything the server sent about it; taskwire never composed a
-         sentence, and this markup is where the wording actually happens. -->
-    <div v-if="question" class="scrim">
+         sentence, and this markup is where the wording actually happens. Plain mode only - in
+         Vuetify mode the shipped adapter presents through the modal kit instead. -->
+    <div v-if="question && ui === 'plain'" class="scrim">
       <div class="dialog" role="dialog" aria-modal="true">
         <h3>{{ question.title }}</h3>
         <p>{{ question.dialog.dialogId }}</p>
@@ -415,7 +469,10 @@ function resultText(entry: Operation<unknown>): string | null {
              and leaving the question open is correct (TW-DLG-007). Another tab may still adopt it. -->
       </div>
     </div>
+
+    <ModalView />
   </main>
+  </v-app>
 </template>
 
 <style>
@@ -434,6 +491,9 @@ function resultText(entry: Operation<unknown>): string | null {
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink);
   font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+/* `v-app` ships its own background and font; this page's theme is the one on `body` above. */
+.v-application, .v-application .v-application__wrap { background: transparent !important; }
+.v-application { font: inherit !important; color: inherit !important; }
 main { max-width: 60rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; }
 h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
 h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
@@ -459,6 +519,24 @@ h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; color: v
   border: 1px solid var(--line); border-radius: .5rem; margin-bottom: 1rem; }
 .aggregate[data-state='waiting_input'] { border-color: var(--warn); }
 .aggregate span { color: var(--muted); font-size: .875rem; }
+
+/* `TaskwireFooter` ships no CSS of its own (TW-REG-013's honesty extends to the markup: nothing
+   here is invented on its behalf) - this is this page's own rendering of its classes. Grid, not
+   flex: the bar sets its own `width` as a percentage (or leaves it unset when indeterminate), and a
+   flex item's width competes with `flex-grow` for that same box - a grid column's track does not,
+   so the bar's percentage renders against a fixed track regardless. */
+.taskwire-footer { display: grid; grid-template-columns: auto 1fr auto; align-items: center;
+  gap: .75rem; padding: .5rem .85rem; border: 1px solid var(--line); border-radius: .5rem;
+  margin-bottom: 1rem; font-size: .875rem; }
+.taskwire-footer[data-state='waiting_input'] { border-color: var(--warn); }
+.taskwire-footer__label { color: var(--muted); }
+.taskwire-footer__bar { height: .4rem; background: var(--accent); border-radius: 999px;
+  transition: width .25s ease; }
+.taskwire-footer__bar[data-indeterminate='true'] { background: var(--line); position: relative;
+  overflow: hidden; width: 100%; }
+.taskwire-footer__bar[data-indeterminate='true']::after { content: ''; position: absolute; inset: 0;
+  width: 35%; background: var(--accent); border-radius: inherit; animation: slide 1.1s ease-in-out infinite; }
+.taskwire-footer__counts { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .register { display: grid; gap: .75rem; margin-bottom: 2rem; }
 .register article { border: 1px solid var(--line); border-radius: .5rem; padding: .75rem .85rem; }

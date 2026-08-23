@@ -9,10 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.4.0",
+    "@dynamicforms/fastapi-viewsets": "^0.5.1",
+    "@dynamicforms/vuetify-modal-form-kit": "^0.7.3",
+    "@mdi/font": "^7.4.47",
     "axios": "^1.13.6",
     "muxws": "^0.3.1",
-    "vue": "^3.5.35"
+    "vue": "^3.5.35",
+    "vuetify": "^3.13.1"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6",

@@ -5,7 +5,8 @@
     "paths": {
       "taskwire": ["../../ts/index.ts"],
       "taskwire/muxws": ["../../ts/muxws.ts"],
-      "taskwire/vue": ["../../ts/vue.ts"]
+      "taskwire/vue": ["../../ts/vue.ts"],
+      "taskwire/vuetify": ["../../ts/vuetify.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "vite.config.ts", "../../ts/*.d.ts"]

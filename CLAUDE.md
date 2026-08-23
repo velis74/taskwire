@@ -122,6 +122,5 @@ eventually is not a row that arrived.
 1. Adopting `wrap_sync_runner` in fastapi-viewsets — three edits, all in that repository.
 2. CI and publishing.
 
-**The seams that have never run**: the Vuetify components, which have never been mounted, and
-`wrap_sync_runner` against a real Celery worker — its tests drive the runner directly, because the
-caller that will apply it has not been changed yet.
+**The seam that has never run**: `wrap_sync_runner` against a real Celery worker — its tests drive
+the runner directly, because the caller that will apply it has not been changed yet.
