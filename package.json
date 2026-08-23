@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Progress reporting and awaitable dialogs for long-running server-side operations.",
-  "author": "Jure Erzno\u017enik",
+  "author": "Jure Erznožnik",
   "license": "MIT",
   "files": [
     "dist/*"
