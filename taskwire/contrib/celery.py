@@ -310,19 +310,43 @@ def configure_worker(store: Any) -> None:
     configured.transport = NullTransport()
 
 
-def register_taskwire_celery_viewset() -> None:
-    """Wire `wrap_sync_runner` into fastapi-viewsets' `celery_viewset_server` (TW-CELERY-007).
+async def _celery_dispatch_hook(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The client-side hook fastapi-viewsets calls just before `send_task` (TW-CELERY-007).
 
-    Call once, on the worker, after fastapi-viewsets' `celery_viewset_server` decorator has run. A
-    call whose kwargs never carry `_taskwire_token` / `_taskwire_session` gets its runner back
-    unchanged (TW-AMB-009), so this is safe to call even for a deployment that dispatches viewset
-    actions to Celery without taskwire tracking any of them.
-
-    The dispatch side - putting `_taskwire_token` / `_taskwire_session` into a `celery_viewset_client`
-    call's kwargs in the first place - has no equivalent registration yet. Nothing today makes an
-    inbound request's token ambient outside of `operation()`, which TW-CELERY-005 forbids opening on
-    the dispatching side.
+    Reads `context["taskwire_token"]` / `["taskwire_session"]` - present only if the application
+    registered `taskwire_context_processor` (or its own equivalent) for this `celery_viewset_client`
+    call, and declared a `context: Context` parameter for the action to carry it. Neither is required
+    for the call itself; an action with no `context` kwarg or no token in it is one this deployment
+    opted out of tracking (TW-AMB-009), and this returns `{}`.
     """
+    from .viewsets import CONNECTION_KEY, SESSION_KEY, TOKEN_KEY
+
+    context = kwargs.get("context")
+    if context is None or TOKEN_KEY not in context or SESSION_KEY not in context:
+        return {}
+    token = await context[TOKEN_KEY]
+    session = await context[SESSION_KEY]
+    if token is None or session is None:
+        return {}
+    connection = await context[CONNECTION_KEY] if CONNECTION_KEY in context else None
+
+    # No `result_kind`: the hook has no route-specific information to derive one from, and the field
+    # is write-once (TW-PROG-006) - an operation dispatched this way keeps the generic rendering a
+    # missing `result_kind` gets, rather than one guessed from nothing.
+    await mark_queued(token, session=session, connection=connection)
+    return {TOKEN_KWARG: token, SESSION_KWARG: session}
+
+
+def register_taskwire_celery_viewset() -> None:
+    """Wire taskwire into both of fastapi-viewsets' Celery viewset hooks (TW-CELERY-007).
+
+    Call once: `set_celery_kwargs_hook` on the worker, `set_celery_dispatch_hook` wherever the web
+    process dispatches. Both degrade to a no-op for a call taskwire was never told to track
+    (TW-AMB-009), so this is safe to call even for a deployment where some `celery_viewset` actions
+    carry no `context: Context` parameter and no token at all.
+    """
+    from fastapi_viewsets.decorators.celery_viewset.client import set_celery_dispatch_hook
     from fastapi_viewsets.decorators.celery_viewset.server import set_celery_kwargs_hook
 
     set_celery_kwargs_hook(wrap_sync_runner)
+    set_celery_dispatch_hook(_celery_dispatch_hook)

@@ -65,7 +65,7 @@ from ..rest import collect_result, dismiss_result, get_operations, get_snapshot,
 from ..settings import configured, settings
 from . import schema
 
-# The two keys the context processor contributes. Namespaced, because the context dict is shared
+# The three keys the context processor contributes. Namespaced, because the context dict is shared
 # with every other processor the application has configured.
 SESSION_KEY = "taskwire_session"
 """Where the namespace `session_resolver` returned sits in the context."""
@@ -73,9 +73,17 @@ SESSION_KEY = "taskwire_session"
 CONNECTION_KEY = "taskwire_connection"
 """Where the value of `CONNECTION_HEADER`, or `None`, sits in the context."""
 
+TOKEN_KEY = "taskwire_token"
+"""Where the value of `TOKEN_HEADER`, or `None`, sits in the context.
+
+Read by `taskwire.contrib.celery`'s dispatch hook (TW-CELERY-007): a `celery_viewset_client` action
+has no `Request` of its own, only whatever a context processor put in `context` before dispatch, and
+this is the one key that carries the token across that boundary.
+"""
+
 
 async def taskwire_context_processor(request: Request, _viewset: Any = None) -> dict[str, Any]:
-    """Lift the namespace and the connection id off the live request, once, for every action.
+    """Lift the namespace, the connection id and the token off the live request, once, per action.
 
     A viewset endpoint never receives the `Request` - `route_viewset` reserves that parameter name
     and strips it before FastAPI sees the signature - so this processor is the supported way in, and
@@ -89,6 +97,7 @@ async def taskwire_context_processor(request: Request, _viewset: Any = None) -> 
     return {
         SESSION_KEY: resolver(request) if resolver is not None else None,
         CONNECTION_KEY: request.headers.get(CONNECTION_HEADER),
+        TOKEN_KEY: request.headers.get(TOKEN_HEADER),
     }
 
 

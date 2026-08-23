@@ -535,19 +535,75 @@ def test_the_operation_ends_before_the_runner_returns():
         reset_configuration()
 
 
-def test_register_taskwire_celery_viewset_installs_wrap_sync_runner():
-    """`register_taskwire_celery_viewset` wires the hook fastapi-viewsets exposes to this one.
+def test_register_taskwire_celery_viewset_installs_both_hooks():
+    """`register_taskwire_celery_viewset` wires the hooks fastapi-viewsets exposes to this one.
 
     fastapi-viewsets never imports taskwire; the registration runs the other way, from here.
     """
     pytest.importorskip("fastapi_viewsets")
-    from fastapi_viewsets.decorators.celery_viewset import server as celery_viewset_server
+    from fastapi_viewsets.decorators.celery_viewset import (
+        client as celery_viewset_client,
+        server as celery_viewset_server,
+    )
 
-    from taskwire.contrib.celery import register_taskwire_celery_viewset, wrap_sync_runner
+    from taskwire.contrib.celery import _celery_dispatch_hook, register_taskwire_celery_viewset, wrap_sync_runner
 
     celery_viewset_server.set_celery_kwargs_hook(None)
+    celery_viewset_client.set_celery_dispatch_hook(None)
     try:
         register_taskwire_celery_viewset()
         assert celery_viewset_server._celery_kwargs_hook is wrap_sync_runner
+        assert celery_viewset_client._celery_dispatch_hook is _celery_dispatch_hook
     finally:
         celery_viewset_server.set_celery_kwargs_hook(None)
+        celery_viewset_client.set_celery_dispatch_hook(None)
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_the_dispatch_hook_reads_context_and_writes_queued():
+    """The dispatch hook fastapi-viewsets 0.5.4 calls with the call's own kwargs (TW-CELERY-007).
+
+    A `context` carrying the token and namespace a `taskwire_context_processor` put there is what
+    turns an ordinary `celery_viewset_client` call into a tracked one - nothing else does.
+    """
+    pytest.importorskip("fastapi_viewsets")
+    from fastapi_viewsets.context import Context
+
+    store = MemoryStore()
+    configure(store=store)
+    try:
+        token = new_token()
+        context = Context({"taskwire_token": token, "taskwire_session": NS, "taskwire_connection": "conn-7"})
+
+        extra = await taskwire.contrib.celery._celery_dispatch_hook({"context": context, "rows": 3})
+
+        assert extra == {"_taskwire_token": token, "_taskwire_session": NS}
+        snapshot = await store.snapshot(make_key(NS, token))
+        assert snapshot is not None
+        assert ProgressState(snapshot.progress.state) is ProgressState.QUEUED
+        assert snapshot.progress.origin_connection == "conn-7"
+        assert snapshot.progress.result_kind is None, "no route-specific hint to derive one from"
+    finally:
+        reset_configuration()
+
+
+@pytest.mark.usefixtures("_unthrottled")
+async def test_the_dispatch_hook_is_a_no_op_without_a_tracked_token():
+    """TW-AMB-009: no `context`, or a `context` with no token, opts the call out - not an error."""
+    pytest.importorskip("fastapi_viewsets")
+    from fastapi_viewsets.context import Context
+
+    store = MemoryStore()
+    configure(store=store)
+    try:
+        assert await taskwire.contrib.celery._celery_dispatch_hook({"rows": 3}) == {}
+
+        untracked = Context({"taskwire_session": NS, "taskwire_connection": None})
+        assert await taskwire.contrib.celery._celery_dispatch_hook({"context": untracked}) == {}
+
+        no_session = Context({"taskwire_token": new_token(), "taskwire_session": None, "taskwire_connection": None})
+        assert await taskwire.contrib.celery._celery_dispatch_hook({"context": no_session}) == {}
+
+        assert await store.list_operations(NS) == []
+    finally:
+        reset_configuration()
