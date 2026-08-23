@@ -150,8 +150,18 @@ def start_server(port: int) -> subprocess.Popen:
     """uvicorn, in a session of its own so one `killpg` takes the reloader's children with it."""
     environment = {**os.environ, "TASKWIRE_DEMO_PORT": str(port), "PYTHONUNBUFFERED": "1"}
     return subprocess.Popen(  # noqa: S603 - this interpreter, fixed arguments
-        [sys.executable, "-m", "uvicorn", "demo.server.main:app", "--host", "127.0.0.1", "--port", str(port),
-         "--log-level", "warning"],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "demo.server.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
         cwd=ROOT,
         env=environment,
         start_new_session=True,

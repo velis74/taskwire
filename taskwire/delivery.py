@@ -35,9 +35,7 @@ class Client:
         namespace and nothing else.
         """
         if self.peer is not None and self.request is not None:
-            raise ValueError(
-                "taskwire: a Client comes from a socket or from a request, never both (TW-DEL-005)"
-            )
+            raise ValueError("taskwire: a Client comes from a socket or from a request, never both (TW-DEL-005)")
 
 
 @dataclass(frozen=True)

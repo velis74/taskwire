@@ -42,6 +42,7 @@
     "build": "vite build",
     "test": "vitest run --coverage",
     "lint": "eslint ts --fix && vue-tsc --noEmit",
+    "lint:ci": "eslint ts && vue-tsc --noEmit",
     "docs:dev": "npm run docs:dev -w docs",
     "docs:build": "npm run docs:build -w docs",
     "docs:preview": "npm run docs:preview -w docs"
@@ -58,8 +59,8 @@
     "url": "git@github.com:velis74/taskwire.git"
   },
   "peerDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.4.0",
-    "@dynamicforms/vuetify-modal-form-kit": "^0.1.0",
+    "@dynamicforms/fastapi-viewsets": "^0.5.0",
+    "@dynamicforms/vuetify-modal-form-kit": "^0.7.0",
     "axios": "^1.13.6",
     "muxws": "^0.3.1",
     "vue": "^3.4",
@@ -83,8 +84,8 @@
     }
   },
   "devDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.4.0",
-    "@dynamicforms/vuetify-modal-form-kit": "^0.5.5",
+    "@dynamicforms/fastapi-viewsets": "^0.5.1",
+    "@dynamicforms/vuetify-modal-form-kit": "^0.7.3",
     "@types/node": "^24",
     "@vitejs/plugin-vue": "^6",
     "@vitest/coverage-v8": "^3",

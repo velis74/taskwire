@@ -112,14 +112,8 @@ TW-RES-010 and say plainly that an uncollected result expires unreleased.
 
 ## Open questions for the author
 
-1. **Should `contrib/fastapi.py` be deleted?** It is the old hand-rolled `APIRouter`, still working
-   and still tested, but there are now two FastAPI entry points for one API. `contrib/asgi.py`
-   already covers "no framework at all", and `contrib/viewsets.py` covers "with FastAPI". Deleting it
-   removes a public entry point, so it was left alone.
-2. **The OPEN entries in `GAPS.md`**: the Node-only ambient proxy, the `operation()` callback form vs
+1. **The OPEN entries in `GAPS.md`**: the Node-only ambient proxy, the `operation()` callback form vs
    `await using`, the TS conformance import path, TW-STORE-014's one-round-trip requirement against
    the port's `-> int` signature, whether `Client` should enforce exactly one of peer/request, the
    `Text.params` vs `Result.params` empty-dict inconsistency, and what the conformance corpus is
    actually for.
-3. **Should the demo mount `taskwire/vuetify`?** It uses the framework-free composables, so the
-   shipped dialog adapter and footer are still the only part of the library never mounted live.

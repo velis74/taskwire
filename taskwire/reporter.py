@@ -421,9 +421,7 @@ class Reporter:
         # One write, and both of its answers: the new `rev`, and the sticky cancel flag as that
         # write saw it (TW-STORE-014). Asking the store a second time would be a second round trip
         # per commit against anything that is not a dictionary.
-        written = await self._store.commit(
-            self._key, self._progress, settings.active_ttl if ttl is None else ttl
-        )
+        written = await self._store.commit(self._key, self._progress, settings.active_ttl if ttl is None else ttl)
         self._rev = written.rev
         self._last_commit = self._clock()
         self._cancelled = written.cancelled

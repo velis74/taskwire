@@ -175,8 +175,7 @@ def test_effective_delivery_is_true_by_default(clean_configuration):  # noqa: AR
     for client in clients:
         for operation in operations:
             assert effective_delivery(client, operation) is True, (
-                f"progress_delivery must be True for every entry by default: "
-                f"{client} / {operation.progress.state}"
+                f"progress_delivery must be True for every entry by default: {client} / {operation.progress.state}"
             )
 
 
