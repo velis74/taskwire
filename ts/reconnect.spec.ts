@@ -140,13 +140,14 @@ afterEach(() => {
 describe('reconnecting (TW-REG-020)', () => {
   it('the only watch on on_reconnect declares an empty map', async () => {
     // Named in the specification. The two ways the claim could stop holding are both asserted
-    // rather than described: the client declares nothing but an empty map on a fresh socket, and
-    // no module replays an override map on one.
+    // rather than described: the fresh socket a reconnect attaches declares nothing on its own,
+    // and no module replays an override map on one.
     const token = new_token();
     server.list(token);
     const client = new Taskwire(DEFAULT_BASE_PATH, server.http);
     try {
-      // A socket that lived, held overrides, and went away.
+      // A socket that lived and held overrides. Each explicit call declares the whole map at that
+      // instant - TW-DEL-006's own purpose - and the last one leaves it empty again.
       const first = new FakeSocket();
       client.attachTransport(first);
       client.mute(token);
@@ -154,16 +155,14 @@ describe('reconnecting (TW-REG-020)', () => {
       client.clearOverride(token);
       void client.register;
       await vi.advanceTimersByTimeAsync(2000);
+      expect(first.declared).toEqual([{ [token]: false }, { [token]: true }, {}]);
 
-      // The new socket after the reconnect. Nothing the old one held may travel with it.
+      // The new socket after the reconnect. Nothing the old one held travels with it: attaching
+      // declares nothing by itself, and nothing here calls mute/unmute/clearOverride again.
       const second = new FakeSocket();
       client.attachTransport(second);
       await vi.advanceTimersByTimeAsync(2000);
-
-      [first, second].forEach((socket) => {
-        socket.declared.forEach((overrides) => expect(overrides).toEqual({}));
-      });
-      expect(second.declared.every((overrides) => Object.keys(overrides).length === 0)).toBe(true);
+      expect(second.declared).toEqual([]);
     } finally {
       client.dispose();
     }

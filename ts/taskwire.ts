@@ -1013,16 +1013,28 @@ export class Taskwire implements OperationHost, RegisterClient {
   /** Record `false` for this token in this client's override map: suppress its progress (TW-DEL-006). */
   mute(token: string): void {
     this.overrides.set(token, false);
+    this.declareOverrides();
   }
 
   /** Record `true` for this token: revive it whatever the server's predicate says (TW-DEL-006). */
   unmute(token: string): void {
     this.overrides.set(token, true);
+    this.declareOverrides();
   }
 
   /** Drop this token's entry, so the server's `push_filter` decides for it again (TW-DEL-006). */
   clearOverride(token: string): void {
     this.overrides.delete(token);
+    this.declareOverrides();
+  }
+
+  /**
+   * Push this client's whole override map to the attached transport, if any (TW-DEL-006). A no-op
+   * with nothing attached: there is no push channel to suppress anything on, and the map itself
+   * still lives in memory for whichever transport attaches next.
+   */
+  private declareOverrides(): void {
+    void this.transport?.watch?.(Object.fromEntries(this.overrides));
   }
 
   /** Purely local, this tab's visible collection, and invisible to every other tab (§4.3). */

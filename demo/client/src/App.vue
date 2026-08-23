@@ -207,7 +207,7 @@ onScopeDispose(() => vuetifyDialogs?.stop());
 // The question on screen
 // ------------------------------------------------------------------------------------------------
 
-const asking = shallowRef<Operation<unknown> | null>(null);
+const asking = ref<string | null>(null);
 const answering = ref(false);
 
 const openDialogFor = (id: string): Operation<unknown> | null =>
@@ -221,8 +221,7 @@ const openDialogFor = (id: string): Operation<unknown> | null =>
  * is where the timing bugs live, which is why `DialogAdoption` is framework-free and exported.
  */
 const present = (id: string): void => {
-  const owner = openDialogFor(id);
-  if (owner !== null) asking.value = owner;
+  if (openDialogFor(id) !== null) asking.value = id;
 };
 
 const adopters = {
@@ -256,14 +255,17 @@ onScopeDispose(
       if (dialog === null) continue;
       (entry.startedHere ? adopters.here : adopters.elsewhere).seen(dialog);
     }
-    // Close the modal when the question left `open` - answered here, answered in another tab, or
-    // withdrawn because the operation ended (TW-DLG-016).
-    if (asking.value !== null && asking.value.dialog === null) asking.value = null;
+    // Close the modal when the question left `open` - answered here, answered in another tab,
+    // withdrawn because the operation ended (TW-DLG-016), or replaced by the same operation's next
+    // question. `openDialogFor` matches on dialog id, so an operation that moved on to a new dialog
+    // no longer answers for the id this tab is holding, and the stale modal comes down rather than
+    // silently relabelling itself.
+    if (asking.value !== null && openDialogFor(asking.value) === null) asking.value = null;
   }),
 );
 
 async function answer(button: string): Promise<void> {
-  const operation = asking.value;
+  const operation = asking.value !== null ? openDialogFor(asking.value) : null;
   if (operation === null) return;
   answering.value = true;
   try {
@@ -286,7 +288,8 @@ async function answer(button: string): Promise<void> {
  * renders the other's as blanks and `NaN`.
  */
 const question = computed(() => {
-  const dialog = asking.value?.dialog;
+  const operation = asking.value !== null ? openDialogFor(asking.value) : null;
+  const dialog = operation?.dialog;
   if (!dialog) return null;
   const params = (dialog.params ?? {}) as Record<string, unknown>;
   const rows = Object.entries(params).map(([key, value]) => ({
@@ -294,7 +297,7 @@ const question = computed(() => {
     label: key.replace(/_/g, ' ').replace(/^./, (first) => first.toUpperCase()),
     value: typeof value === 'number' ? fmt.format(value) : String(value),
   }));
-  return { dialog, rows, title: asking.value?.title?.text ?? 'A decision is needed' };
+  return { dialog, rows, title: operation?.title?.text ?? 'A decision is needed' };
 });
 
 // ------------------------------------------------------------------------------------------------

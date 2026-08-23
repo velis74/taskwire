@@ -150,11 +150,18 @@ function snapshotPayload(token: string, state: ProgressState, over: WireObject =
 class FakeTransport implements ClientTransport {
   private listener: ((envelope: Envelope) => void) | null = null;
 
+  /** Every `watch` declaration this transport has received, in order. */
+  readonly watchCalls: Record<string, boolean>[] = [];
+
   subscribe(onEnvelope: (envelope: Envelope) => void): () => void {
     this.listener = onEnvelope;
     return () => {
       this.listener = null;
     };
+  }
+
+  watch(overrides: Record<string, boolean>): void {
+    this.watchCalls.push(overrides);
   }
 
   /** Whether anything is taking the pushes - `false` once the client has let this transport go. */
@@ -1481,5 +1488,47 @@ describe('the members that never leave this client', () => {
     const polls = server.polls(token).length;
     await vi.advanceTimersByTimeAsync(30_000);
     expect(server.polls(token)).toHaveLength(polls);
+  });
+});
+
+describe('mute, unmute and clearOverride reach the transport (TW-DEL-006)', () => {
+  it('declares the whole map on every change, to the attached transport', () => {
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    // Attaching declares nothing on its own - only an explicit mute/unmute/clearOverride does
+    // (TW-REG-020, `reconnect.spec.ts`).
+    expect(socket.watchCalls).toEqual([]);
+
+    const a = tw.track(new_token());
+    const b = tw.track(new_token());
+    a.mute();
+    expect(socket.watchCalls.at(-1)).toEqual({ [a.token]: false });
+
+    b.mute();
+    expect(socket.watchCalls.at(-1)).toEqual({ [a.token]: false, [b.token]: false });
+
+    a.unmute();
+    expect(socket.watchCalls.at(-1)).toEqual({ [a.token]: true, [b.token]: false });
+
+    a.clearOverride();
+    expect(socket.watchCalls.at(-1)).toEqual({ [b.token]: false });
+  });
+
+  it('does not declare overrides recorded before a transport ever attached (TW-REG-020)', () => {
+    const handle = tw.track(new_token());
+    handle.mute();
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    expect(socket.watchCalls).toEqual([]);
+  });
+
+  it('is a no-op with no transport attached', () => {
+    const handle = tw.track(new_token());
+    expect(() => {
+      handle.mute();
+      handle.unmute();
+      handle.clearOverride();
+    }).not.toThrow();
   });
 });
