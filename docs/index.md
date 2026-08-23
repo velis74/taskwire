@@ -3,6 +3,9 @@ layout: home
 hero:
   name: taskwire
   text: Talk to a job while it runs
+  image:
+    src: /taskwire-icon.svg
+    alt: taskwire
   tagline: Progress, awaitable dialogs, cancellation and collectable results — in Python and TypeScript.
   actions:
     - theme: brand

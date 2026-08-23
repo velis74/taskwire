@@ -6,7 +6,9 @@ import { defineConfig } from 'vitepress';
 export default defineConfig({
   title: 'taskwire',
   description: 'Progress reporting and awaitable dialogs for long-running operations',
+  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/taskwire-icon.svg' }]],
   themeConfig: {
+    logo: '/taskwire-icon.svg',
     nav: [
       { text: 'Home', link: '/' },
       { text: 'Guide', link: '/guide/getting-started' },
