@@ -365,3 +365,25 @@ implementation:**
 **What the author may prefer instead:** amending note 19 and TW-CELERY-007 to the signature that
 works, or a different spelling of the two kwargs.
 
+---
+
+## `taskwire/contrib/viewsets.py` — `@action_configuration` and `raise_on_cancel`'s claimed third level
+
+**What the module docstring claims:** "`@action_configuration` supplies the middle level of
+`raise_on_cancel`'s three-level resolution (settings -> per-viewset/per-action -> per-call keyword).
+taskwire's core knows only the outer two, because a mechanism resolving configuration from settings
+through a class to a method is meaningless without viewsets — so this level exists only here."
+
+**What the code actually does:** `reporter.py`'s resolution reads `self._raise_on_cancel` (the
+per-call keyword) and falls back to `settings.raise_on_cancel` — two levels, not three. Nothing in
+`taskwire/` — including `contrib/viewsets.py` itself — reads an `ActionConfiguration` or anything
+named `raise_on_cancel` off a viewset or an action. Grepping the whole package for
+`ActionConfiguration`/`action_configuration` finds only the docstring's own two mentions.
+
+**Found while:** writing `docs/guide/fastapi-viewsets.md`, checking the claim before repeating it in
+new documentation.
+
+**Still needs deciding:** whether the middle level was meant to exist and never got built, or the
+docstring describes an idea that was dropped and never corrected. Either the resolution gains a third
+level that actually reads per-viewset/per-action configuration, or the docstring's claim is struck.
+
