@@ -308,3 +308,21 @@ def configure_worker(store: Any) -> None:
 
     configured.store = store
     configured.transport = NullTransport()
+
+
+def register_taskwire_celery_viewset() -> None:
+    """Wire `wrap_sync_runner` into fastapi-viewsets' `celery_viewset_server` (TW-CELERY-007).
+
+    Call once, on the worker, after fastapi-viewsets' `celery_viewset_server` decorator has run. A
+    call whose kwargs never carry `_taskwire_token` / `_taskwire_session` gets its runner back
+    unchanged (TW-AMB-009), so this is safe to call even for a deployment that dispatches viewset
+    actions to Celery without taskwire tracking any of them.
+
+    The dispatch side - putting `_taskwire_token` / `_taskwire_session` into a `celery_viewset_client`
+    call's kwargs in the first place - has no equivalent registration yet. Nothing today makes an
+    inbound request's token ambient outside of `operation()`, which TW-CELERY-005 forbids opening on
+    the dispatching side.
+    """
+    from fastapi_viewsets.decorators.celery_viewset.server import set_celery_kwargs_hook
+
+    set_celery_kwargs_hook(wrap_sync_runner)

@@ -533,3 +533,21 @@ def test_the_operation_ends_before_the_runner_returns():
     finally:
         loop.close()
         reset_configuration()
+
+
+def test_register_taskwire_celery_viewset_installs_wrap_sync_runner():
+    """`register_taskwire_celery_viewset` wires the hook fastapi-viewsets exposes to this one.
+
+    fastapi-viewsets never imports taskwire; the registration runs the other way, from here.
+    """
+    pytest.importorskip("fastapi_viewsets")
+    from fastapi_viewsets.decorators.celery_viewset import server as celery_viewset_server
+
+    from taskwire.contrib.celery import register_taskwire_celery_viewset, wrap_sync_runner
+
+    celery_viewset_server.set_celery_kwargs_hook(None)
+    try:
+        register_taskwire_celery_viewset()
+        assert celery_viewset_server._celery_kwargs_hook is wrap_sync_runner
+    finally:
+        celery_viewset_server.set_celery_kwargs_hook(None)
