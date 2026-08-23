@@ -1,4 +1,4 @@
-# <img src="taskwire-icon.svg" alt="" style="width:2.5em; height: 2.5em; vertical-align: middle"> taskwire
+# <img src="taskwire-icon.svg" alt="" width="40" height="40" style="vertical-align: middle"> taskwire
 
 Progress reporting and awaitable dialogs for long-running operations, in Python and TypeScript.
 
