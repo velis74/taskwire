@@ -5,19 +5,7 @@ done, not when it is ticked.
 
 ---
 
-## 1. A fastapi-viewsets integration page in `docs/`
-
-`getting-started.md` and `websockets.md` both name it, but there is no page that says what taskwire
-declares as a viewset, which of the library's mechanisms therefore apply to taskwire's endpoints
-(middleware, `@action_configuration`, the context processors), and what `register_muxws` decides.
-
-It also needs to cover `register_taskwire_celery_viewset` (TW-CELERY-007): a Celery-dispatched
-viewset action is tracked only if its own `celery_viewset_client` declares a `context: Context`
-parameter and the application registered `taskwire_context_processor` (or an equivalent supplying
-`taskwire_token`/`taskwire_session`) for that specific viewset — neither is automatic, and a page is
-where "why doesn't this one report progress" gets answered before it gets asked twice.
-
-## 2. Two questions the tab rule cannot answer
+## 1. Two questions the tab rule cannot answer
 
 Both are `DialogAdoption` reasoning over a register payload that is up to one ceiling interval old,
 and both are visible in the demo with two tabs open and no transport.
@@ -35,7 +23,7 @@ and both are visible in the demo with two tabs open and no transport.
    q2's, with no delay and no `present()` call. TW-TAB-003's rule is skipped rather than delayed. The
    fix is in the page: hold the dialog **id** that was adopted, not the operation.
 
-## 3. Four things the end-to-end run walked past
+## 2. Four things the end-to-end run walked past
 
 Found while chasing the socket and the cancel, none of them the defect being chased. In descending
 order of what they cost someone who hits them:
@@ -70,7 +58,7 @@ starts the register loop (TW-REG-021), so `readOnce()` returns immediately and a
 unknown token asks for nothing. Whether that client is entitled to TW-TS-009's guarantee at all is
 the same question `GAPS.md` records under "when does the register poll start?".
 
-## 4. The `result_ttl` backstop releases nothing
+## 3. The `result_ttl` backstop releases nothing
 
 TW-RES-010 names three release paths and says all three are arbitrated by `store.release_result`, so
 that `result_released` fires exactly once per artefact. Two of them are: collect and dismiss. The

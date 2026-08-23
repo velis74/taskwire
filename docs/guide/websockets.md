@@ -29,7 +29,9 @@ npm install taskwire muxws @dynamicforms/fastapi-viewsets
 
 [muxws](https://docs.velis.si/muxws/) is the multiplexed WebSocket library the transport is written
 against, and [fastapi-viewsets](https://docs.velis.si/) is what publishes taskwire's six endpoints —
-over REST and over the socket, from one registration.
+over REST and over the socket, from one registration. See
+[fastapi-viewsets integration](./fastapi-viewsets.md) for what that registration does beyond mounting
+routes, and for the `register_muxws` knob this page assumes is on.
 
 ## The server: one endpoint, one call
 

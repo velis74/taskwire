@@ -229,6 +229,27 @@ caller is already watching does not hang. `configure_worker` gives the worker a 
 `NullTransport`: **a worker never pushes**, because the web process's reader is already delivering
 every envelope the worker's writes produce.
 
+### `celery_viewset` actions
+
+```python
+register_taskwire_celery_viewset()
+```
+
+Wires `wrap_sync_runner` and taskwire's dispatch hook into fastapi-viewsets'
+`set_celery_kwargs_hook` / `set_celery_dispatch_hook` (`>= 0.5.4`, `pip install
+"taskwire[viewsets]"`). Call it once — safe on both the web process and the worker, since each hook
+is a no-op for a call the other side never reaches.
+
+Tracking one `celery_viewset_client` action needs one thing from the application: the action
+declares a `context: Context` parameter. `register_taskwire_rest` already registered
+`taskwire_context_processor` globally (see [The REST surface](#the-rest-surface)), so `context`
+carries `taskwire_token` / `taskwire_session` for every viewset in the process, not only taskwire's
+own six endpoints — there is nothing further to opt into per Celery viewset. The dispatch hook reads
+those two keys and calls `mark_queued` itself; an action declaring no `context` runs exactly as it
+would with no taskwire installed. The queued write carries no `result_kind`: the hook has no
+route-specific information to derive one from, so the operation gets the generic rendering a missing
+one gets rather than a guess.
+
 ## Headers
 
 ```python
