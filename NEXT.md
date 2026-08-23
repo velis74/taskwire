@@ -5,47 +5,63 @@ done, not when it is ticked.
 
 ---
 
-## 1. Adopt `wrap_sync_runner` in fastapi-viewsets
+## 1. Wire `celery_viewset_client`/`server` to taskwire, through a hook fastapi-viewsets owns
 
-taskwire's half is built. What is left is in *that* repository, and it is three edits:
+taskwire's half is built (`wrap_sync_runner`, TW-CELERY-007). What is missing is not taskwire code
+inside fastapi-viewsets — that repository must not gain a dependency on this one — but two hook
+slots fastapi-viewsets exposes and taskwire's own `contrib` wires itself into, by name, from this
+side only:
 
-1. `decorators/celery_viewset/server.py::sync_wrapper` (line 85, around the `run_until_complete` at
-   line 106) calls the hook, in this order — `_reconstruct_kwargs` passes through any key it has no
-   type hint for, so a taskwire key surviving into it reaches the action as an argument it never
-   declared:
+1. `decorators/celery_viewset/server.py` gains a module-level settable slot, e.g.
+   `set_celery_kwargs_hook(hook: Callable[[Callable, dict], tuple[Callable, dict]] | None)`, called
+   in `sync_wrapper` in this order — before `_reconstruct_kwargs`, which passes through any key it
+   has no type hint for, so a key the hook did not consume reaches the action as an argument it
+   never declared:
 
    ```python
-   run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)
+   run = loop.run_until_complete
+   if _celery_kwargs_hook is not None:
+       run, kwargs = _celery_kwargs_hook(run, kwargs)
    kwargs = _reconstruct_kwargs(original_endpoint, kwargs, cls)
    result = run(lifecycle_runner(original_endpoint, instance, cls, lifecycle, *args, **kwargs))
    ```
 
-   Behind `try: from taskwire.contrib.celery import wrap_sync_runner / except ImportError:` with a
-   two-line identity fallback, so fastapi-viewsets keeps working without taskwire installed.
-2. `decorators/celery_viewset/client.py` sends `_taskwire_token` and `_taskwire_session` in the same
-   `kwargs` dict as `_correlation_id` (line 103), and calls `mark_queued` before it sends. Until it
-   does, every call takes the hook's "no token, run unwrapped" branch and nothing is ever reported.
-3. The web-side middleware opens `operation()` around a **non**-Celery action (TW-CELERY-006) and
-   must not open one for a Celery-dispatching action (TW-CELERY-005).
+   `taskwire.contrib.celery.wrap_sync_runner` already has exactly this signature — a call with no
+   hook installed, or a hook returning its input unchanged, is today's behaviour.
+2. `decorators/celery_viewset/client.py` gains the dispatch-side twin, e.g.
+   `set_celery_dispatch_hook(hook: Callable[[], Awaitable[dict]] | None)`, awaited in
+   `async_client_wrapper` just before `send_task` and merged into its `kwargs`:
 
-## 2. TW-CELERY-005's split test
+   ```python
+   extra = await _celery_dispatch_hook() if _celery_dispatch_hook is not None else {}
+   celery_app.send_task(
+       task_name,
+       args=serializable_args,
+       kwargs={**serializable_kwargs, "_correlation_id": correlation_id, "_result_queue_key": queue_key, **extra},
+   )
+   ```
 
-The m4 brief asks for it *as a failing arrangement asserted to produce no commits*: with only the web
-middleware in place and no worker-side entry, every `progress.set()` in the worker is a silent no-op.
-`celery_test.py` has seven tests and not this one. The mechanism is covered generically by
-`ambient_test.py::test_unbound_proxy_is_a_silent_no_op`; the Celery arrangement is not.
+   The hook taskwire registers here reads its own ambient token/session — the same contextvars its
+   REST dispatch already reads — and calls `mark_queued` itself; when nothing is bound it returns
+   `{}` (TW-AMB-009), so a viewset that never heard of taskwire pays for none of this.
 
-## 3. A fastapi-viewsets integration page in `docs/`
+Neither slot is Celery-specific to *taskwire* by name: `hook` is a plain callable fastapi-viewsets
+never imports taskwire to type, and a project with no taskwire installed simply never calls
+`set_celery_*_hook`. Once both slots exist, taskwire's side is one `taskwire/contrib/celery.py`
+addition (the dispatch-side hook function) plus one registration call an application makes at
+startup — no `try`/`except ImportError` anywhere, in either repository.
+
+A *generic*, automatic `operation()` middleware that would wrap every viewset action without this
+decorator pair is a separate, larger extension point — the one CLAUDE.md already describes as later
+work — and is not required for these two hooks.
+
+## 2. A fastapi-viewsets integration page in `docs/`
 
 `getting-started.md` and `websockets.md` both name it, but there is no page that says what taskwire
 declares as a viewset, which of the library's mechanisms therefore apply to taskwire's endpoints
 (middleware, `@action_configuration`, the context processors), and what `register_muxws` decides.
 
-## 4. CI and publishing
-
-Not started at all. Two packages, one version stream (TW-PKG-001).
-
-## 5. Two questions the tab rule cannot answer
+## 3. Two questions the tab rule cannot answer
 
 Both are `DialogAdoption` reasoning over a register payload that is up to one ceiling interval old,
 and both are visible in the demo with two tabs open and no transport.
@@ -63,7 +79,7 @@ and both are visible in the demo with two tabs open and no transport.
    q2's, with no delay and no `present()` call. TW-TAB-003's rule is skipped rather than delayed. The
    fix is in the page: hold the dialog **id** that was adopted, not the operation.
 
-## 6. Four things the end-to-end run walked past
+## 4. Four things the end-to-end run walked past
 
 Found while chasing the socket and the cancel, none of them the defect being chased. In descending
 order of what they cost someone who hits them:
@@ -98,7 +114,7 @@ starts the register loop (TW-REG-021), so `readOnce()` returns immediately and a
 unknown token asks for nothing. Whether that client is entitled to TW-TS-009's guarantee at all is
 the same question `GAPS.md` records under "when does the register poll start?".
 
-## 7. The `result_ttl` backstop releases nothing
+## 5. The `result_ttl` backstop releases nothing
 
 TW-RES-010 names three release paths and says all three are arbitrated by `store.release_result`, so
 that `result_released` fires exactly once per artefact. Two of them are: collect and dismiss. The

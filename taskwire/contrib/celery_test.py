@@ -86,6 +86,41 @@ async def test_the_web_side_writes_queued_and_hands_off():
 
 
 @pytest.mark.usefixtures("_unthrottled")
+async def test_only_the_web_side_wired_up_leaves_progress_a_silent_no_op():
+    """TW-CELERY-005, the arrangement its own docstring warns against: no worker-side entry.
+
+    The web side writes `queued` and hands off, exactly as above. If nothing on the worker side
+    opens `operation()` - neither `taskwire_task` nor `wrap_sync_runner` applied - the task body's
+    own `progress.set()` calls hit the ambient proxy with nothing bound. TW-AMB-002 makes that
+    silent rather than an error, so the failure mode is not a crash: it is a bar that never moves,
+    and the store must show exactly that - `queued`, unrevised - not a `running` write that leaked
+    through some other path.
+    """
+    store = MemoryStore()
+    configure(store=store)
+    try:
+        task = FakeTask()
+        token = new_token()
+        await dispatch(task, token=token, session=NS, result_kind="acme.report", rows=3)
+
+        queued = await store.snapshot(make_key(NS, token))
+        assert queued is not None
+        assert ProgressState(queued.progress.state) is ProgressState.QUEUED
+
+        # The worker task body, called the way Celery would call it - but with no `taskwire_task`
+        # and no `wrap_sync_runner` around it, so nothing bound the ambient reporter first.
+        assert taskwire.current_reporter() is None
+        await taskwire.progress.set(percent=50, label=taskwire.Text(text="halfway"))
+
+        after = await store.snapshot(make_key(NS, token))
+        assert after is not None
+        assert after.rev == queued.rev, "a silent no-op commits nothing - not even a revision bump"
+        assert ProgressState(after.progress.state) is ProgressState.QUEUED
+    finally:
+        reset_configuration()
+
+
+@pytest.mark.usefixtures("_unthrottled")
 async def test_a_dispatch_failure_is_retryable():
     """TW-CELERY-004: `dispatch_failed`, `retryable: true`.
 
