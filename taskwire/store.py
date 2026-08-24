@@ -577,8 +577,10 @@ class MemoryStore(TaskwireStore):
 
             try:
                 return await asyncio.wait_for(queue.get(), timeout=_AWAIT_POLL_SECONDS)
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 # Re-read and wait again. No overall deadline is consumed by this.
+                # `asyncio.TimeoutError` is only a distinct class from the builtin before Python
+                # 3.11; both are named here so `wait_for` is caught on every supported version.
                 continue
 
     def _wake(self, entry: _Entry, did: str, reply: DialogReply) -> None:

@@ -298,13 +298,14 @@ async def hold_the_line(reporter: Reporter) -> None:
             ),
             HOLD_DEADLINE,
         )
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         # `name_error` decides what the one terminal write of `operation()` will say and writes
         # nothing itself; the write happens as this exception leaves the block. Without it the code
         # would be `TimeoutError` and the message the same word again - the exception's class is all
         # taskwire can derive, and it does not know what the deadline was for. A worker killed by its
         # own execution limit reports this code (TW-CELERY-010), so both deployments of this job end
-        # with the same document.
+        # with the same document. `asyncio.TimeoutError` is only a distinct class from the builtin
+        # before Python 3.11; both are named here so `wait_for` is caught on every supported version.
         reporter.name_error(
             "dialog_timeout",
             t("taskwire.dialog_timeout", text=f"Nobody answered within {HOLD_DEADLINE:.0f} s."),
