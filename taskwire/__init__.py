@@ -12,7 +12,7 @@ outside. Nothing in the core imports a framework, a driver or a UI library (TW-C
 
 from __future__ import annotations
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 from .ambient import ask, current_reporter, progress
 from .conformance import run_conformance
