@@ -40,7 +40,13 @@ import { type MuxwsPeerSource, MuxwsProxyImpl } from '@dynamicforms/fastapi-view
 import type { Peer } from 'muxws';
 
 import type { TaskwireCalls } from './calls';
-import { type ClientTransport, DEFAULT_BASE_PATH } from './taskwire';
+import {
+  ambientTaskwireToken,
+  type ClientTransport,
+  CONNECTION_HEADER,
+  DEFAULT_BASE_PATH,
+  TOKEN_HEADER,
+} from './taskwire';
 import { type Envelope, parseEnvelope, type Snapshot } from './wire';
 
 /** What a `watch` declaration is answered with (TW-DEL-022). */
@@ -81,9 +87,10 @@ export interface MuxwsClientOptions {
 /**
  * The browser side of the muxws transport.
  *
- * taskwire's dependency on muxws is deliberately tiny here too: `peer.onStream()` to receive, and
- * `peer.request()` to call up. Nothing touches the frame format, the stream id space or codec
- * selection (TW-WS-002), and stream ids are muxws's alone (TW-WS-005).
+ * taskwire's dependency on muxws is deliberately tiny here too: `peer.onStream()` to receive,
+ * `peer.request()` to call up, and `peer.interceptOpen()` to put taskwire's two headers on the
+ * streams the application opens (TW-TS-020). Nothing touches the frame format, the stream id space
+ * or codec selection (TW-WS-002), and stream ids are muxws's alone (TW-WS-005).
  */
 export class MuxwsClientTransport implements ClientTransport {
   private readonly peer: Peer;
@@ -110,10 +117,14 @@ export class MuxwsClientTransport implements ClientTransport {
   /** Who is told when this socket dies and when a new one is established under it (TW-TS-007). */
   private readonly healthListeners = new Set<(healthy: boolean) => void>();
 
+  /** Removes the open interceptor; `null` while none is registered (TW-TS-020). */
+  private unstamp: (() => void) | null = null;
+
   constructor(options: MuxwsClientOptions) {
     this.peer = options.peer;
     this.onEnvelope = options.onEnvelope ?? null;
     this.onConnection = options.onConnection ?? null;
+    if (this.onEnvelope !== null) this.stamp();
 
     // One handler for every incoming stream. The server opens and ends a stream per envelope
     // (TW-WS-003), so there is no long-lived stream to manage and nothing to clean up.
@@ -140,12 +151,38 @@ export class MuxwsClientTransport implements ClientTransport {
     });
   }
 
-  /** Attach a consumer after construction - what `attachTransport()` does. */
+  /**
+   * Attach a consumer after construction - what `attachTransport()` does. The returned function,
+   * which detaching runs, also removes the open interceptor (TW-TS-020).
+   */
   subscribe(handler: (envelope: Envelope) => void): () => void {
     this.onEnvelope = handler;
+    this.stamp();
     return () => {
       this.onEnvelope = null;
+      this.unstamp?.();
+      this.unstamp = null;
     };
+  }
+
+  /**
+   * Register the peer's open interceptor that stamps every stream opened on it - the application's
+   * own commands included - with `X-Taskwire-Connection` once this socket has an id, and with
+   * `X-Taskwire-Token` while `run()` has a token bound (TW-TS-020). The same two headers the axios
+   * interceptor writes on a request (TW-TS-003, TW-REST-002), and the same rule: a header the
+   * caller set is overwritten only by a value taskwire holds.
+   *
+   * muxws runs the interceptor synchronously inside `open()`, so a stream opened in the synchronous
+   * part of `run()`'s `fn` carries the token. A fastapi-viewsets proxy opens a repeat of a call with
+   * the headers of its first stream, so the repeat carries the same token.
+   */
+  private stamp(): void {
+    if (this.unstamp !== null) return;
+    this.unstamp = this.peer.interceptOpen((headers) => {
+      const token = ambientTaskwireToken();
+      if (token !== null) headers[TOKEN_HEADER] = token;
+      if (this.connectionId !== null) headers[CONNECTION_HEADER] = this.connectionId;
+    });
   }
 
   /**
@@ -320,6 +357,8 @@ export interface AttachMuxwsOptions {
 
 /**
  * Attach a muxws peer to a taskwire client: pushes down, and the six calls up the same connection.
+ * Every stream opened on the peer while it is attached carries `X-Taskwire-Connection` and, inside
+ * `run()`, `X-Taskwire-Token` (TW-TS-020).
  *
  * ```ts
  * import { connect } from 'muxws';
@@ -354,7 +393,10 @@ export function attachMuxws(
   return transport;
 }
 
-/** Put the six calls back on HTTP and the polling ladder back on its rungs (TW-TS-007). */
+/**
+ * Put the six calls back on HTTP and the polling ladder back on its rungs (TW-TS-007). The peer's
+ * streams stop carrying taskwire's headers (TW-TS-020).
+ */
 export function detachMuxws(client: MuxwsAttachable & { detachTransport(): void }): void {
   client.useCalls?.(null);
   // No socket, no connection: `progress_delivery` is the predicate's answer alone from here

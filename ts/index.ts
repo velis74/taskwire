@@ -2,7 +2,7 @@
  * The package entry point: §5.5 (the client) and §5.5a (the operating half, TW-SYM-001).
  *
  * **Nothing reachable from here imports Vue, Vuetify or the modal kit** (TW-CORE-006, TW-TS-010).
- * The composables are `taskwire/vue`, the dialog adapter and `TaskwireFooter` are
+ * The composables are `taskwire/vue`, the dialog adapter and the components are
  * `taskwire/vuetify`, and the muxws transport is `taskwire/muxws`; all three are subpath exports and
  * none of them is imported below. `vue.spec.ts::the vue subpath is the only file importing vue`
  * walks this file's transitive imports to keep it so.
@@ -28,6 +28,7 @@ export {
   configure_taskwire,
   type ClientTransport,
   DEFAULT_BASE_PATH,
+  type KeyedCall,
   new_token,
   resetTaskwireConfig,
   run,

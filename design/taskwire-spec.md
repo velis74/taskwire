@@ -666,6 +666,7 @@ adapters to things outside the process, never a capability the core lacks.
   `stream.cancel()` MUST NOT be used on the delivery path. The delivery path is server→client; a
   client opening a stream to *call* the server is a caller, not a delivery, and `MuxwsCalls` reaches
   `peer.open()` through fastapi-viewsets' proxy rather than through anything this rule governs.
+  The client's open interceptor (TW-TS-020) is on the calling side too.
 - **TW-WS-002** taskwire MUST NOT depend on muxws's frame format, stream id space or `Codec`
   selection.
 - **TW-WS-003** `MuxwsTransport.notify()` MUST call `peer.notify(envelope)` once per namespace peer —
@@ -1538,11 +1539,17 @@ interface Taskwire {
   onOperationsChange(cb: (ops: Operation<unknown>[]) => void): () => void;
   subscribe(token: string): Subscription;       // raw single-token surface; polls {prefix}/{token}
   track<T>(token: string, o?: { title?: Text; resultKind?: string }): Operation<T>;
+  trackCall<R>(call: KeyedCall<R>, handler: (op: Operation<R>) => void,
+               o?: RunOptions): () => void;     // follow a viewset call under its key
+  awaitCall<R>(call: KeyedCall<R>, handler: (op: Operation<R>) => void,
+               o?: RunOptions): Promise<R>;     // the same, resolving with the call's outcome
   attachTransport(t: ClientTransport): void;    // additive; polling is unchanged without it
   mute(token: string): void;                    // declare false for this connection
   unmute(token: string): void;                  // declare true - revives a backend-suppressed op
   clearOverride(token: string): void;           // remove the key; defer to push_filter
 }
+
+type KeyedCall<R> = PromiseLike<R> & { readonly key?: string };   // e.g. fastapi-viewsets' ViewSetCall
 
 class Operation<T> implements PromiseLike<T> {
   readonly token: string;
@@ -1721,8 +1728,29 @@ function use_register(options?: TaskwireOptions):
 - **TW-TS-009** A pending dialog on **any** `tw.register` entry MUST be surfaced by the application
   even when that entry is not in `tw.operations`; the guide MUST state this as a requirement.
 - **TW-TS-010** `taskwire` MUST NOT declare Vue, Vuetify or
-  `@dynamicforms/vuetify-modal-form-kit` as dependencies. The dialog adapter and `TaskwireFooter`
-  ship in the `/vuetify` subpath only.
+  `@dynamicforms/vuetify-modal-form-kit` as dependencies. The dialog adapter, `TaskwireFooter`,
+  `TaskwireOperations` and `TaskwireProgressDialog` ship in the `/vuetify` subpath only.
+- **TW-TS-019** **`tw.trackCall(call, handler, options?)` MUST follow the operation whose token is
+  `call.key`** — the `Idempotency-Key` of a fastapi-viewsets call (TW-CALL-001) — and MUST call
+  `handler` with its handle on every change of that handle. The handler MUST be removed
+  automatically on the first change that leaves the operation `done`, `failed` or `cancelled`, or
+  the handle closed, and that change MUST be the last one it receives; the returned function removes
+  it earlier. The handle MUST be minted as `run()` mints one: in `startedHere`, entering
+  `tw.operations` under §4.3's first door, and awaitable as `call` (TW-TS-002). A key that already
+  has a handle MUST reuse it (TW-TS-005). When `call` settles the client MUST end the search
+  (TW-TS-004) and read the token once more without waiting for the ladder, so a call the server did
+  not track is dropped silently and a call whose action ended inside `progressUi.delay` never enters
+  `tw.operations`. A `call` without a string `key` MUST be refused with a `TypeError`.
+  `tw.awaitCall(call, handler, options?)` MUST register the same handler and resolve or reject
+  exactly as `call`. Tests: `client.spec.ts::trackCall follows a viewset call under its key`.
+- **TW-TS-020** **`attachMuxws` MUST register an open interceptor on the peer** (muxws
+  `Peer.interceptOpen`, WSM-API-026) that writes `X-Taskwire-Connection` once the socket has a
+  connection id, and `X-Taskwire-Token` while `run()` has a token bound, on every stream opened on
+  the peer — the application's own commands included. It is the socket's counterpart of TW-TS-003's
+  axios interceptor and follows the same rules: the token covers only the synchronous part of `fn`,
+  and a header the caller set is overwritten only by a value the client holds. The interceptor MUST
+  be removed when the transport is detached (`detachMuxws`, a replacing `attachTransport`,
+  `dispose`). Test: `muxws.spec.ts::the headers on every stream opened on an attached peer`.
 
 ### 5.6 Shipped deliverables
 
@@ -1739,6 +1767,12 @@ function use_register(options?: TaskwireOptions):
   sort (TW-REG-005), a result row rendered by `result.kind` and degrading past `expires_at` or on
   404, `show()`, `collect()`, `dismiss()` and a per-entry cancel. It MUST NOT draw a bar for the
   aggregate, because the aggregate has no percentage to draw.
+- **TW-PKG-005** `taskwire/vuetify` MUST ship `TaskwireOperations`, which lists `tw.register` with
+  each entry's own percentage, selects an entry (`tw.select`), and offers cancel on an entry that
+  has not ended and holds no result, and collect and dismiss on one that holds a result; and
+  `TaskwireProgressDialog`, which shows `tw.operations` and therefore no operation that ended inside
+  `progressUi.delay` (§4.3), with each operation's own bar, a cancel and a `hide()`. Neither MAY draw
+  a percentage derived across operations (TW-REG-011).
 
 ---
 

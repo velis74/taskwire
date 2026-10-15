@@ -118,6 +118,20 @@ blocks write two completions. An action that hands its token to work running aft
 returns is configured `{TaskwireMiddleware: False}`, since the hook ends the operation when the action
 returns.
 
+**On the frontend.** The promise a proxy call returns carries its key as `call.key`, and
+`tw.trackCall(call, handler)` follows the operation under it; `tw.awaitCall(call, handler)` does the
+same and resolves with the call's answer. The handler receives the operation's handle on every
+change and is removed once the operation ends.
+
+```ts
+const report = await tw.awaitCall(api.import(rows), (operation) => {
+  progress.value = operation.progress?.percent ?? null;
+});
+```
+
+A private operation's progress is pushed to the connection that `X-Taskwire-Connection` named on
+the call; over muxws, `attachMuxws` puts that header on every stream of the peer.
+
 **Without `TaskwireMiddleware`** a tracked action still reports `running` and its terminal state
 through the hook. Its operation has no `queued` state, and a call rejected before its action executed
 leaves no document.

@@ -23,6 +23,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an action's operations; `{TaskwireMiddleware: False}` leaves an action untracked. Without a
   declared `result_kind` an operation is private.
 - `taskwire.contrib.viewsets.NOT_EXECUTED`, the reserved error code `"not_executed"`.
+- `tw.trackCall(call, handler, options?)` follows the operation of a fastapi-viewsets call under
+  `call.key` and removes the handler when the operation ends; `tw.awaitCall(call, handler,
+  options?)` does the same and resolves with the call's outcome. `KeyedCall<R>` is the type of
+  `call`.
+- `attachMuxws` registers an open interceptor on the peer: every stream opened on it carries
+  `X-Taskwire-Connection` and, inside `run()`, `X-Taskwire-Token`. `detachMuxws` removes it.
+- `taskwire/vuetify`: `TaskwireOperations`, a list of every operation in `tw.register` with select,
+  cancel, collect and dismiss; and `TaskwireProgressDialog`, a dialog over `tw.operations` that
+  shows no operation ending inside `progressUi.delay`.
 
 ### Changed
 - The Celery dispatch hook writes nothing; it carries the token and namespace to the worker. With
@@ -32,6 +41,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   visible to `taskwire_execution_hook`, and writes the terminal state only when a soft time limit
   leaves the action's coroutine suspended.
 - The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets >= 0.9.0`.
+- The npm package's optional peer dependencies require `@dynamicforms/fastapi-viewsets ^0.9.0` and
+  `muxws ^0.4.0`.
 
 ## [0.1.0] - 2026-08-23
 

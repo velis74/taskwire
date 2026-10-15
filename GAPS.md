@@ -378,3 +378,19 @@ flips it from `failed` to `running` and ends it again. The client was already an
 **Still needs deciding:** whether the execution hook should leave an operation it finds terminal
 alone, at the cost of a second store read on every tracked execution, or whether the middleware
 should leave a dispatched operation `queued` on a result timeout and let `active_ttl` expire it.
+
+---
+
+## taskwire-spec.md §5.5 / §5.6 — TW-TS-019, TW-PKG-005 — the frontend half of tracked calls
+
+**What I needed:** the shape of the per-call handler API, and the look of the two new components.
+
+**What I assumed:** `tw.trackCall(call, handler, options?)` returns the function that removes the
+handler, and `tw.awaitCall(call, handler, options?)` resolves with the call; the handler receives the
+`Operation` handle, not a `Snapshot`, so it reads the derived `waiting_input` and the open dialog the
+same way a template does. `TaskwireOperations` and `TaskwireProgressDialog` render unstyled markup
+with `taskwire-*` classes, as `TaskwireFooter` does, rather than Vuetify components, and the dialog
+leaves out a visible operation that has no document yet.
+
+**Still needs deciding:** the two names, and whether the components should render Vuetify's own
+`VList` / `VDialog` / `VProgressLinear` instead.

@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import axios from 'axios';
 import { describe, expect, it, vi } from 'vitest';
 
-import { attachMuxws, MuxwsCalls, MuxwsClientTransport } from './muxws';
-import { new_token, Taskwire } from './taskwire';
+import { attachMuxws, detachMuxws, MuxwsCalls, MuxwsClientTransport } from './muxws';
+import { CONNECTION_HEADER, new_token, Taskwire, TOKEN_HEADER } from './taskwire';
 import { type ProgressState, serializeDialogRequest, serializeProgress, WIRE_VERSION } from './wire';
 import type { Envelope, WireObject } from './wire';
 
@@ -70,6 +70,16 @@ class FakePeer {
 
   reconnectHandlers: ((attempt: number) => void)[] = [];
 
+  /** Open interceptors, run in registration order on a copy of the caller's headers (WSM-API-026). */
+  interceptors: ((headers: Record<string, unknown>, payload: unknown) => void)[] = [];
+
+  interceptOpen(interceptor: (headers: Record<string, unknown>, payload: unknown) => void): () => void {
+    this.interceptors.push(interceptor);
+    return () => {
+      this.interceptors = this.interceptors.filter((registered) => registered !== interceptor);
+    };
+  }
+
   onStream(handler: (payload: unknown) => void): void {
     this.handler = handler;
   }
@@ -88,7 +98,9 @@ class FakePeer {
   }
 
   open(payload?: unknown, options?: { headers?: Record<string, unknown> }): FakeStream {
-    this.opened.push({ payload, headers: options?.headers ?? {} });
+    const headers = { ...options?.headers };
+    this.interceptors.forEach((interceptor) => interceptor(headers, payload));
+    this.opened.push({ payload, headers });
     return new FakeStream(this.response, this.status);
   }
 
@@ -350,6 +362,39 @@ describe('the muxws client transport', () => {
     peer.reconnect();
     await vi.waitFor(() => expect(peer.requests).toEqual([]));
     expect(transport.connection).toBeNull();
+  });
+});
+
+describe('the headers on every stream opened on an attached peer (TW-TS-020)', () => {
+  it('stamps the connection id and the ambient token as the axios interceptor does, until detached', async () => {
+    vi.useFakeTimers();
+    try {
+      const http = axios.create({
+        adapter: async () => {
+          throw new Error('no HTTP in this test');
+        },
+      });
+      const client = new Taskwire('/taskwire', http);
+      const peer = new FakePeer();
+      await attachMuxws(client, peer as never, { routeCalls: false }).announce();
+
+      const operation = client.run(async () => {
+        peer.open({ command: 'inside run' });
+      });
+      peer.open({ command: 'outside run' }, { headers: { 'X-Application': 'acme' } });
+      detachMuxws(client);
+      peer.open({ command: 'detached' });
+
+      expect(peer.opened.map((stream) => stream.headers)).toEqual([
+        { [TOKEN_HEADER]: operation.token, [CONNECTION_HEADER]: 'conn-1' },
+        { 'X-Application': 'acme', [CONNECTION_HEADER]: 'conn-1' },
+        {},
+      ]);
+      expect(peer.interceptors).toEqual([]);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

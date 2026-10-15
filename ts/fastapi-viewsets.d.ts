@@ -7,7 +7,8 @@
  * break the moment they fix it, and would bypass the export map that exists to let them move things.
  *
  * Declared here is exactly what `ts/muxws.ts` uses, and nothing more - the proxy base its calls
- * class extends, and the peer shape that base opens streams on. If the shape ever drifts, this file
+ * class extends, the `ViewSetCall` its requests return, and the peer shape that base opens streams
+ * on. If the shape ever drifts, this file
  * is the one place that has to notice.
  */
 declare module '@dynamicforms/fastapi-viewsets' {
@@ -16,7 +17,12 @@ declare module '@dynamicforms/fastapi-viewsets' {
   export interface RequestOptions {
     query?: Record<string, string | number | boolean | null | undefined | Array<string | number>>;
     body?: unknown;
+    /** The `Idempotency-Key` of this call; a new UUID when absent. */
+    key?: string;
   }
+
+  /** The promise a call returns, with the call's `Idempotency-Key`. */
+  export type ViewSetCall<R> = Promise<R> & { readonly key: string };
 
   /** One outgoing stream, reduced to what a unary call reads off it. */
   export interface MuxwsStreamLike {
@@ -51,7 +57,7 @@ declare module '@dynamicforms/fastapi-viewsets' {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the signature is the point
   export class MuxwsProxyImpl<K extends string | number, T, PK extends keyof T> {
     constructor(options: MuxwsProxyOptions);
-    protected request<R>(method: HttpMethod, path: string, options?: RequestOptions): Promise<R>;
+    protected request<R>(method: HttpMethod, path: string, options?: RequestOptions): ViewSetCall<R>;
   }
 
   /** What a call over a stream throws, in `AxiosError`'s shape so one status rule serves both. */

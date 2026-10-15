@@ -2,10 +2,16 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { mount } from '@vue/test-utils';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Operation, type OperationHost } from './operation';
-import type { DialogRequest, Progress } from './wire';
+import type { Taskwire } from './taskwire';
+import { TaskwireOperations, TaskwireProgressDialog } from './vuetify';
+import type { DialogRequest, Progress, Result } from './wire';
+
+// The two components below render plain markup and present no modal; the kit is not loaded.
+vi.mock('@dynamicforms/vuetify-modal-form-kit', () => ({ modal: {} }));
 
 /**
  * The shipped UI deliverables and the client half of dialogs.
@@ -220,5 +226,135 @@ describe('the shipped UI deliverables', () => {
     expect(declaration).toContain('message(');
     expect(declaration).toContain('custom(');
     expect(declaration).not.toContain('FormBuilder');
+  });
+});
+
+/** A client reduced to what the two components read: the register, the visible set, the selection. */
+class FakeClient {
+  register: Operation<unknown>[] = [];
+
+  operations: Operation<unknown>[] = [];
+
+  selected: Operation<unknown> | null = null;
+
+  registerListeners: ((operations: Operation<unknown>[]) => void)[] = [];
+
+  operationsListeners: ((operations: Operation<unknown>[]) => void)[] = [];
+
+  onRegisterChange(callback: (operations: Operation<unknown>[]) => void): () => void {
+    this.registerListeners.push(callback);
+    return () => undefined;
+  }
+
+  onOperationsChange(callback: (operations: Operation<unknown>[]) => void): () => void {
+    this.operationsListeners.push(callback);
+    return () => undefined;
+  }
+
+  select(token: string | null): void {
+    this.selected = this.register.find((operation) => operation.token === token) ?? null;
+    this.registerListeners.forEach((listener) => listener([...this.register]));
+  }
+
+  setOperations(operations: Operation<unknown>[]): void {
+    this.operations = operations;
+    this.operationsListeners.forEach((listener) => listener([...operations]));
+  }
+
+  asClient(): Taskwire {
+    return this as unknown as Taskwire;
+  }
+}
+
+function operationWith(token: string, host: OperationHost, overrides: Partial<Progress>): Operation<unknown> {
+  const operation = new Operation({ token, host });
+  operation.applySnapshot({ rev: 1, progress: progress(overrides), dialogs: [] });
+  return operation;
+}
+
+describe('TaskwireOperations', () => {
+  const RESULT: Result = { kind: 'report', value: { rows: 12 } };
+
+  it('lists the register with each row its own bar, and offers the writes the row allows', async () => {
+    const host = hostWith();
+    const cancel = vi.spyOn(host, 'cancel');
+    const dismiss = vi.spyOn(host, 'dismiss');
+    const client = new FakeClient();
+    client.register = [
+      operationWith('running', host, { percent: 40 }),
+      operationWith('kept', host, { state: 'waiting_input', percent: null, result: RESULT }),
+      operationWith('unwanted', host, { state: 'waiting_input', result: RESULT }),
+    ];
+    const collected: unknown[] = [];
+
+    const wrapper = mount(TaskwireOperations, {
+      props: { client: client.asClient(), onCollected: (result: Result) => collected.push(result) },
+    });
+    const rows = wrapper.findAll('.taskwire-operations__row');
+    expect(rows.map((row) => row.attributes('data-state'))).toEqual(['running', 'waiting_input', 'waiting_input']);
+    expect(rows[0].find('[role="progressbar"]').attributes('aria-valuenow')).toBe('40');
+    expect(rows[1].find('[role="progressbar"]').attributes('data-indeterminate')).toBe('true');
+    expect(rows[0].findAll('button').map((button) => button.text())).toEqual(['Cancel']);
+    expect(rows[1].findAll('button').map((button) => button.text())).toEqual(['Collect', 'Dismiss']);
+
+    await rows[0].find('.taskwire-operations__cancel').trigger('click');
+    expect(cancel).toHaveBeenCalledWith('running');
+    // A button acts on its row and selects nothing.
+    expect(client.selected).toBeNull();
+
+    await rows[1].find('.taskwire-operations__collect').trigger('click');
+    await vi.waitFor(() => expect(collected).toEqual([RESULT]));
+    await rows[2].find('.taskwire-operations__dismiss').trigger('click');
+    expect(dismiss).toHaveBeenCalledWith('unwanted');
+  });
+
+  it('selects the row it is clicked on, and renders nothing for an empty register (TW-REG-017)', async () => {
+    const client = new FakeClient();
+    const empty = mount(TaskwireOperations, { props: { client: client.asClient() } });
+    expect(empty.find('.taskwire-operations').exists()).toBe(false);
+
+    client.register = [operationWith('a', hostWith(), {}), operationWith('b', hostWith(), {})];
+    const wrapper = mount(TaskwireOperations, { props: { client: client.asClient() } });
+    await wrapper.findAll('.taskwire-operations__row')[1].trigger('click');
+    expect(client.selected?.token).toBe('b');
+    expect(wrapper.findAll('.taskwire-operations__row').map((row) => row.attributes('aria-current'))).toEqual([
+      undefined,
+      'true',
+    ]);
+  });
+});
+
+describe('TaskwireProgressDialog', () => {
+  it('shows the visible collection only, and only the rows that have a document', async () => {
+    const host = hostWith();
+    const hide = vi.spyOn(host, 'hide');
+    const client = new FakeClient();
+    const wrapper = mount(TaskwireProgressDialog, { props: { client: client.asClient() } });
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+
+    // An operation shorter than `progressUi.delay` never enters `tw.operations` (§4.3), so the
+    // dialog has nothing to show for it; one that has not been read yet has nothing to draw.
+    client.setOperations([new Operation({ token: 'unread', host })]);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+
+    const failed = operationWith('failed', host, {
+      state: 'failed',
+      error: {
+        code: 'not_executed',
+        message: { key: 'taskwire.not_executed', text: 'Not executed' },
+        retryable: false,
+      },
+    });
+    client.setOperations([operationWith('running', host, { percent: 70 }), failed]);
+    await wrapper.vm.$nextTick();
+    const rows = wrapper.findAll('.taskwire-progress-dialog__row');
+    expect(rows.map((row) => row.attributes('data-state'))).toEqual(['running', 'failed']);
+    expect(rows[1].find('.taskwire-progress-dialog__label').text()).toBe('Not executed');
+    expect(rows[0].findAll('button').map((button) => button.text())).toEqual(['Cancel', 'Hide']);
+    expect(rows[1].findAll('button').map((button) => button.text())).toEqual(['Hide']);
+
+    await rows[1].find('.taskwire-progress-dialog__hide').trigger('click');
+    expect(hide).toHaveBeenCalledWith('failed');
   });
 });

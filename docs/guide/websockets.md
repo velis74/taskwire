@@ -124,6 +124,26 @@ both, and taskwire never closes the socket — it did not dial it.
 The socket is the application's to open, which is why there is no URL anywhere in taskwire's
 configuration. One peer serves the whole application: taskwire's streams and your own share it.
 
+## The headers on your own streams
+
+While attached, taskwire registers an open interceptor on the peer (muxws 0.4.0,
+`Peer.interceptOpen`), so every stream opened on it — your own commands included — carries the same
+two headers the axios interceptor writes on a request:
+
+- `X-Taskwire-Connection`, once the socket has a connection id;
+- `X-Taskwire-Token`, when the stream is opened in the synchronous part of a `run()` callback.
+
+```ts
+const report = tw.run(() => api.import(rows));    // a muxws proxy call: the stream carries the token
+```
+
+The token covers only the synchronous part of the callback, exactly as over HTTP: a callback that
+awaits before it calls sends no token, and `run(token => ...)` is the form that is always correct. A
+muxws proxy opens a call's stream synchronously once its peer has resolved; a call issued before
+that opens its stream later, without the token. A
+fastapi-viewsets proxy opens a repeat of a call with the headers of its first stream, so a repeat
+carries the same token. `detachMuxws(tw)` removes the interceptor.
+
 ## Polling stops while the socket is up
 
 A client with a healthy transport attached **suspends its polling ladder** — the register's and every
