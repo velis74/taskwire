@@ -19,13 +19,14 @@ every tracked viewset action (`taskwire_execution_hook`), applies `@route_viewse
 endpoints - **on REST and on muxws both**, since `route_viewset` publishes a viewset on the two
 transports at once.
 
-`TaskwireMiddleware` writes `queued` for every tracked call. Its place in the command middleware chain
-is after fastapi-viewsets' `Idempotency`, so the application lists it there itself::
+Viewset calls are tracked only through `TaskwireMiddleware`, which writes `queued` for every tracked
+call and marks it for the hook. Its place in the command middleware chain is after fastapi-viewsets'
+`Idempotency`, so the application lists it there itself::
 
     settings.viewsets_command_middleware = [Idempotency(redis_client=redis), TaskwireMiddleware()]
 
-Without it, a tracked action still reports `running` and its terminal state through the hook; the
-operation has no `queued` state and a call rejected before its action executed leaves no document.
+Without it, the hook reports no in-process action; a `celery_viewset` action is reported through
+`taskwire.contrib.celery`'s dispatch hook alone (TW-CALL-008).
 
 ## Why a viewset rather than a hand-rolled router
 
@@ -294,14 +295,22 @@ class _TrackedCall:
     connection: str | None
     unstarted_error: Error | None = None
     """The error TW-CALL-006 writes when the call ends with the operation still `queued`. `None`
-    writes `not_executed`; the Celery dispatch hook sets `dispatch_failed`."""
+    writes `not_executed`; the Celery dispatch hook sets `dispatch_failed` until the broker accepted
+    the task."""
+    started: bool = False
+    """True once the execution hook was entered for this call, whether or not its store write
+    succeeded. TW-CALL-006 writes nothing for a started call."""
 
 
 _tracked_call: contextvars.ContextVar[_TrackedCall | None] = contextvars.ContextVar(
     "taskwire_tracked_call", default=None
 )
 """The call `TaskwireMiddleware` is running the rest of the chain for. Unset while the action runs
-under the execution hook, so a Celery dispatch made from inside that action does not carry its token."""
+under the execution hook."""
+
+_in_action: contextvars.ContextVar[bool] = contextvars.ContextVar("taskwire_in_action", default=False)
+"""True while a tracked action runs under the execution hook. A Celery dispatch made from inside it
+carries no token (TW-CALL-008)."""
 
 
 @dataclass
@@ -356,10 +365,27 @@ def _action_name(request: Request | None) -> str | None:
     return getattr(endpoint, "__name__", None)
 
 
-async def _fail_if_unstarted(call: _TrackedCall) -> None:
-    """TW-CALL-006: end an operation that is still `queued` after its call ended."""
+async def _open(call: _TrackedCall, result_kind: str | None) -> None:
+    """TW-CALL-003: write `queued` for a call that executes anew.
+
+    A terminal document under the call's token belongs to an earlier execution under the same key, and
+    is dropped first, so the new execution starts from a fresh document instead of the tombstone's state
+    and error.
+    """
     store = configured.store
     if store is None:
+        return
+    k = make_key(call.session, call.token)
+    existing = await store.snapshot(k)
+    if existing is not None and existing.progress.is_terminal:
+        await store.drop(k)
+    await mark_queued(call.token, session=call.session, connection=call.connection, result_kind=result_kind)
+
+
+async def _fail_if_unstarted(call: _TrackedCall) -> None:
+    """TW-CALL-006: end an operation that is still `queued` after its call ended unstarted."""
+    store = configured.store
+    if store is None or call.started:
         return
     try:
         snapshot = await store.snapshot(make_key(call.session, call.token))
@@ -385,17 +411,20 @@ class TaskwireMiddleware(Middleware):
     ```
 
     Placed after `Idempotency`: a repeat `Idempotency` answers from a stored or running call does not
-    reach this middleware, so it writes nothing for it.
+    reach this middleware, so it writes nothing for it. A call that reaches it executes anew, and a
+    terminal document under its token is replaced by a fresh `queued` one.
 
     A call is tracked when `taskwire_context_processor` found a token and a namespace for it
     (TW-CALL-001, TW-CALL-002). The `queued` write carries `result_kind` from the action configuration
     (`@action_configuration({TaskwireMiddleware: {"result_kind": "acme.export"}})`) or from a result
     decorator on the action method; with neither the operation is private (TW-CALL-005). The action
-    configuration `{TaskwireMiddleware: False}` leaves the action untracked.
+    configuration `{TaskwireMiddleware: False}` leaves the action untracked. fastapi-viewsets raises
+    `ValueError` for an action configured with the `TaskwireMiddleware` key while no instance is in
+    `settings.viewsets_command_middleware`.
 
     `running` and the terminal state are written by `taskwire_execution_hook` where the action
-    executes. A store failure at the `queued` write is logged and the call runs untracked by this
-    middleware.
+    executes; the hook reports an in-process action only for a call this middleware tracks. A store
+    failure at the `queued` write is logged and the call runs tracked.
     """
 
     async def __call__(
@@ -410,15 +439,9 @@ class TaskwireMiddleware(Middleware):
         if call is None:
             return await call_next()
         try:
-            await mark_queued(
-                call.token,
-                session=call.session,
-                connection=call.connection,
-                result_kind=_result_kind(viewset_class, _action_name(request), _action_configuration(context)),
-            )
+            await _open(call, _result_kind(viewset_class, _action_name(request), _action_configuration(context)))
         except Exception:  # noqa: BLE001 - reporting is an accelerator; the call runs
             logger.warning("taskwire: no queued write for %s; the call runs", call.token, exc_info=True)
-            return await call_next()
         marker = _tracked_call.set(call)
         try:
             return await call_next()
@@ -436,22 +459,23 @@ class _ActionOperation:
         self._token: str | None = None
         self._ambient: contextvars.Token | None = None
         self._dispatch_marker: contextvars.Token | None = None
+        self._action_marker: contextvars.Token | None = None
         self._carried: _Carried | None = None
 
-    async def _resolve(self) -> tuple[str, str, str | None, _Carried | None] | None:
+    def _resolve(self) -> tuple[str, str, str | None, _Carried | None] | None:
         carried = _carried.get()
         if carried is not None:
             # A worker run: the first action is the call's own, and an action it calls is not.
             return None if carried.scope is not None else (carried.token, carried.session, None, carried)
-        if self._execution.request is None:
-            # No live request and nothing carried: a worker running an untracked call, whose
-            # deserialized `context` has no action configuration to honour an opt-out with.
+        # The web process: the call `TaskwireMiddleware` tracks, which an action this one calls is not.
+        call = _tracked_call.get()
+        if call is None:
             return None
-        call = await _tracked(self._execution.context, self._execution.viewset_class)
-        return None if call is None else (call.token, call.session, call.connection, None)
+        call.started = True
+        return call.token, call.session, call.connection, None
 
     async def __aenter__(self) -> Reporter | None:
-        resolved = await self._resolve()
+        resolved = self._resolve()
         if resolved is None:
             return None
         token, session, connection, carried = resolved
@@ -475,6 +499,7 @@ class _ActionOperation:
         self._scope, self._token = scope, token
         self._ambient = ambient_bind(reporter)
         self._dispatch_marker = _tracked_call.set(None)
+        self._action_marker = _in_action.set(True)
         if carried is not None:
             carried.scope, carried.reporter = scope, reporter
             self._carried = carried
@@ -486,6 +511,7 @@ class _ActionOperation:
             return False
         ambient_unbind(self._ambient)
         _tracked_call.reset(self._dispatch_marker)
+        _in_action.reset(self._action_marker)
         carried = self._carried
         if carried is not None:
             if carried.closed:
@@ -505,8 +531,9 @@ def taskwire_execution_hook(execution: ActionExecution) -> _ActionOperation:
     `fastapi_viewsets.decorators.set_execution_hook`. The slot holds one hook; an application with a
     hook of its own enters this one inside it.
 
-    In the web process the operation is the one `context` names (TW-CALL-001, TW-CALL-002); in a
-    Celery worker it is the one `wrap_sync_runner` carried in. The context manager enters
+    In the web process the operation is the one `TaskwireMiddleware` tracks for the call (TW-CALL-003);
+    an in-process action of a call the middleware did not track runs unreported. In a Celery worker it
+    is the one `wrap_sync_runner` carried in. The context manager enters
     `operation(token, session=..., connection=..., result_kind=...)`, binds the ambient reporter
     around the action and yields the `Reporter`, or `None` for an untracked execution. A store
     failure on entry leaves the action to run unreported; a failure of the terminal write is logged.

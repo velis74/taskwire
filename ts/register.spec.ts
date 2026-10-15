@@ -1067,6 +1067,27 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
     expect(tw.register[0].progress?.percent).toBe(61);
   });
 
+  it('asks for no read on a private operation no handle here knows (TW-PRIV-001)', async () => {
+    // Every viewset call over the socket is a private operation pushed to this connection; none of
+    // its progress documents can put a row in the register.
+    server.list();
+    await poll(2);
+
+    const socket = new FakeTransport();
+    tw.attachTransport(socket);
+    const reads = server.polls(REGISTER_URL).length;
+
+    const stranger = new_token();
+    const states: ProgressState[] = ['queued', 'running', 'done'];
+    states.forEach((state, index) =>
+      socket.push(stranger, index + 2, 'progress', progressBody({ state, resultKind: null })),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(server.polls(REGISTER_URL)).toHaveLength(reads);
+    expect(tw.register).toEqual([]);
+  });
+
   it('reads the register once for a burst of pushes it cannot place', async () => {
     // A token no handle here knows is a membership change - something started in another tab. One
     // read of the list answers it for the whole burst, and what appears on screen is the payload's

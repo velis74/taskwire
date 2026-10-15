@@ -361,10 +361,12 @@ class TokenPoller {
    * cannot express.
    *
    * Nothing here while a transport carries the token: it delivers the same change sooner, and the
-   * ladder is held for exactly that reason (TW-TS-007).
+   * ladder is held for exactly that reason (TW-TS-007). `force` reads regardless: a settled viewset
+   * call is decided by one read of its token, and a call the server did not track pushes nothing
+   * that could decide it (TW-TS-019).
    */
-  readNow(): void {
-    if (this.stopped || !this.wanted || this.suspended) return;
+  readNow(force = false): void {
+    if (this.stopped || !this.wanted || (this.suspended && !force)) return;
     // A read on the wire was issued before the write landed, so it will answer with the document as
     // it stood before it. The request is owed rather than dropped, and `tick()` issues it on the way
     // out - where it also knows the rung it would otherwise have scheduled is the wrong one.
@@ -465,7 +467,7 @@ class TokenPoller {
     // already made wrong.
     if (this.owed) {
       this.owed = false;
-      this.readNow();
+      this.readNow(true);
       return;
     }
     // A read that landed after the ladder was suspended is delivered and not followed up: the
@@ -781,9 +783,11 @@ export class Taskwire implements OperationHost, RegisterClient {
    * The token is `call.key`: the `Idempotency-Key` a fastapi-viewsets proxy put on the call, which
    * the server tracks the call under (TW-CALL-001). The handle is minted here as `run()` mints one:
    * `startedHere`, entered into `tw.operations` after `progressUi.delay`, awaitable as `call` itself
-   * (TW-TS-002). When `call` settles the token is read once more, and a token that has no document
-   * then is dropped silently (TW-TS-004): the server did not track that call. A second registration
-   * for the same key shares the first one's handle (TW-TS-005).
+   * (TW-TS-002). When `call` settles the token is read once more, whether or not a transport holds
+   * the ladder, and a token that has no document then is dropped silently (TW-TS-004): the server did
+   * not track that call. A call issued inside `run()` carries `run()`'s token, which the server tracks
+   * it under instead of its key; such a call is followed through the handle `run()` returns. A second
+   * registration for the same key shares the first one's handle (TW-TS-005).
    *
    * Throws `TypeError` when `call` carries no `key`: a proxy method that awaits before it issues its
    * request returns a promise without one.
@@ -833,7 +837,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     const poller = this.pollerFor(token);
     const settled = (): void => {
       poller.searchIsOver();
-      if (readOnSettle) poller.readNow();
+      if (readOnSettle) poller.readNow(true);
     };
     // The command's answer is the earliest moment a row can be shown. The front end mints the token
     // and sends it with its own command, and the server writes `queued` before it replies

@@ -563,3 +563,51 @@ def test_a_command_stream_is_tracked_by_its_idempotency_key(tracked) -> None:
     assert stream.status == 200
     assert stream.payload == {"token": key}
     assert _states(seen, key) == ["queued", "running", "done"]
+
+
+def test_a_repeat_that_executes_anew_starts_a_fresh_operation(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-003: a call under a key whose operation is terminal replaces the tombstone."""
+    http, seen = tracked
+    key = taskwire.new_token()
+    headers = {**HEADERS, KEY_HEADER: f'"{key}"'}
+
+    assert http.get("/items/plain", headers={**headers, "X-Test-Refuse": "1"}).status_code == 403
+    assert http.get("/items/plain", headers=headers).json() == {"token": key}
+
+    assert _states(seen, key) == ["queued", "failed", "queued", "running", "done"]
+    ended = run(store.snapshot(taskwire.key("ns:alice", key)))
+    assert ended is not None
+    assert ended.progress.state == "done"
+    assert ended.progress.error is None
+
+
+def test_an_action_runs_unreported_without_the_middleware(tracked) -> None:
+    """TW-CALL-004: the hook reports an in-process action only for a call the middleware tracks."""
+    from fastapi_viewsets.conf import settings as viewset_settings
+
+    http, seen = tracked
+    viewset_settings.viewsets_command_middleware = []
+    key = taskwire.new_token()
+
+    assert http.get("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"'}).json() == {"token": None}
+    assert seen == []
+
+
+def test_an_action_whose_running_write_failed_is_not_failed_unstarted(tracked, monkeypatch: pytest.MonkeyPatch) -> None:
+    """TW-CALL-004, TW-CALL-006: a store failure on the hook's entry runs the action unreported, and
+    the middleware does not end that operation `not_executed`."""
+    import taskwire.contrib.viewsets as viewsets
+
+    class _Unreachable:
+        def bind_ambient_in_caller(self) -> None:
+            pass
+
+        async def __aenter__(self) -> None:
+            raise ConnectionError("store down")
+
+    monkeypatch.setattr(viewsets, "operation", lambda *_args, **_kwargs: _Unreachable())
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    assert http.get("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"'}).status_code == 200
+    assert _states(seen, key) == ["queued"]

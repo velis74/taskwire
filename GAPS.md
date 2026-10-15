@@ -368,16 +368,35 @@ untracked; taskwire does not reject it, since rejecting is `Idempotency`'s decis
 
 ## taskwire-spec.md §2.23 — TW-CALL-006 — a Celery call whose result wait timed out
 
-**What the rule does:** a `celery_viewset` call that ends with its operation still `queued` is
-`failed` with `dispatch_failed`. That includes a call whose `celery_viewset_client` result wait timed
-out (`ResultTimeoutError`) while the task sat in the broker queue.
+**What the rule does:** a `celery_viewset` call whose task the broker accepted, and which ends with
+its operation still `queued`, is `failed` with `not_executed`, `retryable: false`. That includes a call
+whose `celery_viewset_client` result wait timed out (`ResultTimeoutError`) while the task sat in the
+broker queue.
 
-**What follows:** a worker that picks the task up later enters `operation()` on the tombstone, which
-flips it from `failed` to `running` and ends it again. The client was already answered `504`.
+**What follows:** a worker that picks the task up later enters `operation()` on the tombstone. The
+store keeps the terminal state (TW-STORE-010), so the run's progress never shows, and the document
+keeps `not_executed`. The client was already answered `504`.
 
-**Still needs deciding:** whether the execution hook should leave an operation it finds terminal
-alone, at the cost of a second store read on every tracked execution, or whether the middleware
-should leave a dispatched operation `queued` on a result timeout and let `active_ttl` expire it.
+**Still needs deciding:** whether the middleware should leave a dispatched operation `queued` on a
+result timeout and let `active_ttl` expire it, or whether the worker should start a fresh run as
+`TaskwireMiddleware` does for a call that executes anew (TW-CALL-003).
+
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-003 — `TaskwireMiddleware` is listed by the application
+
+**What the design said:** a command middleware writes `queued` when a call with a token arrives, for
+every call.
+
+**What I assumed:** the application lists `TaskwireMiddleware` in `viewsets_command_middleware` itself,
+after `Idempotency`; `register_taskwire_rest` does not insert it. Before `Idempotency`, a repeat that
+`Idempotency` answers from a stored outcome would replace the operation's terminal document with a new
+`queued` one and then a `not_executed` failure, and the chain's order is the application's. Without the middleware no
+in-process action is reported, so `register_taskwire_rest` alone changes nothing for an existing
+application.
+
+**Still needs deciding:** whether `register_taskwire_rest` should insert it after an `Idempotency`
+instance, or warn when the execution hook is installed without it.
 
 ---
 

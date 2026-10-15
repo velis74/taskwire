@@ -211,22 +211,27 @@ A malformed `Idempotency-Key` gives `None`; the processor raises nothing for it.
 
 `TaskwireMiddleware()` is a fastapi-viewsets command middleware, placed after `Idempotency`. For a
 tracked call it calls `mark_queued(token, session=..., connection=..., result_kind=...)` before the
-rest of the chain, and after the chain returned or raised it ends an operation still `queued` with
-`failed`: error code `NOT_EXECUTED` (`"not_executed"`, `retryable: false`), or `dispatch_failed`
-(`retryable: true`) when the call reached the Celery dispatch hook. A store failure at the `queued`
-write is logged and the call runs.
+rest of the chain; a terminal document under the token is dropped first, since a call that reaches
+the middleware executes anew. After the chain returned or raised it ends an operation still `queued`,
+whose action the execution hook never entered, with `failed`: error code `dispatch_failed`
+(`retryable: true`) when the call reached the Celery dispatch hook and the broker did not accept the
+task, otherwise `NOT_EXECUTED` (`"not_executed"`, `retryable: false`). Store failures are logged and
+the call runs.
 
 A call is tracked when the context holds a token and a namespace, the viewset is not taskwire's own,
 and the action configuration for `TaskwireMiddleware` is not `False`. `result_kind` is the
 `"result_kind"` entry of `@action_configuration({TaskwireMiddleware: {"result_kind": kind}})`, or else
 the kind a result decorator declares on the action method, or else `None` (a private operation).
+Either configuration requires a `TaskwireMiddleware` instance in `viewsets_command_middleware`:
+fastapi-viewsets raises `ValueError` for an action configured with the key otherwise.
 
 `taskwire_execution_hook(execution: ActionExecution)` returns an async context manager that
 fastapi-viewsets enters around the action where it executes. For a tracked execution it enters
 `operation(token, session=..., connection=..., result_kind=...)`, binds `taskwire.progress` around
-the action and yields the `Reporter`; for an untracked one it yields `None`. In a Celery worker the
-token and namespace are those `wrap_sync_runner` carried. A store failure on entry leaves the action
-to run unreported, and a failure of the terminal write is logged. An action running under it reports
+the action and yields the `Reporter`; for an untracked one it yields `None`. In the web process an
+execution is tracked when `TaskwireMiddleware` tracks its call; in a Celery worker, when
+`wrap_sync_runner` carried a token and namespace. A store failure on entry leaves the action to run
+unreported, and a failure of the terminal write is logged. An action running under it reports
 through `taskwire.progress` and does not open `operation()` for its own token.
 
 `taskwire.contrib.fastapi.router(prefix=None)` returns a hand-rolled `APIRouter` with the same six
@@ -285,15 +290,17 @@ register_taskwire_celery_viewset()
 ```
 
 Installs `wrap_sync_runner` with `set_celery_kwargs_hook`, taskwire's dispatch hook with
-`set_celery_dispatch_hook`, and `taskwire_execution_hook` with `set_execution_hook`
+`set_celery_dispatch_hook`, a receiver of Celery's `after_task_publish` signal, and
+`taskwire_execution_hook` with `set_execution_hook`, replacing any execution hook installed before
 (`dynamicforms-fastapi-viewsets >= 0.9.0`, `pip install "taskwire[viewsets]"`). Call it in every
 process that dispatches or executes a `celery_viewset` action; calling it again installs the same
 hooks.
 
-The dispatch hook writes nothing. It carries the token and namespace of the call `TaskwireMiddleware`
-is running, or, without the middleware, those in the action's `context: Context` parameter, as
-`_taskwire_token` / `_taskwire_session`, and returns `{}` for an untracked call. `result_kind` is
-fixed by the middleware's `queued` write.
+For a call `TaskwireMiddleware` tracks, the dispatch hook writes nothing and carries the call's token
+and namespace as `_taskwire_token` / `_taskwire_session`; `result_kind` is fixed by the middleware's
+`queued` write. Without the middleware it takes the token, namespace and connection id from the
+action's `context: Context` parameter, writes `queued` and carries the same two values. It returns
+`{}` for an untracked call and for a dispatch made from inside an action the execution hook reports.
 
 ## Headers
 
@@ -305,9 +312,9 @@ CONNECTION_HEADER = "X-Taskwire-Connection"
 The front end mints a token and sends it with **its own** command under `X-Taskwire-Token`; taskwire
 never carries the command itself. On a viewset call without `X-Taskwire-Token`, the key of the
 `Idempotency-Key` header is the token when it is a UUID (see
-[Tracked viewset calls](#tracked-viewset-calls)). `X-Taskwire-Connection` names the connection, and it serves two
-purposes with no second header: delivery scope on a read, and `origin_connection` on the request that
-starts an operation. There is no tab header, and there must not be one.
+[Tracked viewset calls](#tracked-viewset-calls)). `X-Taskwire-Connection` names the connection, and it
+serves two purposes with no second header: delivery scope on a read, and `origin_connection` on the
+request that starts an operation. There is no tab header, and there must not be one.
 
 ## Ports
 

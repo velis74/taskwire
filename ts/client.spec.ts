@@ -695,6 +695,24 @@ describe('trackCall follows a viewset call under its key (TW-TS-019)', () => {
     expect(server.polls(token)).toHaveLength(1);
   });
 
+  it('reads a settled call while a transport holds the ladder, and drops it untracked (TW-TS-007)', async () => {
+    const token = new_token();
+    server.handler = () => ({ status: 404 });
+    tw.attachTransport({ subscribe: () => () => undefined });
+    const call = pending<void>();
+    const seen: boolean[] = [];
+
+    tw.trackCall(keyed(call.promise, token), (operation) => seen.push(operation.closed));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const before = server.polls(token).length;
+
+    call.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(server.polls(token)).toHaveLength(before + 1);
+    expect(seen).toEqual([true]);
+    expect(tw.handle(token)).toBeNull();
+  });
+
   it('shows a call in tw.operations only once progressUi.delay has passed (§4.3)', async () => {
     const slow = new_token();
     const fast = new_token();

@@ -8,8 +8,7 @@
  *
  * Declared here is exactly what `ts/muxws.ts` uses, and nothing more - the proxy base its calls
  * class extends, the `ViewSetCall` its requests return, and the peer shape that base opens streams
- * on. If the shape ever drifts, this file
- * is the one place that has to notice.
+ * on. If the shape ever drifts, this file is the one place that has to notice.
  */
 declare module '@dynamicforms/fastapi-viewsets' {
   export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';

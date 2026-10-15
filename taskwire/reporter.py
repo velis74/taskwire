@@ -954,14 +954,14 @@ class OperationScope:
     def bind_ambient_in_caller(self) -> None:
         """Leave the ambient binding to the caller, who binds around the body in its own context.
 
-        For a caller that enters this scope from a synchronous frame by driving `__aenter__` on a
-        loop it already owns. The task that drives it has a context of its own which is discarded on
-        the way out, so a binding made inside `__aenter__` would be invisible where the body runs and
-        would carry a `contextvars.Token` that can never be reset (TW-AMB-005, TW-INV-011). Call this
-        before `__aenter__`, then `taskwire.ambient.bind` around the body and `unbind` in a `finally`.
+        For a caller whose `__aenter__` and `__aexit__` may run in different contexts. A binding made
+        inside `__aenter__` is reset by `__aexit__`, and a `contextvars.Token` can be reset only in the
+        context that created it (TW-AMB-005, TW-INV-011). Call this before `__aenter__`, then
+        `taskwire.ambient.bind` around the body and `unbind` in a `finally`.
 
-        `__enter__` does exactly that for the synchronous form; `wrap_sync_runner` does it for a
-        worker that owns its own loop (TW-CELERY-007).
+        `__enter__` does exactly that for the synchronous form, whose `__aenter__` runs in a task of
+        its own on a private loop. `taskwire_execution_hook` does it around a viewset action, so that
+        `wrap_sync_runner` can run the scope's exit from another task (TW-CALL-008).
         """
         self._caller_binds_ambient = True
 

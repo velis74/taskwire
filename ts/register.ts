@@ -145,6 +145,11 @@ function settledDialog(dialogs: readonly DialogRequest[], body: WireObject): Dia
   return { ...existing, state, reply };
 }
 
+/** A `progress` push whose document declares no `result_kind`: a private operation's (TW-PRIV-001). */
+function isPrivateProgress(envelope: Envelope): boolean {
+  return envelope.kind === 'progress' && (envelope.body.result_kind ?? null) === null;
+}
+
 /** A pending timer, whichever `setTimeout` the host supplies - a browser's or Node's. */
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -461,12 +466,16 @@ export class RegisterState {
   applyEnvelope(envelope: Envelope): boolean {
     if (this.stopped) return false;
     const handle = this.client.handle(envelope.token);
+    // A private operation's progress puts no row in the register (TW-PRIV-001): only an open question
+    // does, and that arrives as `dialog.open`. Every tracked viewset call over this socket pushes such
+    // documents, and none of them is a membership change.
+    const membership = !isPrivateProgress(envelope);
     if (handle === null) {
       // A token no handle here knows is a membership change - something started in another tab, or
       // this client's own copy of who is in the register is older than the push. The register is
       // what says who is in it (TW-REG-006), so one read answers it; synthesising a row out of one
       // envelope's body would put an entry on screen carrying whatever that kind happened to carry.
-      this.readOnce();
+      if (membership) this.readOnce();
       return false;
     }
     // Having a handle is not being in the register. A token this tab minted through `run()` has one
@@ -475,7 +484,7 @@ export class RegisterState {
     // (TW-REG-006). Without this the socket's own accelerator is what hides the row: the ladder is
     // held while a transport is attached (TW-TS-007), the push moves the handle, `restate()` finds
     // no row to move, and `tw.register` stays empty for the life of the socket.
-    if (!this.knownMember(envelope.token)) this.readOnce();
+    if (membership && !this.knownMember(envelope.token)) this.readOnce();
     try {
       return this.route(envelope, handle);
     } catch {

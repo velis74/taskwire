@@ -19,8 +19,9 @@ That single call:
 - registers `taskwire_context_processor` globally, so `context["taskwire_session"]`,
   `["taskwire_connection"]` and `["taskwire_token"]` become available to **every** viewset action in
   the process that declares a `context: Context` parameter, not only taskwire's own endpoints;
-- installs `taskwire_execution_hook` as fastapi-viewsets' execution hook, which reports every tracked
-  viewset action (see [Tracking every viewset call](#tracking-every-viewset-call));
+- installs `taskwire_execution_hook` as fastapi-viewsets' execution hook, replacing any hook installed
+  before. It reports the actions of calls `TaskwireMiddleware` tracks and of `celery_viewset` calls,
+  and nothing else (see [Tracking every viewset call](#tracking-every-viewset-call));
 - is idempotent per router — calling it twice mounts one copy, never two.
 
 ## What this buys, beyond not writing six routes by hand
@@ -77,15 +78,20 @@ register_taskwire_rest(router)
 | `running`, then `done` / `failed` / `cancelled` | `taskwire_execution_hook`, around the action | where the action executes: the web process, or the Celery worker for a `celery_viewset` action |
 | `failed` with `not_executed` | `TaskwireMiddleware`, when the call ended with the operation still `queued` | web process |
 
+Viewset calls are tracked only with `TaskwireMiddleware` in `viewsets_command_middleware`. Without
+it, `register_taskwire_rest` changes nothing for an in-process action.
+
 **The token.** `X-Taskwire-Token` when the call carries it (a call made inside `tw.run()`), otherwise
 the key of `Idempotency-Key` when that key is a UUID. Both arrive the same way over REST and over a
-muxws stream.
+muxws stream. Every viewset call made inside one `tw.run()` carries the run's token and reports into
+that one operation, so a `tw.run()` whose operation is followed makes exactly one viewset call.
 
 **Untracked calls.** A call with no token, a call whose `session_resolver` returned `None`, a call to
 taskwire's own six endpoints, and a call to an action configured
 `@action_configuration({TaskwireMiddleware: False})` run unchanged and write nothing. An
 `Idempotency-Key` that is malformed or not a UUID leaves the call untracked; taskwire does not reject
-it.
+it. fastapi-viewsets raises `ValueError` for an action configured with the `TaskwireMiddleware` key
+while no `TaskwireMiddleware` instance is in `viewsets_command_middleware`.
 
 **Privacy.** An operation is private unless the action declares a `result_kind`: with a result
 decorator on the action method, or with
@@ -105,12 +111,15 @@ class ExportViewSet:
 ```
 
 **Order of the middleware.** `TaskwireMiddleware` goes after `Idempotency`. A repeat that
-`Idempotency` answers from a stored outcome, or attaches to a running call, then never reaches it.
+`Idempotency` answers from a stored outcome, or attaches to a running call, then never reaches it. A
+call that reaches it executes anew: a terminal document under its token is dropped and the operation
+starts again from `queued`.
 
-**Rejected calls.** A call that ends — answers or raises — while its operation is still `queued`
-ends the operation `failed`: `not_executed` (`retryable: false`) when a later middleware or the chain
-rejected it, `dispatch_failed` (`retryable: true`) when it was handed to Celery and the worker never
-started it.
+**Rejected calls.** A call that ends — answers or raises — while its operation is still `queued` and
+its action was never entered ends the operation `failed`: `dispatch_failed` (`retryable: true`) when
+it was handed to Celery and the broker did not accept the task, `not_executed` (`retryable: false`)
+otherwise — a later middleware or the chain rejected it, or the worker answered without executing
+the action.
 
 **The action reports through the ambient reporter.** The hook binds `taskwire.progress` around the
 action. The action does not open `operation()` for its own token: the hook already did, and two
@@ -131,10 +140,6 @@ const report = await tw.awaitCall(api.import(rows), (operation) => {
 
 A private operation's progress is pushed to the connection that `X-Taskwire-Connection` named on
 the call; over muxws, `attachMuxws` puts that header on every stream of the peer.
-
-**Without `TaskwireMiddleware`** a tracked action still reports `running` and its terminal state
-through the hook. Its operation has no `queued` state, and a call rejected before its action executed
-leaves no document.
 
 **One hook slot.** fastapi-viewsets holds one execution hook. `register_taskwire_rest` and
 `register_taskwire_celery_viewset` replace whatever was installed; an application with a hook of its
@@ -158,7 +163,8 @@ calls.
 
 - In the web process, `TaskwireMiddleware` writes `queued`. The execution hook is not entered around
   the dispatch stub; the dispatch hook writes nothing and carries the token and namespace to the
-  worker as `_taskwire_token` / `_taskwire_session`.
+  worker as `_taskwire_token` / `_taskwire_session`. A dispatch made from inside an action the hook
+  reports carries nothing.
 - In the worker, `wrap_sync_runner` removes the two keys from the action's kwargs, and the execution
   hook opens the operation around the action inside `lifecycle_runner`. The operation ends before the
   worker publishes the result.
@@ -167,8 +173,8 @@ calls.
   an open question, the exception's class name otherwise.
 
 With `TaskwireMiddleware` installed the action needs no `context` parameter. Without it, the dispatch
-hook reads the token from the action's `context: Context` parameter, and an action without one is
-dispatched untracked.
+hook reads the token, the namespace and the connection id from the action's `context: Context`
+parameter and writes `queued` itself, and an action without one is dispatched untracked.
 
 See [The Celery worker entry](../api/python.md#the-celery-worker-entry) for `taskwire_task` and
 `dispatch`, the pair for a Celery task that is not a viewset action.

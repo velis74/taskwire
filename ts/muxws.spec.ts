@@ -396,6 +396,17 @@ describe('the headers on every stream opened on an attached peer (TW-TS-020)', (
       vi.useRealTimers();
     }
   });
+
+  it('attaches to a peer without interceptOpen and stamps nothing', () => {
+    const client = new Taskwire('/taskwire', axios.create());
+    const peer = new FakePeer();
+    Object.defineProperty(peer, 'interceptOpen', { value: undefined });
+
+    expect(() => attachMuxws(client, peer as never, { routeCalls: false })).not.toThrow();
+    peer.open({ command: 'unstamped' });
+    expect(peer.opened.map((stream) => stream.headers)).toEqual([{}]);
+    client.dispose();
+  });
 });
 
 describe('a client carried by nothing but pushes', () => {

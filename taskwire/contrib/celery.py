@@ -4,10 +4,11 @@ Imports Celery; nothing in `taskwire/` outside `contrib` may (TW-CORE-006).
 
 ## The one thing to get right
 
-**In a Celery deployment exactly one process owns the terminal write, and it is the worker**
-(TW-CELERY-004, TW-INV-009). The web side writes `queued` and - only if dispatch itself failed -
-`failed` with `code: "dispatch_failed"` and `retryable: true`, because an unreachable broker is
-transient and a frontend may legitimately offer a retry.
+**In a Celery deployment the worker owns the terminal write of an operation it runs**
+(TW-CELERY-004, TW-INV-009). The web side writes `queued`, and `failed` only for an operation that
+never reached `running`: `dispatch_failed` with `retryable: true` when the broker did not accept the
+task, because an unreachable broker is transient and a frontend may legitimately offer a retry, and
+`not_executed` for a viewset call that ended unstarted otherwise (TW-CALL-006).
 
 The web side must **not** open `operation()` for a task it dispatches (TW-CELERY-005). Middleware
 never runs in the worker, so the contextvar would be unbound there and every `progress.set()` in the
@@ -284,32 +285,56 @@ def configure_worker(store: Any) -> None:
 async def _celery_dispatch_hook(kwargs: dict[str, Any]) -> dict[str, Any]:
     """The client-side hook fastapi-viewsets calls just before `send_task` (TW-CALL-008).
 
-    Writes nothing: `TaskwireMiddleware` wrote `queued`. Carries the token and namespace of the call
-    `TaskwireMiddleware` is running, or, without the middleware, of the call's `context` (present when
-    the action declares a `context: Context` parameter). Marks that call so that, should it end with
-    the operation still `queued`, the middleware writes `dispatch_failed` (TW-CALL-006). Returns `{}`
-    for an untracked call (TW-AMB-009).
+    For a call `TaskwireMiddleware` tracks, writes nothing (the middleware wrote `queued`), carries the
+    call's token and namespace, and marks the call so that, should the broker not accept the task, the
+    middleware writes `dispatch_failed` (TW-CALL-006). For a call the middleware does not run, takes the
+    token, namespace and connection id from the call's `context` (present when the action declares a
+    `context: Context` parameter), writes `queued` itself, and carries the same two values. Returns `{}`
+    for an untracked call (TW-AMB-009) and for a dispatch made from inside an action the execution hook
+    reports.
     """
-    from .viewsets import _tracked, _tracked_call
+    from .viewsets import _in_action, _tracked, _tracked_call
+
+    if _in_action.get():
+        return {}
+    call = _tracked_call.get()
+    if call is not None:
+        call.unstarted_error = Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True)
+        return {TOKEN_KWARG: call.token, SESSION_KWARG: call.session}
+    call = await _tracked(kwargs.get("context"))
+    if call is None:
+        return {}
+    try:
+        await mark_queued(call.token, session=call.session, connection=call.connection)
+    except Exception:  # noqa: BLE001 - reporting is an accelerator; the dispatch goes ahead
+        logger.warning("taskwire: no queued write for %s; the call is dispatched", call.token, exc_info=True)
+    return {TOKEN_KWARG: call.token, SESSION_KWARG: call.session}
+
+
+def _task_published(**_signal: Any) -> None:
+    """Celery's `after_task_publish` receiver: the broker accepted the task of the call being dispatched.
+
+    Runs in the thread `send_task` publishes from, whose context is a copy of the dispatching call's, so
+    `_tracked_call` names the same call. Its unstarted error falls back to `not_executed`: a call that
+    then ends with its operation still `queued` reached the worker, or is still waiting for one.
+    """
+    from .viewsets import _tracked_call
 
     call = _tracked_call.get()
-    if call is None:
-        call = await _tracked(kwargs.get("context"))
-        if call is None:
-            return {}
-    call.unstarted_error = Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True)
-    return {TOKEN_KWARG: call.token, SESSION_KWARG: call.session}
+    if call is not None:
+        call.unstarted_error = None
 
 
 def register_taskwire_celery_viewset() -> None:
     """Wire taskwire into fastapi-viewsets' Celery viewset hooks and its execution hook (TW-CELERY-007).
 
     Call once in every process that dispatches or executes a `celery_viewset` action:
-    `set_celery_kwargs_hook(wrap_sync_runner)` for the worker, `set_celery_dispatch_hook` for the web
-    process, and `set_execution_hook(taskwire_execution_hook)` for both, replacing any execution hook
-    installed before. Each is a no-op for a call taskwire does not track (TW-AMB-009). Calling it again
-    installs the same hooks.
+    `set_celery_kwargs_hook(wrap_sync_runner)` for the worker, `set_celery_dispatch_hook` and an
+    `after_task_publish` receiver for the web process, and `set_execution_hook(taskwire_execution_hook)`
+    for both, replacing any execution hook installed before. Each is a no-op for a call taskwire does
+    not track (TW-AMB-009). Calling it again installs the same hooks.
     """
+    from celery.signals import after_task_publish
     from fastapi_viewsets.decorators import set_execution_hook
     from fastapi_viewsets.decorators.celery_viewset.client import set_celery_dispatch_hook
     from fastapi_viewsets.decorators.celery_viewset.server import set_celery_kwargs_hook
@@ -318,4 +343,5 @@ def register_taskwire_celery_viewset() -> None:
 
     set_celery_kwargs_hook(wrap_sync_runner)
     set_celery_dispatch_hook(_celery_dispatch_hook)
+    after_task_publish.connect(_task_published, weak=False, dispatch_uid="taskwire.task_published")
     set_execution_hook(taskwire_execution_hook)

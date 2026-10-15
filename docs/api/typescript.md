@@ -49,7 +49,10 @@ then mints a token of its own that nothing is watching.
 
 Every call a fastapi-viewsets proxy makes returns a `ViewSetCall`, a promise carrying the call's
 `Idempotency-Key` as `key`, and a server with `TaskwireMiddleware` tracks the call as an operation
-under that key ([Tracking every viewset call](../guide/fastapi-viewsets.md#tracking-every-viewset-call)).
+under that key
+([Tracking every viewset call](../guide/fastapi-viewsets.md#tracking-every-viewset-call)). A call made
+inside `run()` carries `X-Taskwire-Token`, and the server tracks it under `run()`'s token instead;
+such a call is followed through the handle `run()` returns, not through `trackCall`.
 
 ```ts
 const call = api.import(rows);                   // ViewSetCall<ImportReport>
@@ -68,8 +71,9 @@ exactly as `call` does; the handler stays registered until the operation ends.
 
 The handle is minted as `run()` mints one: `startedHere`, joining `tw.operations` after
 `progressUi.delay`, and awaitable as `call`. Two registrations for one key share one handle. When
-`call` settles, the client reads the token once more at once: a call the server did not track has
-no document and its handle is dropped silently, after one call of the handler with a closed handle.
+`call` settles, the client reads the token once more at once, also while a transport holds the
+ladder: a call the server did not track has no document and its handle is dropped silently, after
+one call of the handler with a closed handle.
 
 `call` is any `KeyedCall<R>` — `PromiseLike<R> & { readonly key?: string }`. A call without a string
 `key` throws `TypeError`; a proxy method that awaits before it issues its request returns a promise
@@ -238,10 +242,11 @@ Attaching does two things: it takes the pushes, and it moves the six calls of TW
 socket. While attached, every stream opened on the peer — the application's own commands included —
 carries `X-Taskwire-Connection` once the socket has an id, and `X-Taskwire-Token` when it is opened
 in the synchronous part of a `run()` callback, as the axios interceptor writes them on a request.
-This requires muxws 0.4.0 (`Peer.interceptOpen`). `{ routeCalls: false }` takes the pushes and leaves the calls on HTTP, and `{ basePath }`
-names the prefix the viewset is mounted under when it is not the client's own. The connection id
-needs no option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the
-socket puts every ladder back on its base rung. taskwire never dials a socket and never closes one.
+The headers need muxws 0.4.0 (`Peer.interceptOpen`); on an older peer no stream carries them.
+`{ routeCalls: false }` takes the pushes and leaves the calls on HTTP, and `{ basePath }` names the
+prefix the viewset is mounted under when it is not the client's own. The connection id needs no
+option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the socket puts
+every ladder back on its base rung. taskwire never dials a socket and never closes one.
 
 ## Vue
 

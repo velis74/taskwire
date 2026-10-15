@@ -572,36 +572,50 @@ def test_register_taskwire_celery_viewset_installs_every_hook():
         set_execution_hook(None)
 
 
-async def test_the_dispatch_hook_carries_the_call_and_writes_nothing():
-    """TW-CALL-008: `TaskwireMiddleware` wrote `queued`; the hook only carries the token and namespace.
+async def test_the_dispatch_hook_carries_the_call():
+    """TW-CALL-008: for a call `TaskwireMiddleware` tracks the hook writes nothing and carries the call.
 
-    Without the middleware the call's `context` names them. With it, the middleware's call does, and
-    the hook marks that call so an operation still `queued` when the call ends is `dispatch_failed`.
+    The call is marked `dispatch_failed` until `after_task_publish` reports the broker accepted the
+    task. Without the middleware the call's `context` names the operation, and the hook writes
+    `queued` with the connection id itself. Inside an action the execution hook reports, it carries
+    nothing.
     """
     pytest.importorskip("fastapi_viewsets")
     from fastapi_viewsets.context import Context
 
-    from taskwire.contrib.viewsets import _tracked_call, _TrackedCall
+    from taskwire.contrib.viewsets import _in_action, _tracked_call, _TrackedCall
 
     store = MemoryStore()
     configure(store=store)
     try:
-        token = new_token()
-        context = Context({"taskwire_token": token, "taskwire_session": NS, "taskwire_connection": "conn-7"})
-        extra = await taskwire.contrib.celery._celery_dispatch_hook({"context": context, "rows": 3})
-        assert extra == {"_taskwire_token": token, "_taskwire_session": NS}
-        assert await store.snapshot(make_key(NS, token)) is None, "the dispatch hook writes nothing"
-
         call = _TrackedCall(token=new_token(), session=NS, connection=None)
         marker = _tracked_call.set(call)
         try:
             extra = await taskwire.contrib.celery._celery_dispatch_hook({"rows": 3})
+            assert extra == {"_taskwire_token": call.token, "_taskwire_session": NS}
+            assert await store.snapshot(make_key(NS, call.token)) is None, "the middleware writes queued"
+            assert call.unstarted_error is not None
+            assert call.unstarted_error.code == DISPATCH_FAILED
+            assert call.unstarted_error.retryable is True
+            await asyncio.to_thread(taskwire.contrib.celery._task_published, sender="t")
+            assert call.unstarted_error is None, "a published task falls back to not_executed"
         finally:
             _tracked_call.reset(marker)
-        assert extra == {"_taskwire_token": call.token, "_taskwire_session": NS}
-        assert call.unstarted_error is not None
-        assert call.unstarted_error.code == DISPATCH_FAILED
-        assert call.unstarted_error.retryable is True
+
+        token = new_token()
+        context = Context({"taskwire_token": token, "taskwire_session": NS, "taskwire_connection": "conn-7"})
+        extra = await taskwire.contrib.celery._celery_dispatch_hook({"context": context, "rows": 3})
+        assert extra == {"_taskwire_token": token, "_taskwire_session": NS}
+        snapshot = await store.snapshot(make_key(NS, token))
+        assert snapshot is not None
+        assert snapshot.progress.state == ProgressState.QUEUED
+        assert snapshot.progress.origin_connection == "conn-7"
+
+        marker = _in_action.set(True)
+        try:
+            assert await taskwire.contrib.celery._celery_dispatch_hook({"context": context}) == {}
+        finally:
+            _in_action.reset(marker)
     finally:
         reset_configuration()
 

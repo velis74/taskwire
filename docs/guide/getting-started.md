@@ -101,7 +101,10 @@ for it, or every progress report would arrive after the thing it describes.
 A fastapi-viewsets action needs none of this code: with `TaskwireMiddleware` installed, every call a
 fastapi-viewsets proxy makes is an operation under the key of its `Idempotency-Key`, reported from
 `queued` to its terminal state where the action executes — see
-[Tracking every viewset call](./fastapi-viewsets.md#tracking-every-viewset-call).
+[Tracking every viewset call](./fastapi-viewsets.md#tracking-every-viewset-call). A viewset action
+that hands its token to background work, as this endpoint does, is configured
+`@action_configuration({TaskwireMiddleware: False})`, because the execution hook ends the operation
+when the action returns.
 
 ## Report progress
 
