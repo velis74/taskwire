@@ -320,7 +320,7 @@ def test_a_task_without_a_namespace_still_does_its_work():
 
 
 # -------------------------------------------------------------------------------------------------
-# `wrap_sync_runner` - the worker-side entry for a viewset action (TW-CELERY-007)
+# `wrap_sync_runner` - the worker-side entry for a viewset action (TW-CELERY-007, TW-CALL-008)
 # -------------------------------------------------------------------------------------------------
 
 
@@ -329,6 +329,29 @@ def _worker_loop() -> asyncio.AbstractEventLoop:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     return loop
+
+
+@pytest.fixture
+def _execution_hook():
+    """`taskwire_execution_hook` installed in fastapi-viewsets' single slot, and removed afterwards."""
+    pytest.importorskip("fastapi_viewsets")
+    from fastapi_viewsets.decorators import set_execution_hook
+
+    from taskwire.contrib.viewsets import taskwire_execution_hook
+
+    set_execution_hook(taskwire_execution_hook)
+    yield
+    set_execution_hook(None)
+
+
+def _worker_run(runner, action, kwargs: dict):  # noqa: ANN001, ANN202
+    """`celery_viewset_server.sync_wrapper`, reduced: the kwargs hook, then `lifecycle_runner` with no
+    response, driven by the runner the hook returned. `action` takes `self`."""
+    from fastapi_viewsets.decorators.lifecycle_runner import lifecycle_runner
+
+    worker_class = type("WorkerViewSet", (), {action.__name__: action})
+    run, kwargs = taskwire.contrib.celery.wrap_sync_runner(runner, kwargs)
+    return run(lifecycle_runner(action, worker_class(), worker_class, "singleton", **kwargs))
 
 
 class _LoopWatchingStore(MemoryStore):
@@ -343,12 +366,12 @@ class _LoopWatchingStore(MemoryStore):
         return await super().commit(*args, **kwargs)
 
 
-@pytest.mark.usefixtures("_unthrottled")
+@pytest.mark.usefixtures("_unthrottled", "_execution_hook")
 def test_an_action_reports_through_the_ambient_reporter():
-    """TW-CELERY-007, TW-AMB-001: an action that declares no reporter still reports.
+    """TW-CALL-004, TW-AMB-001: the execution hook opens the operation in the worker, around the action.
 
-    A viewset action's arguments are its own. The reporter cannot be handed to it as a parameter, so
-    the ambient binding is the whole of how `await progress.set()` six frames down reaches the token.
+    The action declares no reporter; the ambient binding is how `await progress.set()` reaches the
+    token the dispatch carried.
     """
     store = MemoryStore()
     configure(store=store)
@@ -356,49 +379,36 @@ def test_an_action_reports_through_the_ambient_reporter():
     try:
         asyncio.run(taskwire.mark_queued(token, session=NS, result_kind="acme.report"))
 
-        async def action(*, rows: int) -> str:
+        async def run_import(_self, *, rows: int) -> str:  # noqa: ANN001
             await taskwire.progress.set(percent=100 * rows / 10, label=taskwire.t("acme.rows"))
             return f"{rows} rows"
 
-        run, kwargs = taskwire.contrib.celery.wrap_sync_runner(
-            loop.run_until_complete, {"_taskwire_token": token, "_taskwire_session": NS, "rows": 4}
-        )
-        assert run(action(**kwargs)) == "4 rows"
+        kwargs = {"_taskwire_token": token, "_taskwire_session": NS, "rows": 4}
+        assert _worker_run(loop.run_until_complete, run_import, kwargs) == "4 rows"
 
-        # One terminal write, and it took the entry out of the register in the same step
-        # (TW-REG-007) while leaving the document readable at its own address.
         ended = asyncio.run(store.snapshot(make_key(NS, token)))
         assert ended is not None
         assert ended.progress.state is ProgressState.DONE
+        assert ended.progress.result_kind == "acme.report", "fixed by the queued write (TW-CELERY-009)"
         assert asyncio.run(store.list_operations(NS)) == []
     finally:
         loop.close()
         reset_configuration()
 
 
-@pytest.mark.usefixtures("_unthrottled")
+@pytest.mark.usefixtures("_unthrottled", "_execution_hook")
 def test_every_store_write_of_one_run_happens_on_one_loop():
-    """TW-CELERY-001: the opening write, the action's own commits and the terminal write share a loop.
-
-    `operation()`'s synchronous form owns a second loop on a second thread (TW-API-002), which is
-    right for a synchronous task body and wrong for an `async def` action: the action's awaits would
-    run on the caller's loop while the operation ran on the other, and one `redis.asyncio` client
-    cannot serve connections opened on a loop that is not driving them.
-    """
+    """TW-CELERY-001: the opening write, the action's own commits and the terminal write share a loop."""
     store = _LoopWatchingStore()
     configure(store=store)
     token, loop = new_token(), _worker_loop()
     try:
 
-        async def action() -> None:
+        async def halfway(_self) -> None:  # noqa: ANN001
             await taskwire.progress.set(percent=50)
 
-        run, _ = taskwire.contrib.celery.wrap_sync_runner(
-            loop.run_until_complete, {"_taskwire_token": token, "_taskwire_session": NS}
-        )
-        run(action())
+        _worker_run(loop.run_until_complete, halfway, {"_taskwire_token": token, "_taskwire_session": NS})
 
-        assert len(store.loops) == 1, "the operation and the action ran on different loops"
         assert store.loops == {id(loop)}
         assert not [t for t in threading.enumerate() if t.name == "taskwire-operation-loop"]
     finally:
@@ -426,6 +436,7 @@ def test_the_taskwire_kwargs_never_reach_the_action():
         reset_configuration()
 
 
+@pytest.mark.usefixtures("_execution_hook")
 def test_a_call_carrying_no_operation_gets_both_arguments_back():
     """TW-AMB-009: one worker entry serves viewsets that never heard of taskwire.
 
@@ -441,23 +452,24 @@ def test_a_call_carrying_no_operation_gets_both_arguments_back():
             assert run == loop.run_until_complete, "the caller's own runner, not a wrapper around it"
             assert remaining is kwargs
 
-        async def action() -> str:
+        async def untracked(_self) -> str:  # noqa: ANN001
             return "ran"
 
-        assert loop.run_until_complete(action()) == "ran"
+        assert _worker_run(loop.run_until_complete, untracked, {}) == "ran"
         assert asyncio.run(store.list_operations(NS)) == []
     finally:
         loop.close()
         reset_configuration()
 
 
-@pytest.mark.usefixtures("_unthrottled")
-def test_an_execution_limit_still_writes_the_terminal_state():
-    """TW-DLG-006, TW-CELERY-004: the signal lands in the caller's frame, and the write survives it.
+@pytest.mark.usefixtures("_unthrottled", "_execution_hook")
+@pytest.mark.parametrize("asking", [False, True], ids=["working", "asking"])
+def test_an_execution_limit_still_writes_the_terminal_state(asking: bool):
+    """TW-DLG-006, TW-CALL-008: the limit lands in the runner's frame, and the terminal write survives it.
 
-    A worker's execution limit raises at whatever the thread is executing, and a thread waiting on an
-    action is inside the runner rather than inside the action. An `async with operation(...)` in the
-    action would be left suspended and the operation would expire on its TTL with no terminal write.
+    The action's coroutine is left suspended inside the hook's `async with`, so `wrap_sync_runner`
+    writes the terminal state; the hook's own exit, when the suspended coroutine is later closed,
+    writes nothing. `dialog_timeout` is named only when the operation held an open question.
     """
     store = MemoryStore()
     seen: list = []
@@ -468,40 +480,42 @@ def test_an_execution_limit_still_writes_the_terminal_state():
 
     configure(store=store, transport=Recorder())
     token, loop = new_token(), _worker_loop()
+    started = asyncio.Event()
+    pending: list[asyncio.Task] = []
     try:
 
-        async def never_answered() -> None:
+        async def blocked(_self) -> None:  # noqa: ANN001
             await taskwire.progress.set(percent=10)
-
-        action = never_answered()
+            started.set()
+            if asking:
+                await taskwire.ask("acme.confirm", buttons=["ok"])
+            await asyncio.Event().wait()
 
         def limit_reached(awaitable):  # noqa: ANN001, ANN202 - stands in for the worker's own runner
-            result = loop.run_until_complete(awaitable)
-            # The limit lands while the thread waits on the action, which is where it lands in a
-            # worker: inside the runner, never inside the coroutine the runner is driving.
-            if awaitable is action:
-                raise SoftTimeLimitExceeded
-            return result
+            if pending:
+                return loop.run_until_complete(awaitable)
+            pending.append(loop.create_task(awaitable))
+            loop.run_until_complete(started.wait())
+            loop.run_until_complete(asyncio.sleep(0.01))
+            raise SoftTimeLimitExceeded
 
-        run, _ = taskwire.contrib.celery.wrap_sync_runner(
-            limit_reached, {"_taskwire_token": token, "_taskwire_session": NS}
-        )
         with pytest.raises(SoftTimeLimitExceeded):
-            run(action)
+            _worker_run(limit_reached, blocked, {"_taskwire_token": token, "_taskwire_session": NS})
+
+        pending[0].cancel()
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
 
         terminal = [e for e in seen if e.body.get("state") in {"done", "failed", "cancelled"}]
         assert len(terminal) == 1, f"one terminal envelope, got {[e.body.get('state') for e in terminal]}"
-        assert terminal[-1].body["state"] == ProgressState.FAILED.value
-        # No question was open, so the code is the exception's own class rather than
-        # `dialog_timeout` - a reader told to answer a question nobody asked is worse off than one
-        # told the worker ran out of time (TW-DLG-006).
-        assert terminal[-1].body["error"]["code"] == "SoftTimeLimitExceeded"
+        assert terminal[0].body["state"] == ProgressState.FAILED.value
+        expected = DIALOG_TIMEOUT if asking else "SoftTimeLimitExceeded"
+        assert terminal[0].body["error"]["code"] == expected
     finally:
         loop.close()
         reset_configuration()
 
 
-@pytest.mark.usefixtures("_unthrottled")
+@pytest.mark.usefixtures("_unthrottled", "_execution_hook")
 def test_the_operation_ends_before_the_runner_returns():
     """TW-CELERY-007: the reason `task_postrun` is banned, asserted from this side.
 
@@ -519,75 +533,79 @@ def test_the_operation_ends_before_the_runner_returns():
     token, loop = new_token(), _worker_loop()
     try:
 
-        async def action() -> str:
+        async def answer(_self) -> str:  # noqa: ANN001
             return "the answer"
 
-        run, _ = taskwire.contrib.celery.wrap_sync_runner(
-            loop.run_until_complete, {"_taskwire_token": token, "_taskwire_session": NS}
-        )
-        result = run(action())
+        result = _worker_run(loop.run_until_complete, answer, {"_taskwire_token": token, "_taskwire_session": NS})
 
-        # Read at the instant the caller has the value in hand, before it would RPUSH it.
         assert result == "the answer"
-        assert [e.body.get("state") for e in seen][-1] == ProgressState.DONE.value
+        assert [e.body.get("state") for e in seen] == ["running", "done"]
     finally:
         loop.close()
         reset_configuration()
 
 
-def test_register_taskwire_celery_viewset_installs_both_hooks():
+def test_register_taskwire_celery_viewset_installs_every_hook():
     """`register_taskwire_celery_viewset` wires the hooks fastapi-viewsets exposes to this one.
 
     fastapi-viewsets never imports taskwire; the registration runs the other way, from here.
     """
     pytest.importorskip("fastapi_viewsets")
+    from fastapi_viewsets.decorators import lifecycle_runner, set_execution_hook
     from fastapi_viewsets.decorators.celery_viewset import (
         client as celery_viewset_client,
         server as celery_viewset_server,
     )
 
     from taskwire.contrib.celery import _celery_dispatch_hook, register_taskwire_celery_viewset, wrap_sync_runner
+    from taskwire.contrib.viewsets import taskwire_execution_hook
 
-    celery_viewset_server.set_celery_kwargs_hook(None)
-    celery_viewset_client.set_celery_dispatch_hook(None)
     try:
+        register_taskwire_celery_viewset()
         register_taskwire_celery_viewset()
         assert celery_viewset_server._celery_kwargs_hook is wrap_sync_runner
         assert celery_viewset_client._celery_dispatch_hook is _celery_dispatch_hook
+        assert lifecycle_runner._execution_hook is taskwire_execution_hook
     finally:
         celery_viewset_server.set_celery_kwargs_hook(None)
         celery_viewset_client.set_celery_dispatch_hook(None)
+        set_execution_hook(None)
 
 
-@pytest.mark.usefixtures("_unthrottled")
-async def test_the_dispatch_hook_reads_context_and_writes_queued():
-    """The dispatch hook fastapi-viewsets 0.5.4 calls with the call's own kwargs (TW-CELERY-007).
+async def test_the_dispatch_hook_carries_the_call_and_writes_nothing():
+    """TW-CALL-008: `TaskwireMiddleware` wrote `queued`; the hook only carries the token and namespace.
 
-    A `context` carrying the token and namespace a `taskwire_context_processor` put there is what
-    turns an ordinary `celery_viewset_client` call into a tracked one - nothing else does.
+    Without the middleware the call's `context` names them. With it, the middleware's call does, and
+    the hook marks that call so an operation still `queued` when the call ends is `dispatch_failed`.
     """
     pytest.importorskip("fastapi_viewsets")
     from fastapi_viewsets.context import Context
+
+    from taskwire.contrib.viewsets import _tracked_call, _TrackedCall
 
     store = MemoryStore()
     configure(store=store)
     try:
         token = new_token()
         context = Context({"taskwire_token": token, "taskwire_session": NS, "taskwire_connection": "conn-7"})
-
         extra = await taskwire.contrib.celery._celery_dispatch_hook({"context": context, "rows": 3})
-
         assert extra == {"_taskwire_token": token, "_taskwire_session": NS}
-        snapshot = await store.snapshot(make_key(NS, token))
-        assert snapshot is not None
-        assert ProgressState(snapshot.progress.state) is ProgressState.QUEUED
-        assert snapshot.progress.origin_connection == "conn-7"
-        assert snapshot.progress.result_kind is None, "no route-specific hint to derive one from"
+        assert await store.snapshot(make_key(NS, token)) is None, "the dispatch hook writes nothing"
+
+        call = _TrackedCall(token=new_token(), session=NS, connection=None)
+        marker = _tracked_call.set(call)
+        try:
+            extra = await taskwire.contrib.celery._celery_dispatch_hook({"rows": 3})
+        finally:
+            _tracked_call.reset(marker)
+        assert extra == {"_taskwire_token": call.token, "_taskwire_session": NS}
+        assert call.unstarted_error is not None
+        assert call.unstarted_error.code == DISPATCH_FAILED
+        assert call.unstarted_error.retryable is True
     finally:
         reset_configuration()
 
 
-@pytest.mark.usefixtures("_unthrottled")
 async def test_the_dispatch_hook_is_a_no_op_without_a_tracked_token():
     """TW-AMB-009: no `context`, or a `context` with no token, opts the call out - not an error."""
     pytest.importorskip("fastapi_viewsets")

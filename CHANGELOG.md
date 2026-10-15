@@ -6,6 +6,33 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased
+
+### Added
+- Every fastapi-viewsets call is an operation: the key of its `Idempotency-Key` header is the token
+  when the call carries no `X-Taskwire-Token` (`X-Taskwire-Token` wins when both are present).
+  Requires `dynamicforms-fastapi-viewsets >= 0.9.0`.
+- `taskwire.contrib.viewsets.TaskwireMiddleware`, a command middleware placed after
+  `Idempotency`: writes `queued` for every tracked call, and `failed` (`not_executed`, or
+  `dispatch_failed` for a Celery dispatch) for a call that ended before its action executed.
+- `taskwire.contrib.viewsets.taskwire_execution_hook`, the fastapi-viewsets execution hook that
+  writes `running` and the terminal state around the action where it executes: in the web process,
+  or in the Celery worker for a `celery_viewset` action. `register_taskwire_rest` and
+  `register_taskwire_celery_viewset` install it.
+- `@action_configuration({TaskwireMiddleware: {"result_kind": kind}})` declares the `result_kind` of
+  an action's operations; `{TaskwireMiddleware: False}` leaves an action untracked. Without a
+  declared `result_kind` an operation is private.
+- `taskwire.contrib.viewsets.NOT_EXECUTED`, the reserved error code `"not_executed"`.
+
+### Changed
+- The Celery dispatch hook writes nothing; it carries the token and namespace to the worker. With
+  `TaskwireMiddleware` installed, a `celery_viewset` action needs no `context: Context` parameter to
+  be tracked.
+- `wrap_sync_runner` no longer opens `operation()` itself: it makes the carried token and namespace
+  visible to `taskwire_execution_hook`, and writes the terminal state only when a soft time limit
+  leaves the action's coroutine suspended.
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets >= 0.9.0`.
+
 ## [0.1.0] - 2026-08-23
 
 ### Added

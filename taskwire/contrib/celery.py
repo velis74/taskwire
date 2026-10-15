@@ -11,9 +11,10 @@ transient and a frontend may legitimately offer a retry.
 
 The web side must **not** open `operation()` for a task it dispatches (TW-CELERY-005). Middleware
 never runs in the worker, so the contextvar would be unbound there and every `progress.set()` in the
-task would be a silent no-op - a progress bar that never moves, with nothing logged. The middleware
-that wraps a *non*-Celery action does open one, because the web process is the worker there
-(TW-CELERY-006).
+task would be a silent no-op - a progress bar that never moves, with nothing logged. For a viewset
+action, `taskwire.contrib.viewsets.taskwire_execution_hook` opens it where the action executes: in the
+web process for an in-process action (TW-CELERY-006), in the worker for a `celery_viewset` action
+(TW-CELERY-007).
 
 ## The blocked-worker problem is deliberately unsolved
 
@@ -47,7 +48,6 @@ from typing import Any
 
 from celery.exceptions import SoftTimeLimitExceeded
 
-from ..ambient import bind as ambient_bind, unbind as ambient_unbind
 from ..decorators import declared_result_kind
 from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported for callers
 from ..models import Error, Text
@@ -185,10 +185,9 @@ def wrap_sync_runner(
     runner: Callable[[Any], Any],
     kwargs: dict[str, Any],
 ) -> tuple[Callable[[Any], Any], dict[str, Any]]:
-    """Wrap a worker's `run_until_complete` so what it drives runs inside an `operation()`.
+    """Carry a dispatched call's operation into the worker's run of the action (TW-CELERY-007).
 
-    The worker-side entry for a **viewset action** dispatched to Celery (TW-CELERY-007), and the twin
-    of `taskwire_task` for a caller that owns a loop already:
+    Installed as `celery_viewset_server`'s kwargs hook by `register_taskwire_celery_viewset`:
 
     ```python
     run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)
@@ -197,20 +196,21 @@ def wrap_sync_runner(
     ```
 
     Both arguments come back: `runner` wrapped, and `kwargs` without `_taskwire_token` /
-    `_taskwire_session`, so the action is called with its own arguments and nothing else. The order
-    of those two lines is load-bearing - a reconstruction pass that has already run hands the action
-    a keyword it never declared. A call carrying neither key gets both arguments back unchanged,
-    which is what lets one worker entry serve viewsets that never heard of taskwire (TW-AMB-009).
+    `_taskwire_session`, so the action is called with its own arguments and nothing else. The hook
+    runs before reconstruction, which passes through any key it has no type hint for. A call carrying
+    neither key gets both arguments back unchanged (TW-AMB-009).
 
-    `token` and `session` cross as **plain strings** (TW-CELERY-003) and the namespace is not
-    re-resolved: `session_resolver` is the only thing that produces one (TW-AMB-008), there is no
-    request in a worker, and a namespace that crossed a process boundary is inert data. No
-    `result_kind` is passed either - the web process's `queued` write fixed it and the field is
-    write-once (TW-CELERY-009, TW-PROG-006, TW-INV-009).
+    The wrapped runner makes the token and namespace visible to `taskwire_execution_hook`, which opens
+    `operation()` around the action inside `lifecycle_runner` and closes it before `run` returns, and
+    therefore before the caller publishes the result (TW-CALL-004, TW-CALL-008). `token` and `session`
+    cross as plain strings and the namespace is not re-resolved (TW-CELERY-003, TW-AMB-008). No
+    `result_kind` is carried: the `queued` write fixed it (TW-CELERY-009, TW-PROG-006).
 
-    Reporting closes before `run` returns, and therefore before the caller publishes the result. That
-    ordering is why TW-CELERY-007 bans `task_prerun` / `task_postrun`: a completion written after the
-    result has been pushed lets a client see the answer before `done`.
+    A worker's execution limit is a signal raised at whatever the thread executes. While the thread
+    waits inside `runner`, the action's coroutine is left suspended and the hook's exit does not run;
+    the wrapped runner then writes the terminal state itself, `dialog_timeout` when the operation held
+    an open question (TW-DLG-006), and the hook's exit writes nothing if the coroutine resumes later.
+    A failure of that write is logged, never raised in place of the limit.
     """
     token = _plain_string(kwargs.get(TOKEN_KWARG), TOKEN_KWARG)
     session = _plain_string(kwargs.get(SESSION_KWARG), SESSION_KWARG)
@@ -222,63 +222,34 @@ def wrap_sync_runner(
 
 
 def _drive(runner: Callable[[Any], Any], awaitable: Any, *, token: str, session: str) -> Any:
-    """Enter, drive and leave one operation - all with the caller's runner, all from this frame.
+    """Run `awaitable` with the operation carried, and close an operation the run left open.
 
-    Three turns of the caller's loop rather than an `async with` inside the awaitable, and both
-    halves of that decide something.
-
-    **One loop.** The opening write, the keepalive, every `await progress.set()` the action makes and
-    the terminal write all run on the loop the worker is already driving. `operation()`'s synchronous
-    form owns a second loop on a second thread (TW-API-002), which is right for a synchronous task
-    body and wrong here: an action is `async def`, so its own awaits would run on the caller's loop
-    while the operation ran on the other one, and a `redis.asyncio` client whose connections were
-    opened on one loop cannot serve the other.
-
-    **One frame.** A worker's execution limit is a signal raised at whatever the thread is executing,
-    and a thread waiting on an action is inside `runner`, not inside the action. An `async with
-    operation(...)` in the awaitable is left suspended by that, its `__aexit__` never runs, and the
-    operation expires on its TTL with no terminal write at all. This `finally` is in the frame the
-    signal unwinds, so the write happens (TW-CELERY-004, TW-DLG-006).
-
-    The ambient binding is made here for the same reason `__enter__` makes it in the calling thread:
-    a `contextvars.Token` may only be reset in the context that created it, and the task `runner`
-    creates for `__aenter__` discards its own (TW-AMB-005). Resetting in the `finally` is what leaves
-    the next task on a pooled worker thread unbound rather than writing to the previous operation's
-    key (TW-INV-011).
-
-    A store that cannot be reached at entry leaves the action to run **unreported** rather than
-    refusing to run it, and a failure at the terminal write is logged rather than raised: reporting is
-    an accelerator, and a broker or store outage must not replace the answer the action produced.
+    The carried value is set in this frame, before `runner` creates the task that drives
+    `awaitable`, so the task's copy of the context holds it.
     """
-    scope = operation(token, session=session)
-    scope.bind_ambient_in_caller()
-    try:
-        reporter = runner(scope.__aenter__())
-    except Exception:  # noqa: BLE001 - an unreachable store is not a reason to refuse the work
-        logger.warning("taskwire: no operation for %s; the action runs unreported", token, exc_info=True)
-        return runner(awaitable)
+    from .viewsets import _Carried, _carried
 
-    ambient = ambient_bind(reporter)
+    carried = _Carried(token=token, session=session)
+    marker = _carried.set(carried)
     try:
-        try:
-            return runner(awaitable)
-        except SoftTimeLimitExceeded:
-            # TW-DLG-006, as `taskwire_task` names it, and on the same condition: `dialog_timeout` is
-            # what a reader can act on when the operation was holding a question, and a lie when it
-            # was not.
-            if reporter.asking:
-                reporter.name_error(
-                    DIALOG_TIMEOUT,
-                    Text(key="taskwire.dialog_timeout"),
-                    True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
-                )
-            raise
+        return runner(awaitable)
+    except SoftTimeLimitExceeded:
+        reporter = carried.reporter
+        if reporter is not None and not carried.closed and reporter.asking:
+            reporter.name_error(
+                DIALOG_TIMEOUT,
+                Text(key="taskwire.dialog_timeout"),
+                True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
+            )
+        raise
     finally:
-        ambient_unbind(ambient)
-        try:
-            runner(scope.__aexit__(*sys.exc_info()))
-        except Exception:  # noqa: BLE001 - logged here, never in place of the action's own outcome
-            logger.warning("taskwire: the terminal write failed for %s", token, exc_info=True)
+        _carried.reset(marker)
+        if carried.scope is not None and not carried.closed:
+            carried.closed = True
+            try:
+                runner(carried.scope.__aexit__(*sys.exc_info()))
+            except Exception:  # noqa: BLE001 - logged here, never in place of the action's own outcome
+                logger.warning("taskwire: the terminal write failed for %s", token, exc_info=True)
 
 
 def _plain_string(value: Any, name: str) -> str | None:
@@ -311,42 +282,40 @@ def configure_worker(store: Any) -> None:
 
 
 async def _celery_dispatch_hook(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """The client-side hook fastapi-viewsets calls just before `send_task` (TW-CELERY-007).
+    """The client-side hook fastapi-viewsets calls just before `send_task` (TW-CALL-008).
 
-    Reads `context["taskwire_token"]` / `["taskwire_session"]` - present only if the application
-    registered `taskwire_context_processor` (or its own equivalent) for this `celery_viewset_client`
-    call, and declared a `context: Context` parameter for the action to carry it. Neither is required
-    for the call itself; an action with no `context` kwarg or no token in it is one this deployment
-    opted out of tracking (TW-AMB-009), and this returns `{}`.
+    Writes nothing: `TaskwireMiddleware` wrote `queued`. Carries the token and namespace of the call
+    `TaskwireMiddleware` is running, or, without the middleware, of the call's `context` (present when
+    the action declares a `context: Context` parameter). Marks that call so that, should it end with
+    the operation still `queued`, the middleware writes `dispatch_failed` (TW-CALL-006). Returns `{}`
+    for an untracked call (TW-AMB-009).
     """
-    from .viewsets import CONNECTION_KEY, SESSION_KEY, TOKEN_KEY
+    from .viewsets import _tracked, _tracked_call
 
-    context = kwargs.get("context")
-    if context is None or TOKEN_KEY not in context or SESSION_KEY not in context:
-        return {}
-    token = await context[TOKEN_KEY]
-    session = await context[SESSION_KEY]
-    if token is None or session is None:
-        return {}
-    connection = await context[CONNECTION_KEY] if CONNECTION_KEY in context else None
-
-    # No `result_kind`: the hook has no route-specific information to derive one from, and the field
-    # is write-once (TW-PROG-006) - an operation dispatched this way keeps the generic rendering a
-    # missing `result_kind` gets, rather than one guessed from nothing.
-    await mark_queued(token, session=session, connection=connection)
-    return {TOKEN_KWARG: token, SESSION_KWARG: session}
+    call = _tracked_call.get()
+    if call is None:
+        call = await _tracked(kwargs.get("context"))
+        if call is None:
+            return {}
+    call.unstarted_error = Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True)
+    return {TOKEN_KWARG: call.token, SESSION_KWARG: call.session}
 
 
 def register_taskwire_celery_viewset() -> None:
-    """Wire taskwire into both of fastapi-viewsets' Celery viewset hooks (TW-CELERY-007).
+    """Wire taskwire into fastapi-viewsets' Celery viewset hooks and its execution hook (TW-CELERY-007).
 
-    Call once: `set_celery_kwargs_hook` on the worker, `set_celery_dispatch_hook` wherever the web
-    process dispatches. Both degrade to a no-op for a call taskwire was never told to track
-    (TW-AMB-009), so this is safe to call even for a deployment where some `celery_viewset` actions
-    carry no `context: Context` parameter and no token at all.
+    Call once in every process that dispatches or executes a `celery_viewset` action:
+    `set_celery_kwargs_hook(wrap_sync_runner)` for the worker, `set_celery_dispatch_hook` for the web
+    process, and `set_execution_hook(taskwire_execution_hook)` for both, replacing any execution hook
+    installed before. Each is a no-op for a call taskwire does not track (TW-AMB-009). Calling it again
+    installs the same hooks.
     """
+    from fastapi_viewsets.decorators import set_execution_hook
     from fastapi_viewsets.decorators.celery_viewset.client import set_celery_dispatch_hook
     from fastapi_viewsets.decorators.celery_viewset.server import set_celery_kwargs_hook
 
+    from .viewsets import taskwire_execution_hook
+
     set_celery_kwargs_hook(wrap_sync_runner)
     set_celery_dispatch_hook(_celery_dispatch_hook)
+    set_execution_hook(taskwire_execution_hook)

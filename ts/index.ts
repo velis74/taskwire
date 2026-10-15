@@ -20,7 +20,7 @@
  * `WIRE_VERSION` is the protocol's and moves only on a breaking wire change (TW-CORE-011); this one
  * tracks the implementation and moves whenever the package is published.
  */
-export const VERSION = '0.1.2';
+export const VERSION = '0.2.0';
 
 // §5.5 - the client
 export {

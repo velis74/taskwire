@@ -98,6 +98,11 @@ async def start_import(request: Request) -> dict:
 The endpoint writes `queued` and returns; it does **not** open `operation()` around the work and wait
 for it, or every progress report would arrive after the thing it describes.
 
+A fastapi-viewsets action needs none of this code: with `TaskwireMiddleware` installed, every call a
+fastapi-viewsets proxy makes is an operation under the key of its `Idempotency-Key`, reported from
+`queued` to its terminal state where the action executes — see
+[Tracking every viewset call](./fastapi-viewsets.md#tracking-every-viewset-call).
+
 ## Report progress
 
 ```python
@@ -152,4 +157,4 @@ which is the point: a user who starts an import in one tab and switches to anoth
 - [Transports](./transports.md) — one protocol, three implementations.
 - [The WebSocket transport](./websockets.md) — one endpoint, one call, and polling stops.
 - [fastapi-viewsets integration](./fastapi-viewsets.md) — the context processor, `@action_configuration`,
-  and tracking a Celery-dispatched viewset action.
+  tracking every viewset call, and tracking a Celery-dispatched viewset action.

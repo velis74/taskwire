@@ -36,6 +36,7 @@ pytest.importorskip("fastapi_viewsets")
 
 from fastapi import APIRouter, FastAPI, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from fastapi_viewsets.decorators import set_execution_hook  # noqa: E402
 
 import taskwire  # noqa: E402
 
@@ -62,11 +63,12 @@ def store() -> Iterator[taskwire.MemoryStore]:
     memory = taskwire.MemoryStore()
     taskwire.configure(store=memory, transport=taskwire.NullTransport(), session_resolver=_resolve_session)
     yield memory
-    # The processor list is a module-level singleton of the *other* library; leaving taskwire's
-    # processor on it would make every later test in the session resolve a namespace it never asked
-    # for.
+    # The processor list and the execution hook are module-level state of the *other* library;
+    # leaving taskwire's on it would make every later test in the session resolve a namespace and
+    # track operations it never asked for.
     if taskwire_context_processor in viewset_settings.viewsets_context_processors:
         viewset_settings.viewsets_context_processors.remove(taskwire_context_processor)
+    set_execution_hook(None)
     taskwire.reset_configuration()
 
 
@@ -317,16 +319,24 @@ class CommandStream:
         return self.reply_headers[STATUS_KEY]
 
 
-def command(method: str, path: str, *, body: Any = None, user: str = "alice") -> CommandStream:
-    """One inbound command stream, through the real `process_command`.
+def command(
+    http: TestClient,
+    method: str,
+    path: str,
+    *,
+    body: Any = None,
+    user: str = "alice",
+    headers: dict[str, str] | None = None,
+) -> CommandStream:
+    """One inbound command stream, through the real `process_command` and the test's application.
 
-    `connection=None` because there is no handshake here; the stream states the header itself, which
+    No `connection` because there is no handshake here; the stream states the header itself, which
     is the layer that wins over the handshake anyway.
     """
     from fastapi_viewsets.mux_ws import METHOD_KEY, PATH_KEY, process_command
 
-    stream = CommandStream({METHOD_KEY: method, PATH_KEY: path, USER_HEADER.lower(): user})
-    assert run(process_command(body, stream)) is True, "the stream was not recognised as a command"
+    stream = CommandStream({METHOD_KEY: method, PATH_KEY: path, USER_HEADER.lower(): user, **(headers or {})})
+    assert run(process_command(body, stream, app=http.app)) is True, "the stream was not recognised as a command"
     return stream
 
 
@@ -341,18 +351,18 @@ def test_the_same_six_endpoints_answer_over_a_muxws_stream(http: TestClient) -> 
     """
     token = http.post("/start", headers=HEADERS).json()["token"]
 
-    listing = command("GET", "/taskwire")
+    listing = command(http, "GET", "/taskwire")
     assert listing.status == 200
     assert [row["token"] for row in listing.payload["operations"]] == [token]
     assert listing.payload["poll_after_ms"] > 0
 
-    snapshot = command("GET", f"/taskwire/{token}")
+    snapshot = command(http, "GET", f"/taskwire/{token}")
     assert snapshot.status == 200
     assert snapshot.payload["progress"]["state"] == "queued"
 
-    cancelled = command("POST", f"/taskwire/{token}/cancel")
+    cancelled = command(http, "POST", f"/taskwire/{token}/cancel")
     assert cancelled.status == 202, "TW-CANCEL-003 holds on whichever transport asked"
-    assert command("GET", f"/taskwire/{token}").payload["cancel_requested"] is True
+    assert command(http, "GET", f"/taskwire/{token}").payload["cancel_requested"] is True
 
 
 def test_the_namespace_over_a_stream_is_the_one_the_resolver_returns(http: TestClient) -> None:
@@ -365,9 +375,9 @@ def test_the_namespace_over_a_stream_is_the_one_the_resolver_returns(http: TestC
     """
     token = http.post("/start", headers={USER_HEADER: "alice"}).json()["token"]
 
-    assert command("GET", f"/taskwire/{token}", user="alice").status == 200
-    assert command("GET", f"/taskwire/{token}", user="bob").status == 404
-    assert command("GET", "/taskwire", user="bob").payload["operations"] == []
+    assert command(http, "GET", f"/taskwire/{token}", user="alice").status == 200
+    assert command(http, "GET", f"/taskwire/{token}", user="bob").status == 404
+    assert command(http, "GET", "/taskwire", user="bob").payload["operations"] == []
 
 
 def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
@@ -395,9 +405,161 @@ def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
         )
     )
 
-    answered = command("POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "yes", "values": {}})
+    answered = command(http, "POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "yes", "values": {}})
     assert answered.status == 204
     assert answered.payload is None, "204 carries no body over a stream either"
 
-    second = command("POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
+    second = command(http, "POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
     assert second.status == 409, "the store arbitrated, and the second answer lost"
+
+
+# ------------------------------------------------------------------ tracked viewset calls (TW-CALL-*)
+
+KEY_HEADER = "Idempotency-Key"
+
+
+class _Refuse:
+    """A command middleware after `TaskwireMiddleware` that rejects a call before its action runs."""
+
+    async def __call__(self, request: Request | None, _viewset: Any, _context: Any, call_next: Any) -> Any:
+        if request is not None and request.headers.get("x-test-refuse"):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=403, detail="refused")
+        return await call_next()
+
+
+@pytest.fixture
+def tracked(store: taskwire.MemoryStore) -> Iterator[tuple[TestClient, list[taskwire.Envelope]]]:
+    """An application viewset behind `TaskwireMiddleware`, and every envelope its calls publish."""
+    from fastapi_viewsets.action_configuration import action_configuration
+    from fastapi_viewsets.conf import settings as viewset_settings
+    from fastapi_viewsets.decorators.route_viewset import route_viewset
+
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
+    seen: list[taskwire.Envelope] = []
+
+    class Recorder(taskwire.TaskwireTransport):
+        async def notify(self, session: str, envelope: taskwire.Envelope) -> None:  # noqa: ARG002
+            seen.append(envelope)
+
+    taskwire.configure(transport=Recorder())
+    previous = viewset_settings.viewsets_command_middleware
+    viewset_settings.viewsets_command_middleware = [TaskwireMiddleware(), _Refuse()]
+
+    class ItemViewSet:
+        __router = APIRouter()
+
+        @__router.post("export")
+        @taskwire.panel_result("acme.export")
+        async def export(self) -> dict:
+            await taskwire.progress.set(percent=50)
+            return {"token": taskwire.progress.token}
+
+        @__router.get("plain")
+        async def plain(self) -> dict:
+            return {"token": taskwire.progress.token}
+
+        @__router.get("hand-off")
+        @action_configuration({TaskwireMiddleware: False})
+        async def hand_off(self) -> dict:
+            return {"token": taskwire.progress.token}
+
+    app = _make_app(store)
+    router = APIRouter()
+    route_viewset(router, "/items")(ItemViewSet)
+    app.include_router(router)
+    try:
+        with TestClient(app) as client:
+            yield client, seen
+    finally:
+        viewset_settings.viewsets_command_middleware = previous
+
+
+def _states(seen: list[taskwire.Envelope], token: str) -> list[str]:
+    return [envelope.body["state"] for envelope in seen if envelope.token == token]
+
+
+def test_the_idempotency_key_is_the_token_of_a_tracked_call(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-001, TW-CALL-003, TW-CALL-004: `queued` from the middleware, `running` and `done` from
+    the execution hook around the action, under the key of `Idempotency-Key`."""
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    answer = http.post("/items/export", headers={**HEADERS, KEY_HEADER: f'"{key}"', CONNECTION_HEADER: "conn-1"})
+
+    assert answer.status_code == 200
+    assert answer.json() == {"token": key}, "the ambient reporter is bound around the action"
+    assert _states(seen, key) == ["queued", "running", "done"]
+    ended = run(store.snapshot(taskwire.key("ns:alice", key)))
+    assert ended is not None
+    assert ended.progress.result_kind == "acme.export", "declared by the result decorator (TW-CALL-005)"
+    assert ended.progress.origin_connection == "conn-1"
+
+
+def test_x_taskwire_token_wins_over_the_idempotency_key(tracked) -> None:
+    http, seen = tracked
+    token, key = taskwire.new_token(), taskwire.new_token()
+
+    answer = http.get("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"', taskwire.TOKEN_HEADER: token})
+
+    assert answer.json() == {"token": token}
+    assert _states(seen, token) == ["queued", "running", "done"]
+    assert _states(seen, key) == []
+
+
+def test_an_operation_without_a_result_kind_is_private(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-005, TW-PRIV-001: no declared kind, no listing."""
+    http, _ = tracked
+    key = taskwire.new_token()
+
+    http.get("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"'})
+
+    ended = run(store.snapshot(taskwire.key("ns:alice", key)))
+    assert ended is not None
+    assert ended.progress.result_kind is None
+
+
+def test_a_call_without_a_usable_token_runs_untracked(tracked) -> None:
+    """TW-CALL-001, TW-CALL-002: a key that is no UUID, a malformed header, an opted-out action and a
+    call to taskwire's own viewset all run, and none of them writes an operation."""
+    http, seen = tracked
+
+    assert http.get("/items/plain", headers={**HEADERS, KEY_HEADER: '"not-a-uuid"'}).json() == {"token": None}
+    assert http.get("/items/plain", headers={**HEADERS, KEY_HEADER: "unquoted"}).json() == {"token": None}
+    opted_out = taskwire.new_token()
+    assert http.get("/items/hand-off", headers={**HEADERS, KEY_HEADER: f'"{opted_out}"'}).status_code == 200
+    polled = taskwire.new_token()
+    assert http.get("/taskwire", headers={**HEADERS, KEY_HEADER: f'"{polled}"'}).status_code == 200
+
+    assert seen == []
+
+
+def test_a_call_rejected_before_its_action_ends_failed(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-006: an operation still `queued` when its call ends is `failed`, `not_executed`."""
+    from taskwire.contrib.viewsets import NOT_EXECUTED
+
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    answer = http.get("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"', "X-Test-Refuse": "1"})
+
+    assert answer.status_code == 403
+    assert _states(seen, key) == ["queued", "failed"]
+    ended = run(store.snapshot(taskwire.key("ns:alice", key)))
+    assert ended is not None
+    assert ended.progress.error.code == NOT_EXECUTED
+    assert ended.progress.error.retryable is False
+
+
+def test_a_command_stream_is_tracked_by_its_idempotency_key(tracked) -> None:
+    """TW-CALL-001 on muxws: the stream's own headers carry the key, as a request's do."""
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    stream = command(http, "GET", "/items/plain", headers={KEY_HEADER.lower(): f'"{key}"'})
+
+    assert stream.status == 200
+    assert stream.payload == {"token": key}
+    assert _states(seen, key) == ["queued", "running", "done"]

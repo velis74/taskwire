@@ -182,6 +182,53 @@ Mounts the six calls of TW-REST-004 on `router` — over REST, and over muxws wh
 socket half is installed. `base_path` defaults to `settings.rest_prefix`. Registering twice on one
 router is a no-op rather than a duplicate mount.
 
+It also appends `taskwire_context_processor` to fastapi-viewsets' `viewsets_context_processors` when
+absent, and installs `taskwire_execution_hook` with `set_execution_hook`, replacing any execution
+hook installed before.
+
+### Tracked viewset calls
+
+Requires `dynamicforms-fastapi-viewsets >= 0.9.0`.
+
+```python
+from taskwire.contrib.viewsets import (
+    NOT_EXECUTED, TaskwireMiddleware, taskwire_context_processor, taskwire_execution_hook,
+)
+
+settings.viewsets_command_middleware = [Idempotency(redis_client=redis), TaskwireMiddleware()]
+```
+
+`async taskwire_context_processor(request, _viewset=None) -> dict` puts three keys into the viewset
+`Context`:
+
+| Key | Value |
+|---|---|
+| `taskwire_session` (`SESSION_KEY`) | `session_resolver(request)`, or `None` without a resolver |
+| `taskwire_connection` (`CONNECTION_KEY`) | the `X-Taskwire-Connection` header, or `None` |
+| `taskwire_token` (`TOKEN_KEY`) | the `X-Taskwire-Token` header; otherwise the key of the `Idempotency-Key` header when it is a UUID; otherwise `None` |
+
+A malformed `Idempotency-Key` gives `None`; the processor raises nothing for it.
+
+`TaskwireMiddleware()` is a fastapi-viewsets command middleware, placed after `Idempotency`. For a
+tracked call it calls `mark_queued(token, session=..., connection=..., result_kind=...)` before the
+rest of the chain, and after the chain returned or raised it ends an operation still `queued` with
+`failed`: error code `NOT_EXECUTED` (`"not_executed"`, `retryable: false`), or `dispatch_failed`
+(`retryable: true`) when the call reached the Celery dispatch hook. A store failure at the `queued`
+write is logged and the call runs.
+
+A call is tracked when the context holds a token and a namespace, the viewset is not taskwire's own,
+and the action configuration for `TaskwireMiddleware` is not `False`. `result_kind` is the
+`"result_kind"` entry of `@action_configuration({TaskwireMiddleware: {"result_kind": kind}})`, or else
+the kind a result decorator declares on the action method, or else `None` (a private operation).
+
+`taskwire_execution_hook(execution: ActionExecution)` returns an async context manager that
+fastapi-viewsets enters around the action where it executes. For a tracked execution it enters
+`operation(token, session=..., connection=..., result_kind=...)`, binds `taskwire.progress` around
+the action and yields the `Reporter`; for an untracked one it yields `None`. In a Celery worker the
+token and namespace are those `wrap_sync_runner` carried. A store failure on entry leaves the action
+to run unreported, and a failure of the terminal write is logged. An action running under it reports
+through `taskwire.progress` and does not open `operation()` for its own token.
+
 `taskwire.contrib.fastapi.router(prefix=None)` returns a hand-rolled `APIRouter` with the same six
 routes, and `taskwire.contrib.asgi.app(prefix=None)` serves them from a framework-free ASGI callable.
 Every REST decision lives in `taskwire.rest`, which imports no framework at all.
@@ -203,18 +250,20 @@ question** — `reporter.asking` answers that with no store read, which is what 
 the moment a worker is being killed. Otherwise the exception's own class names the error.
 
 `taskwire_task` decorates the body and passes the reporter **by keyword**, so the parameter must be
-named `reporter`; `token` and `session` arrive as task kwargs. `wrap_sync_runner` is for a caller that
-already drives a loop — the fastapi-viewsets Celery server — and it wraps that runner rather than the
-task: it consumes `_taskwire_token` and `_taskwire_session` from the kwargs, returns the kwargs
-without them, and runs whatever the runner is given inside an `operation()`. The action declares no
-reporter parameter and reports through the ambient one.
+named `reporter`; `token` and `session` arrive as task kwargs. It closes the operation before Celery
+publishes the task's result.
 
-Both close the operation **before** the caller publishes the task's result. That ordering is the
-whole reason Celery's `task_prerun` / `task_postrun` signals are unusable here: `postrun` fires after
-the result has been pushed, so a client could see the answer while the operation still read `running`.
+`wrap_sync_runner(runner, kwargs) -> (runner, kwargs)` is `celery_viewset_server`'s kwargs hook. It
+returns `kwargs` without `_taskwire_token` and `_taskwire_session`, and a runner that makes those two
+values visible to `taskwire_execution_hook` while it drives the action; the hook opens the operation
+around the action and closes it before the runner returns, so before the worker publishes the
+result. When a soft time limit interrupts the runner while the action's coroutine is suspended, the
+wrapped runner writes the terminal state itself and the hook writes nothing later. A call carrying
+neither key, or a value that is not a non-empty string, gets both arguments back unchanged and runs
+unreported.
 
-A call carrying no token runs unwrapped. Reporting is an accelerator, and an application that opted
-this caller out of taskwire did not opt out of the work.
+Celery's `task_prerun` / `task_postrun` signals are not used: `postrun` fires after the result has
+been pushed, so a client could see the answer while the operation still read `running`.
 
 Two more entries the web and worker sides use:
 
@@ -235,20 +284,16 @@ every envelope the worker's writes produce.
 register_taskwire_celery_viewset()
 ```
 
-Wires `wrap_sync_runner` and taskwire's dispatch hook into fastapi-viewsets'
-`set_celery_kwargs_hook` / `set_celery_dispatch_hook` (`>= 0.5.4`, `pip install
-"taskwire[viewsets]"`). Call it once — safe on both the web process and the worker, since each hook
-is a no-op for a call the other side never reaches.
+Installs `wrap_sync_runner` with `set_celery_kwargs_hook`, taskwire's dispatch hook with
+`set_celery_dispatch_hook`, and `taskwire_execution_hook` with `set_execution_hook`
+(`dynamicforms-fastapi-viewsets >= 0.9.0`, `pip install "taskwire[viewsets]"`). Call it in every
+process that dispatches or executes a `celery_viewset` action; calling it again installs the same
+hooks.
 
-Tracking one `celery_viewset_client` action needs one thing from the application: the action
-declares a `context: Context` parameter. `register_taskwire_rest` already registered
-`taskwire_context_processor` globally (see [The REST surface](#the-rest-surface)), so `context`
-carries `taskwire_token` / `taskwire_session` for every viewset in the process, not only taskwire's
-own six endpoints — there is nothing further to opt into per Celery viewset. The dispatch hook reads
-those two keys and calls `mark_queued` itself; an action declaring no `context` runs exactly as it
-would with no taskwire installed. The queued write carries no `result_kind`: the hook has no
-route-specific information to derive one from, so the operation gets the generic rendering a missing
-one gets rather than a guess.
+The dispatch hook writes nothing. It carries the token and namespace of the call `TaskwireMiddleware`
+is running, or, without the middleware, those in the action's `context: Context` parameter, as
+`_taskwire_token` / `_taskwire_session`, and returns `{}` for an untracked call. `result_kind` is
+fixed by the middleware's `queued` write.
 
 ## Headers
 
@@ -258,7 +303,9 @@ CONNECTION_HEADER = "X-Taskwire-Connection"
 ```
 
 The front end mints a token and sends it with **its own** command under `X-Taskwire-Token`; taskwire
-never carries the command itself. `X-Taskwire-Connection` names the connection, and it serves two
+never carries the command itself. On a viewset call without `X-Taskwire-Token`, the key of the
+`Idempotency-Key` header is the token when it is a UUID (see
+[Tracked viewset calls](#tracked-viewset-calls)). `X-Taskwire-Connection` names the connection, and it serves two
 purposes with no second header: delivery scope on a read, and `origin_connection` on the request that
 starts an operation. There is no tab header, and there must not be one.
 

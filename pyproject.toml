@@ -30,12 +30,12 @@ dependencies = []   # DELIBERATE: core has no runtime dependency of any kind (TW
 redis = ["redis>=5.0"]
 celery = ["celery>=5.3", "nest_asyncio>=1.6"]
 fastapi = ["fastapi>=0.100"]
-# >=0.5.4: set_celery_dispatch_hook there takes the call's kwargs (0.5.2 called it with none), which
-# is the signature register_taskwire_celery_viewset's hook expects (TW-CELERY-007).
-viewsets = ["dynamicforms-fastapi-viewsets>=0.5.4"]
+# >=0.9.0: the execution hook, the Idempotency-Key helpers and a muxws command that runs to the end
+# of its action when its stream ends early (TW-CALL-*).
+viewsets = ["dynamicforms-fastapi-viewsets>=0.9.0"]
 # The socket carries the six request/response calls as viewset commands (TW-REST-004), so the muxws
 # extra needs the viewset layer's muxws half as well as muxws itself.
-muxws = ["muxws>=0.3.1", "dynamicforms-fastapi-viewsets[muxws]>=0.5.4"]
+muxws = ["muxws>=0.3.1", "dynamicforms-fastapi-viewsets[muxws]>=0.9.0"]
 demo = ["uvicorn>=0.27"]
 dev = ["coverage", "pytest", "pytest-asyncio", "pytest-cov", "hypothesis", "httpx", "ruff"]
 
