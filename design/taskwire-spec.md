@@ -947,17 +947,23 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-CELERY-004** In a Celery deployment **exactly one process owns the terminal write, and it is
   the worker.** The web side writes `queued` and — only if dispatch itself failed — `failed`. That
   dispatch failure MUST be written as `code: "dispatch_failed"` with `retryable: true`: an
-  unreachable broker is transient, so a frontend may legitimately offer a retry.
-- **TW-CELERY-005** The web-side middleware MUST NOT open `operation()` for a Celery-dispatching
-  action; command middleware never runs in the worker, so the contextvar would be unbound there and
-  every `progress.set()` would be a silent no-op. Test: M4 — a test asserting the middleware alone is
-  not sufficient.
-- **TW-CELERY-006** For a non-Celery action the same middleware MUST open `operation()` around
-  `call_next()`, because the web process is the worker there.
-- **TW-CELERY-007** The worker-side entry MUST be `celery_viewset_server.sync_wrapper` wrapping its
-  `loop.run_until_complete(...)` in `operation(token, session=ns)` with the `contextvars.Token` reset
-  in a `finally`. Celery's `task_prerun` / `task_postrun` signals MUST NOT be used (`postrun` fires
-  after the result has already been `RPUSH`ed, so a client could observe the result before `done`).
+  unreachable broker is transient, so a frontend may legitimately offer a retry. For a
+  `celery_viewset` action the web side's writes are `TaskwireMiddleware`'s (TW-CALL-003, TW-CALL-006).
+- **TW-CELERY-005** The web process MUST NOT open `operation()` for a Celery-dispatching action:
+  command middleware never runs in the worker, so the contextvar would be unbound there and every
+  `progress.set()` would be a silent no-op. The execution hook (TW-CALL-004) is therefore never
+  entered around a `celery_viewset_client` dispatch stub.
+- **TW-CELERY-006** For a non-Celery viewset action the execution hook MUST open `operation()` in the
+  web process, around the action itself, because the web process is the worker there (TW-CALL-004).
+- **TW-CELERY-007** For a `celery_viewset` action the worker-side `operation()` MUST be opened by the
+  execution hook around the action inside the worker's `lifecycle_runner` (TW-CALL-004).
+  `wrap_sync_runner`, installed as `celery_viewset_server`'s kwargs hook, MUST consume
+  `_taskwire_token` / `_taskwire_session` before the action's kwargs are reconstructed and make them
+  visible to that hook for the duration of the run; the dispatch hook MUST write nothing and only
+  carry the two values (TW-CALL-008). The operation MUST be closed before the runner returns, and
+  therefore before the result is published. Celery's `task_prerun` / `task_postrun` signals MUST NOT
+  be used (`postrun` fires after the result has already been `RPUSH`ed, so a client could observe the
+  result before `done`).
 - **TW-CELERY-008** `taskwire.contrib.celery.taskwire_task` MUST provide the same for a plain
   Celery task, using the synchronous `with operation(...)` form.
 - **TW-CELERY-009** `result_kind` MUST be written once, by the `queued` write in the web process; the
@@ -972,9 +978,10 @@ adapters to things outside the process, never a capability the core lacks.
   implement; and that the author intends to research whether an asyncio loop inside a Celery worker
   is viable before committing to an answer. A future rule may close this; none of the current ones
   claims to.
-- **TW-CELERY-011** The command token MUST travel as the `X-Taskwire-Token` **header**, never a
-  query parameter, and the connection id — when the client has one — as `X-Taskwire-Connection`
-  beside it. Both cross into the worker as plain strings on the deserialized `Context`.
+- **TW-CELERY-011** The command token MUST travel as a **header**, never a query parameter:
+  `X-Taskwire-Token`, or the `Idempotency-Key` of the call (TW-CALL-001). The connection id — when
+  the client has one — travels as `X-Taskwire-Connection` beside it. The token and the namespace
+  cross into the worker as plain strings (TW-CELERY-003).
 
 ### 2.20 Security (`TW-SEC-*`)
 
@@ -1060,6 +1067,7 @@ adapters to things outside the process, never a capability the core lacks.
   | the FastAPI / ASGI adapters (TW-REST-001) | `tw.register`, `tw.aggregate`, `tw.selected`, `tw.operations` |
   | `MuxwsTransport`'s server side (`TW-WS-*`) | the tab-hint rules (`TW-TAB-*`) |
   | the ambient reporter proxy (`TW-AMB-*`, see TW-SYM-004) | — |
+  | tracked viewset calls (`TW-CALL-*`) | — |
 
   Anything not in this table MUST exist in both. A capability MUST NOT be added to one language alone
   because it was convenient there.
@@ -1071,6 +1079,63 @@ adapters to things outside the process, never a capability the core lacks.
   would be a progress bar that never moves, with no error anywhere. Explicit passing is also already
   the rule for concurrent siblings in both languages (TW-NEST-014). Test:
   `packaging.spec.ts::no ambient progress proxy is exported`.
+
+### 2.23 Tracked viewset calls (`TW-CALL-*`)
+
+A call to a fastapi-viewsets action is an operation of its own. The rules below bind
+`taskwire.contrib.viewsets` and `taskwire.contrib.celery` against fastapi-viewsets 0.9.0's command
+middleware chain and execution hook.
+
+- **TW-CALL-001** **The token of a viewset call MUST be its `X-Taskwire-Token` header when present,
+  and otherwise the key of its `Idempotency-Key` header** (`draft-ietf-httpapi-idempotency-key-header-07`,
+  a Structured Field string). An `Idempotency-Key` that is not a Structured Field string, or whose
+  key is not a UUID, MUST leave the call without a token; taskwire MUST NOT reject the call for it.
+  `taskwire_context_processor` MUST place the token under `context["taskwire_token"]`, the namespace
+  under `["taskwire_session"]` and `X-Taskwire-Connection` under `["taskwire_connection"]`, on REST
+  and on muxws alike.
+- **TW-CALL-002** **A call with no token, or with a `None` namespace, MUST be untracked and MUST run
+  unchanged** (TW-AMB-009). So MUST a call to taskwire's own viewset, and a call to an action whose
+  action configuration for `TaskwireMiddleware` is `False`.
+- **TW-CALL-003** `TaskwireMiddleware`, a command middleware, MUST write `queued` for every tracked
+  call before calling the rest of the chain, with the `result_kind` of TW-CALL-005 and
+  `origin_connection` from `context["taskwire_connection"]`. The write follows `mark_queued`: an
+  existing document is left as it is. The middleware MUST be placed after fastapi-viewsets'
+  `Idempotency` in `viewsets_command_middleware`, so that a repeat that `Idempotency` answers from a
+  stored or running call does not reach it. A store failure at the `queued` write MUST be logged and
+  the call MUST run.
+- **TW-CALL-004** **`running` and the terminal state MUST be written by the execution hook
+  (`fastapi_viewsets.decorators.set_execution_hook`), where the action executes:** in the web process
+  for an in-process action, in the Celery worker for a `celery_viewset` action, and never around a
+  `celery_viewset_client` dispatch stub. The hook MUST open `operation(token, session=ns,
+  connection=..., result_kind=...)` around the action, which flips `queued` to `running`, binds the
+  ambient reporter and writes exactly one completion on exit (TW-API-001). A store failure on entry
+  MUST leave the action to run unreported; a failure of the terminal write MUST be logged and MUST NOT
+  replace the action's own outcome.
+- **TW-CALL-005** **The `result_kind` of a viewset call MUST be the `result_kind` entry of the
+  action's configuration for `TaskwireMiddleware`
+  (`@action_configuration({TaskwireMiddleware: {"result_kind": kind}})`), and otherwise the kind the
+  action method declares with a result decorator.** With neither, the operation is private
+  (TW-PRIV-001): unlisted in the register, its progress fan-out scoped to `origin_connection`. The
+  `queued` write fixes it (TW-PROG-006); the hook passes the same value for the case where there was
+  no `queued` write.
+- **TW-CALL-006** **A tracked call that ends — returns or raises — while its operation is still
+  `queued` MUST end that operation `failed`,** written by `TaskwireMiddleware` after the rest of the
+  chain returned or raised. The code MUST be `dispatch_failed` with `retryable: true` when the call
+  reached the Celery dispatch hook (TW-CELERY-004), and `not_executed` with `retryable: false`
+  otherwise. An operation in any other state MUST be left as it is.
+- **TW-CALL-007** An action executing under the hook MUST NOT open `operation()` for its own token;
+  the two blocks would write two completions. It reports through the ambient reporter
+  (`taskwire.progress`). An action that hands its token to work outliving the action MUST be
+  untracked through TW-CALL-002's configuration, since the hook ends the operation when the action
+  returns.
+- **TW-CALL-008** **In a Celery deployment the dispatch hook MUST write nothing.** It reads the token
+  and namespace of the call from `TaskwireMiddleware`, or from `context` when the middleware is not
+  installed, and carries them as `_taskwire_token` / `_taskwire_session` (TW-CELERY-003).
+  `wrap_sync_runner` consumes them and makes them visible to the execution hook in the worker. When
+  the worker's execution limit unwinds the runner while the hook's operation is open, the action's
+  coroutine is left suspended and its `__aexit__` does not run: `wrap_sync_runner` MUST then write the
+  terminal state itself, `dialog_timeout` under TW-DLG-006's condition, and the hook's own exit, should
+  the suspended coroutine ever resume, MUST write nothing.
 
 ---
 
@@ -1115,7 +1180,8 @@ taskwire MUST NOT attempt to validate. **TW-TXT-003** The dual form MUST NOT app
 | `updated_at` | RFC 3339 Z | yes | – | |
 
 `Error`: `{"code": string, "message": Text, "retryable": boolean}`. Reserved codes:
-`dispatch_failed` (TW-CELERY-004) and `dialog_timeout` (TW-DLG-006), both `retryable: true`.
+`dispatch_failed` (TW-CELERY-004, TW-CALL-006) and `dialog_timeout` (TW-DLG-006), both
+`retryable: true`; `not_executed` (TW-CALL-006), `retryable: false`.
 
 ### 3.3 `Result`
 
