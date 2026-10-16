@@ -180,7 +180,7 @@ async def check_the_socket_carries_the_six_calls(peer: Any, http: httpx.AsyncCli
     check("a malformed token is 404 over the socket", status == 404, f"status={status}")
 
 
-async def check_watch(peer: Any) -> str | None:
+async def check_watch(peer: Any) -> tuple[str | None, list[str] | None]:
     """`watch` declares the whole override map and hands back the connection id (TW-DEL-022).
 
     It reads no store in either direction (TW-DEL-007), which is why an override for a token that
@@ -207,7 +207,29 @@ async def check_watch(peer: Any) -> str | None:
     check("an unknown kind is answered, not ignored", unknown.get("status") == 2, json.dumps(unknown))
 
     # A rejected declaration leaves the connection unchanged, so the id survives all three.
-    return connection
+    topics = reply.get("topics") if isinstance(reply, dict) else None
+    return connection, topics if isinstance(topics, list) else None
+
+
+async def check_event_topics(peer: Any, topics: list[str], socket_url: str, http: httpx.AsyncClient) -> None:
+    """Over fastapi-viewsets events: the socket subscribes the two topics its `watch` reply named,
+    and no other namespace and no poll over REST is admitted to the private one (TW-EVT-003)."""
+    check("the watch reply names a namespace topic and a connection topic", len(topics) == 2, json.dumps(topics))
+    for topic in topics:
+        status, answer = await call(peer, "POST", "/events/subscribe", {"topic": topic})
+        check(f"subscribe {topic[:16]}... over the socket", status == 200, f"status={status} {answer}")
+
+    stranger = await muxws.connect(socket_url, headers={"X-Demo-Session": "someone-else"})
+    try:
+        for topic in topics:
+            status, _ = await call(stranger, "POST", "/events/subscribe", {"topic": topic})
+            check(f"another namespace is refused {topic[:16]}...", status == 403, f"status={status}")
+    finally:
+        await stranger.close()
+
+    polled = (await http.post("/events/poll", json={"cursors": {topics[1]: None}})).json()
+    answer = (polled.get("topics") or {}).get(topics[1]) or {}
+    check("a poll over REST is refused the connection topic", answer.get("error") == "event_topic_refused", str(answer))
 
 
 async def start(http: httpx.AsyncClient, job: str, connection: str | None) -> str | None:
@@ -382,7 +404,9 @@ async def main() -> int:
         peer = await muxws.connect(socket_url, headers=jar, on_stream=on_push)
         check("a real socket connects and muxws selects a subprotocol", True)
         try:
-            connection = await check_watch(peer)
+            connection, topics = await check_watch(peer)
+            if topics is not None:
+                await check_event_topics(peer, topics, socket_url, http)
             await check_the_socket_carries_the_six_calls(peer, http)
             await check_export_and_cancel(peer, http, pushes, connection)
             await check_hold_the_line(peer, http, pushes, connection)

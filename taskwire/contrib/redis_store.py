@@ -28,6 +28,7 @@ it would make the fan-out unit smaller than the security unit.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 
@@ -45,6 +46,7 @@ from ..models import (
     Result,
     Snapshot,
 )
+from ..settings import configured
 from ..store import CANCELLED_BUTTON, Commit, DialogResolution, DialogVanished, split_key, TaskwireStore
 
 logger = logging.getLogger("taskwire.redis")
@@ -355,8 +357,18 @@ class RedisStore(TaskwireStore):
     async def publish(self, ns: str, envelope: Envelope) -> None:
         """TW-BP-001: one channel per namespace, `twx:{ns}`, and never one per token.
 
+        With a configured transport whose `crosses_processes` is True the envelope goes to
+        `reader.dispatch` in this process instead, and nothing is published on `twx:{ns}`
+        (TW-EVT-002).
+
         MUST NOT raise (TW-STORE-008): the state is already durable by the time this runs.
         """
+        if getattr(configured.transport, "crosses_processes", False):
+            from .. import reader
+
+            with contextlib.suppress(Exception):
+                await reader.dispatch(ns, envelope)
+            return
         try:
             await self._redis.publish(f"twx:{ns}", json.dumps(envelope.to_dict()))
         except Exception:  # noqa: BLE001 - a publish is a notification, never the copy of record

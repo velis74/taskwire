@@ -16,7 +16,8 @@ const viewsets = vi.hoisted(() => ({
   retryNow: vi.fn(),
 }));
 
-vi.mock('@dynamicforms/fastapi-viewsets', () => ({
+vi.mock('@dynamicforms/fastapi-viewsets', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   onCallActivity: (listener: (event: unknown) => void) => {
     viewsets.listeners.add(listener);
     return () => viewsets.listeners.delete(listener);

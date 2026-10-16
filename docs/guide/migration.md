@@ -32,6 +32,7 @@ renders it with `use_operations()` from `taskwire/vue`, or lists `tw.register` w
 
 ### Peer dependencies
 
+The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.10.0`.
 `taskwire/muxws` and `taskwire/fastapi-viewsets` require the optional npm peer
 `@dynamicforms/fastapi-viewsets` ^0.10.0. `taskwire/vuetify` requires
 `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and imports `@dynamicforms/vuetify-inputs` ^0.14.2,

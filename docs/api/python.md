@@ -170,6 +170,11 @@ A web process subscribes only to the namespaces it currently holds connections f
 and never per token or per tab. `register_taskwire_muxws` does that subscribing for the connections
 it registers.
 
+With a transport whose `crosses_processes` is True, `ViewsetEventsTransport`, `RedisStore.publish`
+hands each envelope to this process's reader instead of `twx:{ns}`, `start_taskwire_reader()` starts
+nothing and `check_taskwire_readers()` warns about nothing: the fastapi-viewsets event store carries
+the envelopes, started with `start_events()`.
+
 ## Tracked calls
 
 `taskwire.calls`; the guide is [Tracking calls](../guide/tracking-calls.md).
@@ -273,6 +278,36 @@ no instance is in `viewsets_command_middleware`.
 fastapi-viewsets' settings, each when absent. A Celery worker executing `celery_viewset` actions
 calls it.
 
+### Pushes over fastapi-viewsets events
+
+```python
+from taskwire.contrib.viewsets_events import (
+    EnvelopeEvent, ViewsetEventsTransport, authorize_taskwire_topic, connection_topic,
+    envelope_topic, namespace_topic, register_taskwire_events, taskwire_delivery_filter,
+)
+```
+
+`register_taskwire_events() -> ViewsetEventsTransport` carries taskwire's pushes over
+`fastapi_viewsets.events` in this process. It declares the source `taskwire` with
+`authorize_taskwire_topic`, moves that authorizer to the front of `viewsets_event_authorizers`,
+appends `taskwire_delivery_filter` to `viewsets_event_delivery_filters` and
+`taskwire_context_processor` to `viewsets_context_processors`, each when absent, and configures
+taskwire with one `ViewsetEventsTransport`, which it returns. A second call changes nothing.
+
+| Symbol | |
+|---|---|
+| `namespace_topic(ns) -> str` | `taskwire:ns.{sha256(ns)}`: every envelope of `ns` except a private operation's `progress` and `snapshot` |
+| `connection_topic(ns, connection) -> str` | `taskwire:c.{sha256(ns, connection)}`: the `progress` and `snapshot` of the private operations whose `origin_connection` is `connection` |
+| `envelope_topic(ns, envelope) -> str \| None` | the topic `envelope` is published to; None for a private operation's `progress` with no `origin_connection` |
+| `EnvelopeEvent` | the `Event` an envelope travels as: `event_name` `"envelope"`, payload `Envelope.to_dict()` |
+| `ViewsetEventsTransport` | `notify()` publishes to `envelope_topic` and never raises; `crosses_processes` is True; `watch_topics(peer, session)` answers the socket's two topics for the `watch` reply and drops the connection topic's rev and log when the socket closes |
+| `authorize_taskwire_topic(request, context, topic)` | admits a namespace topic to a caller whose `session_resolver(request)` names it, a connection topic to the socket whose connection id and namespace name it, refuses every other `taskwire:` topic and a resolver that raises, and answers None for any other source |
+| `taskwire_delivery_filter(subscription, topic, rev, name, payload, version)` | refuses a non-terminal `progress` the socket's override or `push_filter` suppresses (TW-DEL-001, TW-DEL-010), prunes the override on a terminal one (TW-DEL-023), passes everything else |
+
+The authorizer decides who receives a topic, on `subscribe` and on every `poll`; the delivery filter
+decides display only. `register_taskwire_muxws`'s `watch` reply carries `"topics"` while this
+transport is configured.
+
 `taskwire.contrib.fastapi.router(prefix=None)` returns a hand-rolled `APIRouter` with the same six
 routes, and `taskwire.contrib.asgi.app(prefix=None)` serves them from a framework-free ASGI callable.
 Every REST decision lives in `taskwire.rest`, which imports no framework at all.
@@ -300,13 +335,15 @@ Two more entries the web and worker sides use:
 ```python
 await dispatch(task, *, token, session, connection=None, result_kind=None,
                title=None, data=None, **task_kwargs)   # web side: write queued, then send
-configure_worker(store)                                # worker side: this store, and NullTransport
+configure_worker(store, transport=None)                # worker side: this store, and NullTransport
 ```
 
 `dispatch` writes `queued` and hands off; if the broker refuses, it writes `failed` so the token the
 caller is already watching does not hang. `configure_worker` gives the worker a store and a
 `NullTransport`: **a worker never pushes**, because the web process's reader is already delivering
-every envelope the worker's writes produce.
+every envelope the worker's writes produce. Over fastapi-viewsets events the worker passes the
+`ViewsetEventsTransport` that `register_taskwire_events()` returns, which publishes to the event store;
+any other transport raises `ValueError`.
 
 The operation of a call the web process is executing moves to a task with `hand_off()`:
 
@@ -356,9 +393,13 @@ class TaskwireStore(ABC):
     async def migrate(self, from_ns, to_ns) -> int
 
 class TaskwireTransport(ABC):
+    crosses_processes: bool = False
     async def notify(self, session: str, envelope: Envelope) -> None
     async def is_online(self, session: str) -> bool
 ```
+
+`crosses_processes` is True for a transport whose `notify()` reaches the other processes itself; a
+store whose `publish()` would cross processes then dispatches in its own process.
 
 `commit` answers with both of a write's outcomes at once, so a reporter refreshing `cancelled` after
 every commit costs one round trip rather than two (TW-STORE-014); `is_cancelled` is what
@@ -370,7 +411,8 @@ the namespace is the only authorization scope and the token is an address inside
 
 `RedisStore(url="redis://127.0.0.1:6379/0", *, client=None)` is the cross-process store: it holds the
 same documents under `tw:{ns}:{token}:…`, keeps one sorted-set index per namespace, publishes to
-`twx:{ns}`, and hands out its reader through `make_reader()`. `await store.aclose()` releases the
+`twx:{ns}` (or, beside a transport whose `crosses_processes` is True, dispatches in process), and
+hands out its reader through `make_reader()`. `await store.aclose()` releases the
 connection.
 
 Writing your own store? Run the exported suite against it:

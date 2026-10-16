@@ -37,10 +37,18 @@ from typing import Any
 from muxws import PeerRegistry
 from muxws.errors import ConnectionLost
 
-from ..delivery import Client, effective_delivery, may_be_suppressed, OperationRef, OVERRIDES_TAG
+from ..delivery import (  # noqa: F401 - CONNECTION_TAG is re-exported
+    Client,
+    connection_id,
+    CONNECTION_TAG,
+    effective_delivery,
+    may_be_suppressed,
+    OperationRef,
+    OVERRIDES_TAG,
+)
 from ..models import Envelope, EnvelopeKind, Progress
 from ..reader import unwatch_namespace, watch_namespace
-from ..settings import settings
+from ..settings import configured, settings
 from ..transport import TaskwireTransport
 
 logger = logging.getLogger("taskwire.muxws")
@@ -154,32 +162,6 @@ def tag_peer(peer: Any, session: str) -> None:
 # --------------------------------------------------------------------------- the watch handler
 
 
-CONNECTION_TAG = "taskwire_connection"
-"""The opaque, server-issued id naming one live socket (TW-DEL-016).
-
-It is minted here and handed back only in the `watch` reply, over a socket the caller already
-established. It is NOT stable across a reconnect and decides exactly two things: the
-`progress_delivery` display flag, and which socket a private operation's progress is written to. It
-reaches one store field, `origin_connection`, which is inert data recorded at start and never used
-for authorization (TW-SEC-003).
-"""
-
-
-def connection_id(peer: Any) -> str | None:
-    """This socket's id, minting one on first use."""
-    tags = getattr(peer, "tags", None)
-    if not isinstance(tags, dict):
-        return None
-    existing = tags.get(CONNECTION_TAG)
-    if isinstance(existing, str):
-        return existing
-    import uuid
-
-    minted = str(uuid.uuid4())
-    tags[CONNECTION_TAG] = minted
-    return minted
-
-
 def handle_watch(peer: Any, message: dict[str, Any]) -> dict[str, Any]:
     """The `watch` handler. Declares the **whole** override map, never a delta (TW-DEL-006).
 
@@ -255,6 +237,9 @@ async def serve_peer(peer: Any, session: str) -> StreamHandler:
     (TW-PRIV-003) and `progress_delivery` falls back to the predicate alone. Muting would silently
     do nothing.
 
+    With a transport that has `watch_topics(peer, session)`, `ViewsetEventsTransport`, the `watch`
+    reply also carries `topics`: the event topics this socket subscribes to (TW-EVT-005).
+
     `watch` is the only kind the returned handler answers, and the only one that can never be a
     viewset endpoint: it declares per-connection state held on the Peer, not an action on a resource
     (TW-DEL-006, TW-DEL-016). Everything else - both reads, cancel, collect, dismiss and a dialog
@@ -273,7 +258,13 @@ async def serve_peer(peer: Any, session: str) -> StreamHandler:
             # TW-DEL-007: this reads no store, in either direction. An override for a token that
             # does not exist is accepted and inert - putting a per-tab display preference on the
             # path of every socket's first message would be a poor trade.
-            await stream.reply(handle_watch(peer, payload))
+            reply = handle_watch(peer, payload)
+            # TW-EVT-005: a transport that carries the pushes over event topics names the topics
+            # this socket follows.
+            watch_topics = getattr(configured.transport, "watch_topics", None)
+            if watch_topics is not None:
+                reply["topics"] = watch_topics(peer, session)
+            await stream.reply(reply)
             return
 
         # TW-CORE-007: the wire vocabulary is closed. An unknown kind is answered rather than

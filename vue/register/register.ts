@@ -567,6 +567,11 @@ export class RegisterState {
     this.readOnce();
   }
 
+  /** One read of the list now, whether or not a transport holds the ladder: the transport lost track. */
+  resync(): void {
+    this.readOnce();
+  }
+
   /**
    * Whether the merged register already accounts for this token, by either of the two ways it can.
    *

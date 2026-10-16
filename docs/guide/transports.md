@@ -20,7 +20,7 @@ framework is imported.
 |---|---|---|---|
 | **local** | the process itself — no wire, no socket, no serialization | none | nothing |
 | **REST** | request/response polling; the baseline everywhere | `contrib.viewsets`, `contrib.fastapi`, `contrib.asgi` | nothing in core |
-| **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
+| **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws`, or `contrib.viewsets_events` over fastapi-viewsets events | [muxws](https://docs.velis.si/muxws/) |
 
 ## The store is the truth
 
@@ -33,7 +33,7 @@ changes latency and nothing else — no feature, no state, no document. And a de
 transport at all still works: a client that only polls sees the same states, the same dialogs, the
 same cancellations and the same results, just later.
 
-There is no event log, no sequence numbers and no replay endpoint. A client is entitled to current
+taskwire keeps no event log, no sequence numbers and no replay endpoint. A client is entitled to current
 state, and asking for it is always enough — including after the operation ended: a terminal document
 answers at its own address for `settings.tombstone_ttl` after it has left the register, so a client
 that was asleep for the whole job asks once and learns whether it was `done`, `failed` or
@@ -71,7 +71,10 @@ const socket = attachMuxws(tw, await connect('wss://example.test/ws'));   // cli
 ```
 
 The socket carries the pushes down and the same six calls up, so a client that has one needs no
-second wire, and polling suspends while it is healthy. [The WebSocket transport](./websockets.md)
+second wire, and polling suspends while it is healthy. An application that follows fastapi-viewsets
+events carries the pushes on them instead: `register_taskwire_events()` on the server and
+`attachViewsetEvents(tw, peer)` from `taskwire/fastapi-viewsets` in the browser (see
+[Over fastapi-viewsets events](./websockets.md#over-fastapi-viewsets-events)). [The WebSocket transport](./websockets.md)
 has the whole of it: how the handler composes with the application's own streams, why the tag
 precedes registration, and what a lost socket costs.
 

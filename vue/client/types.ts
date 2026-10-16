@@ -63,7 +63,8 @@ export interface Subscription {
 }
 
 /**
- * A push transport, from the client's side. `MuxwsClientTransport` is the only implementation.
+ * A push transport, from the client's side. `MuxwsClientTransport` (`taskwire/muxws`) and
+ * `ViewsetEventsTransport` (`taskwire/fastapi-viewsets`) implement it.
  *
  * Attaching one **suspends the polling ladder** for as long as it is attached and healthy
  * (TW-TS-007). The store is still the truth (TW-CORE-002), and `onHealth` is what protects that: a
@@ -89,6 +90,11 @@ export interface ClientTransport {
    * then the only way back to the ladder.
    */
   onHealth?(listener: (healthy: boolean) => void): () => void;
+  /**
+   * Called when the transport cannot tell which envelopes it missed. The client reads the register
+   * and every token it polls once, whether or not its ladders are held (TW-CORE-002).
+   */
+  onResync?(listener: () => void): () => void;
   /** Declare this connection's whole per-token override map, never a delta (TW-DEL-006). */
   watch?(overrides: Record<string, boolean>): void;
   close?(): void;

@@ -269,6 +269,8 @@ describe('the tab id (TW-TAB-001, TW-PROG-007)', () => {
       'operation/operation.ts',
       'register/register.ts',
       'muxws/muxws.ts',
+      'socket/socket-transport.ts',
+      'viewset-events/viewset-events.ts',
     ];
     for (const name of sources) {
       const code = withoutComments(readSource(name));

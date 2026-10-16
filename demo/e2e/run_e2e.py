@@ -23,6 +23,10 @@ whole rather than paraphrased: a real `accept()` and a real `connect()`, the six
 `watch` and its connection id, and `hold_the_line`'s envelope sequence - `queued`, `running`,
 `dialog.open`, `failed`, with no `dialog.close` anywhere in it (TW-CANCEL-011).
 
+**(c) the protocol over fastapi-viewsets events**: (a) again, against a server started with
+`TASKWIRE_DEMO_PUSH=events`. The socket subscribes the two topics its `watch` reply names, and a
+socket of another namespace and a poll over REST are refused them.
+
 **(b) the shipped TypeScript client**, `demo/e2e/drive_client.mjs`, over HTTP and over the socket,
 doing what `demo/client/src/App.vue` does: `tw.run()` per job, register rows read out of
 `tw.register`, questions answered by id, Cancel, Collect and Dismiss pressed on a row. It imports
@@ -146,9 +150,15 @@ def build_client() -> None:
         raise RuntimeError("the client bundle did not build")
 
 
-def start_server(port: int) -> subprocess.Popen:
-    """uvicorn, in a session of its own so one `killpg` takes the reloader's children with it."""
-    environment = {**os.environ, "TASKWIRE_DEMO_PORT": str(port), "PYTHONUNBUFFERED": "1"}
+def start_server(port: int, push: str = "muxws") -> subprocess.Popen:
+    """uvicorn, in a session of its own so one `killpg` takes the reloader's children with it. `push`
+    is the demo's `TASKWIRE_DEMO_PUSH`."""
+    environment = {
+        **os.environ,
+        "TASKWIRE_DEMO_PORT": str(port),
+        "TASKWIRE_DEMO_PUSH": push,
+        "PYTHONUNBUFFERED": "1",
+    }
     return subprocess.Popen(  # noqa: S603 - this interpreter, fixed arguments
         [
             sys.executable,
@@ -216,6 +226,21 @@ def main() -> int:
             failed += half[1]
     finally:
         stop_server(server)
+
+    if not arguments.client_only:
+        port = free_port()
+        base = f"http://127.0.0.1:{port}"
+        server = start_server(port, push="events")
+        try:
+            wait_for_server(base, server)
+            half = run_half(
+                "(c) the protocol over fastapi-viewsets events, over a real socket",
+                [sys.executable, str(SOCKET_CHECK), base],
+            )
+            passed += half[0]
+            failed += half[1]
+        finally:
+            stop_server(server)
 
     seconds = time.monotonic() - started
     print(

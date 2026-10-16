@@ -333,6 +333,28 @@ registered for the peer; every other stream is parsed as a taskwire push, and dr
 an envelope. `attachEvents(peer)` replaces the handler and is not called on a peer taskwire is
 attached to.
 
+### Over fastapi-viewsets events
+
+```ts
+import { attachViewsetEvents, detachViewsetEvents, ViewsetEventsTransport } from 'taskwire/fastapi-viewsets';
+
+const transport = attachViewsetEvents(tw, peer, { events, routeCalls, basePath, onError });
+detachViewsetEvents(tw);
+```
+
+For a server that calls `register_taskwire_events()`. `events` defaults to `eventsOf(peer)` and
+`attachViewsetEvents` throws when there is none. It installs no stream handler: `attachEvents(peer)`
+holds the slot. `ViewsetEventsTransport` sends one `watch` on every open socket, subscribes the
+`topics` of the reply to `ENVELOPE_EVENT` (`defineEvent('envelope')`) on the event client, and once
+every topic is followed holds the reply's connection id, reports healthy through `onHealth` and fires
+`onResync`, on which the client reads the register and every polled token once. A topic resync of the
+event client fires `onResync` too. On a closed socket it unsubscribes every topic, drops the
+connection id and reports unhealthy. `onError` receives a failed `watch`, a reply without `topics`
+and a refused topic, and the transport stays unhealthy. `watch(overrides)`, `announce()`,
+`connection`, `declared` and `forget(token)` are those of `MuxwsClientTransport`.
+
+`ClientTransport.onResync(listener)` is optional; `attachTransport` listens to it when present.
+
 ## Vue
 
 ```ts
