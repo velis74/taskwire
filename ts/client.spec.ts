@@ -6,7 +6,7 @@ import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Operation } from './operation';
-import { TASKWIRE_POLL_SETTINGS } from './poll';
+import { DEFAULT_POLL_SETTINGS } from './poll';
 import * as taskwireModule from './taskwire';
 import {
   type ClientTransport,
@@ -32,7 +32,7 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-const { baseIntervalMs: BASE, ceilingMs: CEILING } = TASKWIRE_POLL_SETTINGS;
+const { baseIntervalMs: BASE, ceilingMs: CEILING } = DEFAULT_POLL_SETTINGS;
 
 // ---------------------------------------------------------------------------------------------
 // A server that never exists: axios with its adapter replaced.
@@ -861,8 +861,7 @@ describe('the module surface', () => {
     // exactly its own: `vue.ts` and `vuetify.ts` the UI stack, `muxws.ts` the socket and the viewset
     // proxy that addresses its streams. The UI half of that is stricter (TW-TS-010) - `muxws.ts` is
     // as forbidden to import Vue as any other file, because a browser-only program that speaks the
-    // socket must not be made to install a framework. `poll.ts` imports the polling ladder from
-    // fastapi-viewsets, a required peer.
+    // socket must not be made to install a framework.
     const ui = [...sources()]
       .filter(([name]) => !['vue.ts', 'vuetify.ts'].includes(name))
       .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/vuetify-[^']+)'/.test(text));
@@ -870,11 +869,7 @@ describe('the module surface', () => {
 
     const offenders = [...sources()]
       .filter(([name]) => !['vue.ts', 'vuetify.ts', 'muxws.ts'].includes(name))
-      .filter(([name, text]) =>
-        [...text.matchAll(/from '(vue|vuetify|@dynamicforms\/[^']+)'/g)].some(
-          ([, specifier]) => !(name === 'poll.ts' && specifier === '@dynamicforms/fastapi-viewsets'),
-        ),
-      );
+      .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/[^']+)'/.test(text));
     expect(offenders.map(([name]) => name)).toEqual([]);
   });
 

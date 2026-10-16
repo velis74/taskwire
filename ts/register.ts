@@ -51,7 +51,7 @@
 import { aggregate as computeAggregate, isActiveEntry, selectFifo } from './aggregate';
 import type { TaskwireCalls } from './calls';
 import type { Operation } from './operation';
-import { PollLadder, type PollLadderState, registerLadderState, revsOf, TASKWIRE_POLL_SETTINGS } from './poll';
+import { PollLadder, type PollLadderState, registerLadderState, revsOf } from './poll';
 import {
   type Aggregate,
   type DialogRequest,
@@ -166,7 +166,7 @@ type Timer = ReturnType<typeof setTimeout>;
 export class RegisterState {
   private readonly client: RegisterClient;
 
-  private readonly ladder = new PollLadder(TASKWIRE_POLL_SETTINGS);
+  private readonly ladder = new PollLadder();
 
   private timer: Timer | null = null;
 

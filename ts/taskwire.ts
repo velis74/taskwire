@@ -37,7 +37,7 @@ import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axio
 import { RestCalls, type TaskwireCalls } from './calls';
 import { Operation, type OperationHost, type OperationInit } from './operation';
 import { new_token } from './operation-scope';
-import { PollLadder, snapshotLadderState, TASKWIRE_POLL_SETTINGS } from './poll';
+import { PollLadder, snapshotLadderState } from './poll';
 import { type RegisterClient, RegisterState, type UiPolicy } from './register';
 import {
   type Aggregate,
@@ -257,7 +257,7 @@ function normaliseBasePath(path: string): string {
  * loop stops on it and reads no further, whatever the document does afterwards.
  */
 class TokenPoller {
-  private readonly ladder = new PollLadder(TASKWIRE_POLL_SETTINGS);
+  private readonly ladder = new PollLadder();
 
   private timer: ReturnType<typeof setTimeout> | null = null;
 

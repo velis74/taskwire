@@ -73,15 +73,12 @@ adapters to things outside the process, never a capability the core lacks.
   gap detection. A client is entitled to current state only.
 - **TW-CORE-006** Python core MUST NOT import FastAPI, Celery, Redis, pydantic or fastapi-viewsets.
   Framework imports are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify
-  or the modal kit outside a subpath export. Of `@dynamicforms/fastapi-viewsets` the npm core imports
-  the polling ladder, `PollLadder` with its state type `PollLadderState` and its settings type
-  `PollSettings`, and nothing else, in `ts/poll.ts`; it is a required peer dependency, as axios is.
+  or the modal kit outside a subpath export.
 
   > **taskwire uses fastapi-viewsets as a tool to build its own REST API** (`contrib/viewsets.py`),
-  > under the same confinement as FastAPI and Celery — banned from the Python core, allowed in
-  > `contrib`. On npm the core runs its polling ladder from it and `taskwire/muxws` its muxws proxy.
-  > Separately, applications built *with* fastapi-viewsets use taskwire for progress. Two
-  > relationships, and neither closes a circle.
+  > under the same confinement as FastAPI and Celery — banned from the core, allowed in `contrib`,
+  > and nothing more. Separately, applications built *with* fastapi-viewsets use taskwire for
+  > progress. Two relationships, and neither closes a circle.
 - **TW-CORE-007** The wire vocabulary is closed at the six kinds listed in §1. A seventh kind is a
   breaking change requiring a bump of `Envelope.v`. `command` MUST NOT be added.
 
@@ -706,18 +703,12 @@ adapters to things outside the process, never a capability the core lacks.
   > calls take is the client's, where the choice belongs and where it is one call — `useCalls()` —
   > and REST is what a client uses until it says otherwise.
 - **TW-WS-009** `watch` MUST have no polling counterpart and needs none.
-- **TW-WS-010** taskwire's server half MUST NOT install the peer's stream handler. A `Peer` has
-  exactly one `on_stream` slot; `register_taskwire_muxws(peer, session)` **returns** its handler and
-  the application composes it behind `fastapi_viewsets.mux_ws.process_command`, which returns
-  `False` having sent nothing when the stream is not a viewset command. A library that took the slot
-  would lock the application out of its own socket. Test:
+- **TW-WS-010** taskwire MUST NOT install the peer's stream handler. A `Peer` has exactly one
+  `on_stream` slot; `register_taskwire_muxws(peer, session)` **returns** its handler and the
+  application composes it behind `fastapi_viewsets.mux_ws.process_command`, which returns `False`
+  having sent nothing when the stream is not a viewset command. A library that took the slot would
+  lock the application out of its own socket. Test:
   `contrib/muxws_test.py::test_taskwire_leaves_the_peers_single_handler_slot_to_the_application`.
-
-  > **The client half** installs it: `MuxwsClientTransport` passes every stream to fastapi-viewsets'
-  > `handleEventStream(peer, payload, stream)` first, which takes a stream whose headers carry a
-  > string `:event` for the peer's event client, and parses every other stream as an envelope. A
-  > stream that is neither is dropped. Test:
-  > `muxws.spec.ts::shares the peer's one stream handler with the fastapi-viewsets event client`.
 - **TW-WS-011** Mounting the socket half MUST be **one call per connection**
   (`register_taskwire_muxws`), the counterpart of `register_taskwire_rest(router)`. It tags the peer
   and subscribes the process to `twx:{ns}` (TW-BP-004); the application registers the peer and serves

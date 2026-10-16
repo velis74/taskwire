@@ -562,27 +562,18 @@ describe('the six calls over a stream each (TW-REST-004, TW-WS-003)', () => {
 describe('what the core is allowed to reach (TW-CORE-006)', () => {
   it('is a subpath the package entry point never reaches', () => {
     // An application that only ever polls must not load a socket library it does not use, nor the
-    // viewset proxy that addresses its streams. The core imports neither, and index.ts does not reach
-    // this module transitively. Of fastapi-viewsets the core reaches the polling ladder alone,
-    // through poll.ts.
+    // viewset proxy that addresses its streams. The core may import neither, and index.ts may not
+    // reach this module transitively.
     const seen = new Set<string>();
     const walk = (name: string): void => {
       if (seen.has(name)) return;
       seen.add(name);
       const source = readFileSync(resolve(HERE, `${name}.ts`), 'utf-8');
       expect(source, `${name}.ts imports muxws`).not.toMatch(/from '(muxws|\.\/muxws)'/);
-      if (name !== 'poll') {
-        expect(source, `${name}.ts imports fastapi-viewsets`).not.toMatch(/from '@dynamicforms\/fastapi-viewsets'/);
-      }
+      expect(source, `${name}.ts imports the viewset proxy`).not.toMatch(/from '@dynamicforms\/fastapi-viewsets'/);
       for (const match of source.matchAll(/from '\.\/([a-z-]+)'/g)) walk(match[1]);
     };
     walk('index');
-    expect(seen.has('poll')).toBe(true);
-    expect(seen.has('muxws')).toBe(false);
-    const poll = readFileSync(resolve(HERE, 'poll.ts'), 'utf-8');
-    const named = [...poll.matchAll(/\{([^}]*)\}\s*from '@dynamicforms\/fastapi-viewsets'/g)].flatMap((match) =>
-      match[1].split(',').map((name) => name.replace(/^\s*type\s+/, '').trim()),
-    );
-    expect(new Set(named)).toEqual(new Set(['PollLadder', 'PollLadderState', 'PollSettings']));
+    expect(seen.size).toBeGreaterThan(3);
   });
 });

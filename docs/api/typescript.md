@@ -8,10 +8,9 @@ both directions. Module-level factories keep their Python names verbatim — `us
 `configure_taskwire`, `new_token` — and there is no `newToken` alias.
 
 Five entry points: `taskwire`, `taskwire/vue`, `taskwire/muxws`, `taskwire/vuetify` and
-`taskwire/conformance`. The main entry imports the package's two required peer dependencies: axios,
-and `@dynamicforms/fastapi-viewsets` for the polling ladder. The `/vue`, `/muxws` and `/vuetify`
-subpaths each import the optional peer they are named for, and `/conformance` imports nothing at
-all.
+`taskwire/conformance`. The main entry imports axios, the package's one required peer dependency; the
+`/vue`, `/muxws` and `/vuetify` subpaths each import the optional peer they are named for, and
+`/conformance` imports nothing at all.
 
 ## The client
 

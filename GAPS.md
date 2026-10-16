@@ -434,100 +434,28 @@ leaves out a visible operation that has no document yet.
 
 ---
 
-## taskwire-spec.md §2.1 — TW-CORE-006 — the npm core imports the polling ladder from fastapi-viewsets
-
-**What I needed:** whether `ts/poll.ts`, which the core reaches through `taskwire.ts` and
-`register.ts`, may import the polling ladder from `@dynamicforms/fastapi-viewsets`, and what that
-makes of the package's peer dependencies.
-
-**What the spec says:** TW-CORE-006 read:
-
-> Python core MUST NOT import FastAPI, Celery, Redis, pydantic or fastapi-viewsets. Framework imports
-> are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify or the modal kit
-> outside a subpath export.
-
-and its note:
-
-> **taskwire uses fastapi-viewsets as a tool to build its own REST API** (`contrib/viewsets.py`),
-> under the same confinement as FastAPI and Celery — banned from the core, allowed in `contrib`, and
-> nothing more. Separately, applications built *with* fastapi-viewsets use taskwire for progress. Two
-> relationships, and neither closes a circle.
-
-The rule does not name fastapi-viewsets for the npm core; the note bans it from "the core" and names
-no language. The events API's implementation plan moves the ladder into fastapi-viewsets and has
-taskwire import it. `vue.spec.ts` and `muxws.spec.ts` kept fastapi-viewsets out of the core, as an
-optional peer of `taskwire/muxws` alone.
-
-**What I assumed:** the core imports the ladder algorithm, and `@dynamicforms/fastapi-viewsets` is a
-required peer beside axios. fastapi-viewsets' bundle imports axios and nothing else, so the core
-still reaches no UI library and no muxws. `poll.ts` is the one core module that imports it, and it
-takes `PollLadder`, `PollLadderState` and `PollSettings` and nothing else; the specs assert both. The
-numbers are taskwire's: `TASKWIRE_POLL_SETTINGS` in `poll.ts` holds TW-REST-010's cadence, and both
-loops construct their `PollLadder` with it. `package.json` declares
-`"engines": { "node": "^20.19.0 || >=22.12.0" }`.
-
-TW-CORE-006 and its note were edited to match, which is a change to the specification made without
-the author:
-
-- the rule gains the sentence "Of `@dynamicforms/fastapi-viewsets` the npm core imports the polling
-  ladder, `PollLadder` with its state type `PollLadderState` and its settings type `PollSettings`,
-  and nothing else, in `ts/poll.ts`; it is a required peer dependency, as axios is.";
-- in the note, "banned from the core" reads "banned from the Python core";
-- in the note, ", and nothing more" is deleted;
-- the note gains the sentence "On npm the core runs its polling ladder from it and `taskwire/muxws`
-  its muxws proxy."
-
-**What it costs:**
-
-- Every application installs fastapi-viewsets, including one that only polls or only runs
-  `LocalTransport`. npm 7 and later and pnpm 8 and later install a required peer themselves. yarn,
-  npm 6, npm with `legacy-peer-deps` (the flag or `.npmrc`) and pnpm with `auto-install-peers=false`
-  do not: the install succeeds, and `taskwire`, `taskwire/vue` and `taskwire/vuetify` then fail to
-  load because the package is not found. `taskwire/conformance` is the one entry that loads without
-  it.
-- Its bundle carries more of fastapi-viewsets than the ladder. fastapi-viewsets is built for
-  `es2015`, so the mixin classes' static `actions` fields compile to helper calls a bundler keeps,
-  together with the proxy base they reference: an esbuild bundle of `use_taskwire` grows from 9.7 kB
-  to 12.5 kB gzipped. Native static fields (an `es2022` target) or `/* @__PURE__ */` annotations in
-  fastapi-viewsets would leave the ladder alone.
-- `dist/index.cjs`, `dist/vue.cjs` and `dist/vuetify.cjs` `require()` an ES-module-only package.
-  `require('taskwire')` works on Node.js versions that can `require()` an ES module (20.19, 22.12 and
-  later) and throws `ERR_REQUIRE_ESM` on older ones; `engines` makes npm warn about those at
-  install. Jest in its default CommonJS mode does not load an ES module through `require()` on any
-  Node.js version and does not transform `node_modules`, so a Jest test that imports `taskwire`
-  fails with `SyntaxError: Cannot use import statement outside a module` unless
-  `transformIgnorePatterns` lets `@dynamicforms/fastapi-viewsets` through to a transform that
-  compiles ES modules. `dist/muxws.cjs` already had both properties.
-- The algorithm follows the installed fastapi-viewsets within `^0.9.1`: a release that changes how
-  `PollLadder` climbs, jitters or floors changes taskwire's polling with no taskwire release, and
-  `poll.spec.ts` catches it only in a taskwire test run against that release. The numbers do not
-  follow it.
-- taskwire cannot be installed until `@dynamicforms/fastapi-viewsets` 0.9.1 is on npm (`NEXT.md`).
-
-**Still needs deciding:** whether the core may require fastapi-viewsets. The alternative keeps a
-copy of the ladder in `ts/poll.ts`, leaves fastapi-viewsets an optional peer of `taskwire/muxws`,
-and keeps two ladders that have to be kept equal. A CommonJS build of fastapi-viewsets would remove
-the Node.js and Jest costs and leave the install cost.
-
----
-
 ## taskwire-spec.md §2.14 — TW-WS-010 — the client half installs the peer's stream handler
 
 **What I needed:** whether TW-WS-010 binds the browser half, where `MuxwsClientTransport` installs
-the peer's `onStream` handler, and shares it with fastapi-viewsets' event client.
+the peer's `onStream` handler and shares it with fastapi-viewsets' event client.
 
-**What the spec says:** TW-WS-010 read "taskwire MUST NOT install the peer's stream handler", with
-the reason "A library that took the slot would lock the application out of its own socket". The
-rest of the rule describes the server half only (`register_taskwire_muxws`, `on_stream`,
-`process_command`) and names no language.
+**What the spec says:** TW-WS-010 reads:
 
-**What I assumed:** the rule binds the server half. Its first sentence now reads "taskwire's server
-half MUST NOT install the peer's stream handler", and its note states what the client half does,
-which is a change to the specification made without the author. `MuxwsClientTransport`'s handler
-passes every stream to `handleEventStream(peer, payload, stream)`, which takes a stream whose
-headers carry a string `:event` for the event client `createEventClient({ peer })` registered for
-the peer; every other stream is parsed as an envelope, and one that does not parse is dropped with
-no trace (`ts/muxws.ts`, `deliver`). The handler stays installed after `detachMuxws`.
+> taskwire MUST NOT install the peer's stream handler. A `Peer` has exactly one `on_stream` slot;
+> `register_taskwire_muxws(peer, session)` **returns** its handler and the application composes it
+> behind `fastapi_viewsets.mux_ws.process_command`, which returns `False` having sent nothing when
+> the stream is not a viewset command. A library that took the slot would lock the application out
+> of its own socket.
+
+The first sentence names no half; the rest describes the server half only (`register_taskwire_muxws`,
+`on_stream`, `process_command`).
+
+**What the code does:** the client half contradicts the first sentence. The `MuxwsClientTransport`
+constructor calls `peer.onStream()`. Its handler passes every stream to
+`handleEventStream(peer, payload, stream)`, which takes a stream whose headers carry a string
+`:event` for the event client `createEventClient({ peer })` registered for the peer; every other
+stream is parsed as an envelope, and one that does not parse is dropped with no trace
+(`ts/muxws.ts`, `deliver`). The handler stays installed after `detachMuxws`.
 
 **What it costs:** the lock-out the rule guards against exists in the browser. A stream the
 application's server opens to the browser for its own purposes, on a peer taskwire is attached to,
@@ -535,10 +463,10 @@ reaches taskwire's `deliver()` and is dropped. fastapi-viewsets' `attachEvents(p
 composes the other way: it passes a non-event stream to `fallback`, or resets it with `REFUSED`, and
 installs its own handler in place of taskwire's.
 
-**Still needs deciding:** whether the client half takes an application handler for the streams that
-are neither events nor envelopes (an option of `attachMuxws`, or a handler taskwire returns for the
-application to install, as the server half does), whether such a stream is reset rather than
-dropped, and whether TW-WS-010 gains a client clause.
+**Still needs deciding:** whether TW-WS-010 binds the client half; if it does, whether the client
+half takes an application handler for the streams that are neither events nor envelopes (an option
+of `attachMuxws`, or a handler taskwire returns for the application to install, as the server half
+does), and whether such a stream is reset rather than dropped.
 
 ---
 

@@ -129,12 +129,11 @@ See [The Celery worker entry](../api/python.md#the-celery-worker-entry) for `tas
 
 ## The npm package
 
-The TypeScript half uses `@dynamicforms/fastapi-viewsets` too, and requires it as a peer dependency:
-
-- the client polls on its `PollLadder`, the ladder the fastapi-viewsets event client polls on;
-- `taskwire/muxws` sends the six calls through its `MuxwsProxyImpl`, and hands the event streams on
-  the peer to its `handleEventStream`, so one socket carries taskwire's pushes and the event client's
-  events (see [The WebSocket transport](./websockets.md#one-peer-for-taskwire-and-fastapi-viewsets-events)).
+`@dynamicforms/fastapi-viewsets` is an optional peer dependency of the npm package, imported by
+`taskwire/muxws` alone. It sends the six calls through its `MuxwsProxyImpl`, and hands the event
+streams on the peer to its `handleEventStream`, so one socket carries taskwire's pushes and the event
+client's events (see
+[The WebSocket transport](./websockets.md#one-peer-for-taskwire-and-fastapi-viewsets-events)).
 
 ## What to read next
 

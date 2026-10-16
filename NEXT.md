@@ -63,13 +63,13 @@ TW-RES-010 and say plainly that an uncollected result expires unreleased.
 
 ## 4. fastapi-viewsets 0.9.1 is not published
 
-`package.json` (peer and dev dependency) and `demo/client/package.json` require
+`package.json` (optional peer and dev dependency) and `demo/client/package.json` require
 `@dynamicforms/fastapi-viewsets ^0.9.1`; npm and PyPI stop at 0.9.0. CI runs `npm install` with no
-lockfile, so it fails with `ETARGET` until 0.9.1 is on npm, and so does every install of taskwire,
-whose main entry imports the package. The server snippet in `docs/guide/websockets.md`, "One peer for
-taskwire and fastapi-viewsets events", passes `peer=` to `process_command`, which
-`dynamicforms-fastapi-viewsets` 0.9.0 does not accept. fastapi-viewsets 0.9.1 is published on npm
-and PyPI before these floors reach `main` and before a taskwire release.
+lockfile, so it fails with `ETARGET` until 0.9.1 is on npm, and an application that imports
+`taskwire/muxws` has no release that satisfies the peer range. The server snippet in
+`docs/guide/websockets.md`, "One peer for taskwire and fastapi-viewsets events", passes `peer=` to
+`process_command`, which `dynamicforms-fastapi-viewsets` 0.9.0 does not accept. fastapi-viewsets
+0.9.1 is published on npm and PyPI before these floors reach `main` and before a taskwire release.
 
 ## Open questions for the author
 
@@ -77,6 +77,5 @@ and PyPI before these floors reach `main` and before a taskwire release.
    `await using`, the TS conformance import path, TW-STORE-014's one-round-trip requirement against
    the port's `-> int` signature, whether `Client` should enforce exactly one of peer/request, the
    `Text.params` vs `Result.params` empty-dict inconsistency, and what the conformance corpus is
-   actually for; and the three fastapi-viewsets 0.9.1 entries, the npm core's required
-   `@dynamicforms/fastapi-viewsets` peer, the client half of TW-WS-010, and moving the push path onto
-   `fastapi_viewsets.events`.
+   actually for; and the two fastapi-viewsets 0.9.1 entries, the client half of TW-WS-010 and moving
+   the push path onto `fastapi_viewsets.events`.
