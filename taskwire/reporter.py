@@ -816,6 +816,8 @@ class OperationScope:
         # on the way out - so binding there would leave nothing bound where the body runs and a
         # Token that cannot be reset. See `bind_ambient_in_caller`.
         self._caller_binds_ambient = False
+        # True once the operation was handed to another process, which then owns its terminal write.
+        self._handed_off = False
 
     @property
     def _inert(self) -> bool:
@@ -916,6 +918,13 @@ class OperationScope:
         if reporter is None or isinstance(reporter, InertReporter):
             return False
 
+        if self._handed_off:
+            # The process the operation was handed to writes its terminal state (TW-CALL-007). A
+            # terminal write here would end an operation that is still running there.
+            with contextlib.suppress(Exception):
+                await reporter.flush()
+            return False
+
         state, error = _terminal_for(exc_type, exc)
         # An error the operation named for itself outranks one derived from the exception's class
         # (`name_error`). The class is the more specific fact only when nobody knew better: a worker
@@ -960,10 +969,17 @@ class OperationScope:
         `taskwire.ambient.bind` around the body and `unbind` in a `finally`.
 
         `__enter__` does exactly that for the synchronous form, whose `__aenter__` runs in a task of
-        its own on a private loop. `taskwire_execution_hook` does it around a viewset action, so that
-        `wrap_sync_runner` can run the scope's exit from another task (TW-CALL-008).
+        its own on a private loop.
         """
         self._caller_binds_ambient = True
+
+    def hand_off(self) -> None:
+        """Leave the terminal write to the process this operation was handed to (TW-CALL-007).
+
+        The exit then flushes pending progress and writes no state, whether the body returned or
+        raised; the operation stays `running` until the other process's `operation()` ends it.
+        """
+        self._handed_off = True
 
     # ---------------------------------------------------------------- sync form
 

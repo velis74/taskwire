@@ -49,9 +49,6 @@ import {
 } from './taskwire';
 import { type Envelope, parseEnvelope, type Snapshot } from './wire';
 
-/** muxws `Peer.interceptOpen` (WSM-API-026): registers an open interceptor, returns its removal. */
-type InterceptOpen = (interceptor: (headers: Record<string, unknown>, payload: unknown) => void) => () => void;
-
 /** What a `watch` declaration is answered with (TW-DEL-022). */
 export interface WatchReply {
   v: number;
@@ -181,10 +178,7 @@ export class MuxwsClientTransport implements ClientTransport {
    */
   private stamp(): void {
     if (this.unstamp !== null) return;
-    // `Peer.interceptOpen` exists from muxws 0.4.0. An older peer stamps nothing.
-    const peer = this.peer as Peer & { interceptOpen?: InterceptOpen };
-    if (typeof peer.interceptOpen !== 'function') return;
-    this.unstamp = peer.interceptOpen((headers) => {
+    this.unstamp = this.peer.interceptOpen((headers) => {
       const token = ambientTaskwireToken();
       if (token !== null) headers[TOKEN_HEADER] = token;
       if (this.connectionId !== null) headers[CONNECTION_HEADER] = this.connectionId;

@@ -12,6 +12,7 @@ from taskwire import (
     start_taskwire_reader, stop_taskwire_reader, check_taskwire_readers,
     TOKEN_HEADER, CONNECTION_HEADER,
     Client, OperationRef, Commit,
+    Call, call_token, receive_call, execute_call, hand_off,
 )
 ```
 
@@ -169,32 +170,81 @@ A web process subscribes only to the namespaces it currently holds connections f
 and never per token or per tab. `register_taskwire_muxws` does that subscribing for the connections
 it registers.
 
+## Tracked calls
+
+`taskwire.calls`; the guide is [Tracking calls](../guide/tracking-calls.md).
+
+```python
+call_token(headers, method=None) -> str | None
+Call(token, session, connection=None, result_kind=None)
+receive_call(call, *, dispatch_errors=(), pending_errors=()) -> CallReceipt
+execute_call(call, *, timeout_errors=()) -> CallExecution
+hand_off() -> ContextManager[dict[str, str]]
+status_error(status) -> Error | None
+```
+
+`call_token` takes a mapping or a sequence of `(name, value)` pairs and returns `X-Taskwire-Token`
+when present, else the key of a single `Idempotency-Key` Structured Field string that is a UUID, for
+any method outside `SAFE_METHODS` (`GET`, `HEAD`, `OPTIONS`). Anything else is `None`.
+
+`Call.carried()` returns `{"token": ..., "session": ...}`, the keyword arguments `taskwire_task`
+takes; `Call.from_carried(mapping)` reverses it and returns `None` for a missing or non-string value.
+
+`receive_call(call)` is an async and a sync context manager yielding `call`. Entry drops a terminal
+document under the token and calls `mark_queued` with the call's `connection` and `result_kind`. Exit,
+when the operation is still `queued` and no `execute_call` was entered for the call in the same
+context, writes `failed`: `DISPATCH_FAILED` (`"dispatch_failed"`, `retryable: true`) for an exception
+in `dispatch_errors`, nothing for one in `pending_errors`, and `NOT_EXECUTED` (`"not_executed"`,
+`retryable: false`) otherwise. A receipt nested in one for the same token writes nothing.
+
+`execute_call(call)` is an async and a sync context manager yielding the `Reporter`. It enters
+`operation(call.token, session=..., connection=..., result_kind=...)` and binds `taskwire.progress`;
+inside another execution, or for `call=None`, it opens nothing and yields `None`. An exception in
+`timeout_errors` that ends it while the operation holds an open question ends the operation
+`DIALOG_TIMEOUT`. `CallExecution.fail(error)` ends the operation `failed` with `error` when the block
+exits without an exception.
+
+`hand_off()` yields the executing call's `carried()` (`{}` outside an execution). A clean exit leaves
+the terminal write to the process that receives the values; an exception names `dispatch_failed`.
+
+`status_error(status)` is the `Error` of TW-CALL-006: `None` below 400, else `HTTP_STATUS`
+(`"http_status"`) with `message.params == {"status": status}`, retryable for 502, 503 and 504.
+
+Store failures on any of these writes are logged and never raised.
+
+### ASGI and WSGI
+
+```python
+from taskwire.contrib.asgi import track_calls   # or taskwire.contrib.wsgi
+
+app = track_calls(app, *, exclude_prefix=None, session_resolver=None, result_kind=None)
+```
+
+Wraps every HTTP request that carries a token in `receive_call` and `execute_call`. The namespace
+comes from `session_resolver(scope_or_environ)`, else the configured resolver called with the ASGI
+scope or WSGI environ; `result_kind(scope_or_environ)` fixes the operation's kind. A response status
+of 400 or more ends the operation with `status_error(status)`. Requests under `exclude_prefix`
+(default `settings.rest_prefix`) and other ASGI scope types pass through.
+
 ## The REST surface
 
 ```python
 from taskwire.contrib.viewsets import register_taskwire_rest
 
-register_taskwire_rest(router, base_path=None, *, register_muxws=None)
+register_taskwire_rest(router, base_path=None, *, register_muxws=None, track_calls=True)
 ```
 
 Mounts the six calls of TW-REST-004 on `router` — over REST, and over muxws when the viewset layer's
 socket half is installed. `base_path` defaults to `settings.rest_prefix`. Registering twice on one
-router is a no-op rather than a duplicate mount.
-
-It also appends `taskwire_context_processor` to fastapi-viewsets' `viewsets_context_processors` when
-absent, and installs `taskwire_execution_hook` with `set_execution_hook`, replacing any execution
-hook installed before.
+router is a no-op rather than a duplicate mount. With `track_calls` it calls `track_viewset_calls()`;
+without it, it appends `taskwire_context_processor` to `viewsets_context_processors` when absent.
 
 ### Tracked viewset calls
 
 Requires `dynamicforms-fastapi-viewsets >= 0.9.0`.
 
 ```python
-from taskwire.contrib.viewsets import (
-    NOT_EXECUTED, TaskwireMiddleware, taskwire_context_processor, taskwire_execution_hook,
-)
-
-settings.viewsets_command_middleware = [Idempotency(redis_client=redis), TaskwireMiddleware()]
+from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_processor, track_viewset_calls
 ```
 
 `async taskwire_context_processor(request, _viewset=None) -> dict` puts three keys into the viewset
@@ -204,34 +254,24 @@ settings.viewsets_command_middleware = [Idempotency(redis_client=redis), Taskwir
 |---|---|
 | `taskwire_session` (`SESSION_KEY`) | `session_resolver(request)`, or `None` without a resolver |
 | `taskwire_connection` (`CONNECTION_KEY`) | the `X-Taskwire-Connection` header, or `None` |
-| `taskwire_token` (`TOKEN_KEY`) | the `X-Taskwire-Token` header; otherwise the key of the `Idempotency-Key` header when it is a UUID; otherwise `None` |
+| `taskwire_token` (`TOKEN_KEY`) | `call_token(request.headers, request.method)` |
 
-A malformed `Idempotency-Key` gives `None`; the processor raises nothing for it.
-
-`TaskwireMiddleware()` is a fastapi-viewsets command middleware, placed after `Idempotency`. For a
-tracked call it calls `mark_queued(token, session=..., connection=..., result_kind=...)` before the
-rest of the chain; a terminal document under the token is dropped first, since a call that reaches
-the middleware executes anew. After the chain returned or raised it ends an operation still `queued`,
-whose action the execution hook never entered, with `failed`: error code `dispatch_failed`
-(`retryable: true`) when the call reached the Celery dispatch hook and the broker did not accept the
-task, otherwise `NOT_EXECUTED` (`"not_executed"`, `retryable: false`). Store failures are logged and
-the call runs.
+`TaskwireMiddleware(*, timeout_errors=None)` is a fastapi-viewsets `Middleware`. `__call__` runs the
+rest of the command chain inside `receive_call`, with `ActionDispatchError` as a dispatch error and
+`ResultTimeoutError` as a pending one. `execute()` runs the action inside `execute_call`, where the
+action executes, and passes an execution with a `parent` straight through. `timeout_errors` defaults
+to Celery's `SoftTimeLimitExceeded` when Celery is installed, else `()`.
 
 A call is tracked when the context holds a token and a namespace, the viewset is not taskwire's own,
 and the action configuration for `TaskwireMiddleware` is not `False`. `result_kind` is the
 `"result_kind"` entry of `@action_configuration({TaskwireMiddleware: {"result_kind": kind}})`, or else
 the kind a result decorator declares on the action method, or else `None` (a private operation).
-Either configuration requires a `TaskwireMiddleware` instance in `viewsets_command_middleware`:
-fastapi-viewsets raises `ValueError` for an action configured with the key otherwise.
+fastapi-viewsets raises `ValueError` for an action configured with the `TaskwireMiddleware` key while
+no instance is in `viewsets_command_middleware`.
 
-`taskwire_execution_hook(execution: ActionExecution)` returns an async context manager that
-fastapi-viewsets enters around the action where it executes. For a tracked execution it enters
-`operation(token, session=..., connection=..., result_kind=...)`, binds `taskwire.progress` around
-the action and yields the `Reporter`; for an untracked one it yields `None`. In the web process an
-execution is tracked when `TaskwireMiddleware` tracks its call; in a Celery worker, when
-`wrap_sync_runner` carried a token and namespace. A store failure on entry leaves the action to run
-unreported, and a failure of the terminal write is logged. An action running under it reports
-through `taskwire.progress` and does not open `operation()` for its own token.
+`track_viewset_calls()` appends `taskwire_context_processor` and a `TaskwireMiddleware()` to
+fastapi-viewsets' settings, each when absent. A Celery worker executing `celery_viewset` actions
+calls it.
 
 `taskwire.contrib.fastapi.router(prefix=None)` returns a hand-rolled `APIRouter` with the same six
 routes, and `taskwire.contrib.asgi.app(prefix=None)` serves them from a framework-free ASGI callable.
@@ -239,32 +279,18 @@ Every REST decision lives in `taskwire.rest`, which imports no framework at all.
 
 ## The Celery worker entry
 
-`taskwire.contrib.celery`, installed with `pip install "taskwire[celery]"`. Two entries, because a
-worker either owns its loop or is handed one.
+`taskwire.contrib.celery`, installed with `pip install "taskwire[celery]"`.
 
 ```python
 @taskwire_task(result_kind="acme.import_report")     # a plain Celery task body
 def import_rows(self, reporter, *, rows): ...
-
-run, kwargs = wrap_sync_runner(loop.run_until_complete, kwargs)   # a viewset action
 ```
-
-Both name `dialog_timeout` on a soft time limit **only when the operation was holding an open
-question** — `reporter.asking` answers that with no store read, which is what makes it affordable at
-the moment a worker is being killed. Otherwise the exception's own class names the error.
 
 `taskwire_task` decorates the body and passes the reporter **by keyword**, so the parameter must be
 named `reporter`; `token` and `session` arrive as task kwargs. It closes the operation before Celery
-publishes the task's result.
-
-`wrap_sync_runner(runner, kwargs) -> (runner, kwargs)` is `celery_viewset_server`'s kwargs hook. It
-returns `kwargs` without `_taskwire_token` and `_taskwire_session`, and a runner that makes those two
-values visible to `taskwire_execution_hook` while it drives the action; the hook opens the operation
-around the action and closes it before the runner returns, so before the worker publishes the
-result. When a soft time limit interrupts the runner while the action's coroutine is suspended, the
-wrapped runner writes the terminal state itself and the hook writes nothing later. A call carrying
-neither key, or a value that is not a non-empty string, gets both arguments back unchanged and runs
-unreported.
+publishes the task's result. On a soft time limit it names `dialog_timeout` **only when the operation
+was holding an open question** — `reporter.asking` answers that with no store read. Otherwise the
+exception's own class names the error.
 
 Celery's `task_prerun` / `task_postrun` signals are not used: `postrun` fires after the result has
 been pushed, so a client could see the answer while the operation still read `running`.
@@ -282,24 +308,15 @@ caller is already watching does not hang. `configure_worker` gives the worker a 
 `NullTransport`: **a worker never pushes**, because the web process's reader is already delivering
 every envelope the worker's writes produce.
 
-### `celery_viewset` actions
+The operation of a call the web process is executing moves to a task with `hand_off()`:
 
 ```python
-register_taskwire_celery_viewset()
+with hand_off() as carried:
+    import_rows.delay(rows=rows, **carried)
 ```
 
-Installs `wrap_sync_runner` with `set_celery_kwargs_hook`, taskwire's dispatch hook with
-`set_celery_dispatch_hook`, a receiver of Celery's `after_task_publish` signal, and
-`taskwire_execution_hook` with `set_execution_hook`, replacing any execution hook installed before
-(`dynamicforms-fastapi-viewsets >= 0.9.0`, `pip install "taskwire[viewsets]"`). Call it in every
-process that dispatches or executes a `celery_viewset` action; calling it again installs the same
-hooks.
-
-For a call `TaskwireMiddleware` tracks, the dispatch hook writes nothing and carries the call's token
-and namespace as `_taskwire_token` / `_taskwire_session`; `result_kind` is fixed by the middleware's
-`queued` write. Without the middleware it takes the token, namespace and connection id from the
-action's `context: Context` parameter, writes `queued` and carries the same two values. It returns
-`{}` for an untracked call and for a dispatch made from inside an action the execution hook reports.
+A `celery_viewset` action needs no entry of its own: `TaskwireMiddleware.execute()` runs in the
+worker (see [`track_viewset_calls`](#tracked-viewset-calls)).
 
 ## Headers
 

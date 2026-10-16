@@ -32,27 +32,31 @@ interceptor back off the axios instance.
 ```ts
 tw.run(fn, { title?, resultKind?, progressUi? });   // mint a token, bind it, hand it to fn
 tw.track(token, { title?, resultKind? });           // watch a token somebody else minted
-tw.trackCall(call, handler, { title?, resultKind?, progressUi? });   // follow a viewset call
+tw.trackCall(call, handler, { title?, resultKind?, progressUi? });   // follow a call by its key
 tw.awaitCall(call, handler, { title?, resultKind?, progressUi? });   // ... and resolve with it
 tw.subscribe(token);                                // raw snapshots, no handle and no lifecycle
 tw.onRegisterChange(cb);  tw.onOperationsChange(cb);
 tw.select(token | null);  tw.show(token);  tw.hide(token);
 tw.attachTransport(transport);  tw.detachTransport();
 tw.setConnection(id | null);    tw.connection;
+tw.headers();                       // the two headers a request made now carries
 ```
 
 `run()` mints the token and binds it for the **synchronous** part of `fn`, so the request `fn` issues
 carries `X-Taskwire-Token`. A callback that awaits before it requests sends no header, and the server
 then mints a token of its own that nothing is watching.
 
-### Following a viewset call
+`headers()` returns `X-Taskwire-Token` while `run()` has a token bound and `X-Taskwire-Connection`
+once a socket declared an id — exactly what the axios interceptor writes — for a request made with
+any other HTTP client.
 
-Every call a fastapi-viewsets proxy makes returns a `ViewSetCall`, a promise carrying the call's
-`Idempotency-Key` as `key`, and a server with `TaskwireMiddleware` tracks the call as an operation
-under that key
-([Tracking every viewset call](../guide/fastapi-viewsets.md#tracking-every-viewset-call)). A call made
-inside `run()` carries `X-Taskwire-Token`, and the server tracks it under `run()`'s token instead;
-such a call is followed through the handle `run()` returns, not through `trackCall`.
+### Following a call
+
+A call whose promise carries the token it is tracked under as `key` is followed by that key
+([Tracking calls](../guide/tracking-calls.md)). Every call a fastapi-viewsets proxy makes returns a
+`ViewSetCall`, a promise carrying the call's `Idempotency-Key` as `key`. A call made inside `run()`
+carries `X-Taskwire-Token`, and the server tracks it under `run()`'s token instead; such a call is
+followed through the handle `run()` returns, not through `trackCall`.
 
 ```ts
 const call = api.import(rows);                   // ViewSetCall<ImportReport>
@@ -207,6 +211,31 @@ before it sends the command.
 A store publishes through its `dispatch` option, which is what a transport is wired to; without one a
 `MemoryStore` keeps state correctly and pushes nothing.
 
+`OperationScope.handOff()` makes the disposal write no state, for an operation another process
+continues; `failWith(error)` names the error the block ends `failed` with.
+
+### Tracked calls
+
+```ts
+import { callToken, executeCall, receiveCall, trackFetch } from 'taskwire';
+
+callToken(headers, method?)                                   // string | null
+receiveCall(call, { store, dispatchError?, pendingError? }, (receipt) => ...)
+receipt.execute((execution) => ...)                           // execution: CallExecution | null
+executeCall(call, { store }, (execution) => ...)              // the receiving side of a hand-off
+execution.handOff((carried) => queue.send(carried))           // { token, ns }
+execution.fail(statusError(503)!)
+trackFetch(handler, { store, resolveNs, excludePrefix?, resultKind? })
+```
+
+The same rules as `taskwire.calls` in Python ([Tracking calls](../guide/tracking-calls.md)), with the
+execution passed to the body instead of bound: `execution.reporter` is the operation's reporter.
+`dispatchError` and `pendingError` are predicates over the error the body threw. `callFromCarried()`
+turns carried values back into a `Call`. `trackFetch` wraps a WHATWG `fetch` handler
+`(request, execution) => Promise<Response>`: a request carrying a token runs inside a receipt and an
+execution, a status of 400 or more ends its operation `http_status`, and requests under
+`excludePrefix` (default `DEFAULT_BASE_PATH`) pass through.
+
 `store.commit()` answers with `{ rev, cancelled }` — both of a write's outcomes at once, so a
 reporter refreshing `cancelled` after every commit costs one round trip rather than two.
 
@@ -219,7 +248,8 @@ The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `fl
 |---|---|
 | `RedisStore` and the pub/sub backplane | the polling client and its ladder |
 | the Celery worker entry | the `/vue` and `/vuetify` subpaths |
-| the FastAPI / ASGI adapters, and the muxws server half | `tw.register`, `tw.aggregate`, `tw.selected` |
+| the FastAPI / ASGI / WSGI adapters, and the muxws server half | `tw.register`, `tw.aggregate`, `tw.selected` |
+| `timeout_errors` and `dialog_timeout` on an executor's limit | `trackFetch` |
 | the ambient `progress` proxy | the tab-hint rules |
 
 The ambient proxy is the one worth knowing about: `contextvars` has no browser equivalent, and an
@@ -242,7 +272,6 @@ Attaching does two things: it takes the pushes, and it moves the six calls of TW
 socket. While attached, every stream opened on the peer — the application's own commands included —
 carries `X-Taskwire-Connection` once the socket has an id, and `X-Taskwire-Token` when it is opened
 in the synchronous part of a `run()` callback, as the axios interceptor writes them on a request.
-The headers need muxws 0.4.0 (`Peer.interceptOpen`); on an older peer no stream carries them.
 `{ routeCalls: false }` takes the pushes and leaves the calls on HTTP, and `{ basePath }` names the
 prefix the viewset is mounted under when it is not the client's own. The connection id needs no
 option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the socket puts

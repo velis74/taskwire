@@ -366,37 +366,55 @@ untracked; taskwire does not reject it, since rejecting is `Idempotency`'s decis
 
 ---
 
-## taskwire-spec.md §2.23 — TW-CALL-006 — a Celery call whose result wait timed out
+## taskwire-spec.md §2.23 — TW-CALL-002 — a read is not tracked by its `Idempotency-Key`
 
-**What the rule does:** a `celery_viewset` call whose task the broker accepted, and which ends with
-its operation still `queued`, is `failed` with `not_executed`, `retryable: false`. That includes a call
-whose `celery_viewset_client` result wait timed out (`ResultTimeoutError`) while the task sat in the
-broker queue.
+**What I needed:** whether every call that carries a UUID `Idempotency-Key` is an operation.
 
-**What follows:** a worker that picks the task up later enters `operation()` on the tombstone. The
-store keeps the terminal state (TW-STORE-010), so the run's progress never shows, and the document
-keeps `not_executed`. The client was already answered `504`.
+**What I assumed:** not a `GET`, `HEAD` or `OPTIONS`. A fastapi-viewsets proxy puts a key on every
+call, its reads included, and tracking each `list` and `retrieve` would cost four store writes, a push
+and a 900-second tombstone per read. A read is tracked under an explicit `X-Taskwire-Token`, which
+`run()` puts on it.
 
-**Still needs deciding:** whether the middleware should leave a dispatched operation `queued` on a
-result timeout and let `active_ttl` expire it, or whether the worker should start a fresh run as
-`TaskwireMiddleware` does for a call that executes anew (TW-CALL-003).
+**Still needs deciding:** whether reads should be tracked by their key, or the safe methods made a
+setting.
 
 ---
 
-## taskwire-spec.md §2.23 — TW-CALL-003 — `TaskwireMiddleware` is listed by the application
+## taskwire-spec.md §2.23 — TW-CALL-005 — a Celery call whose result wait timed out
 
-**What the design said:** a command middleware writes `queued` when a call with a token arrives, for
-every call.
+**What I assumed:** `ResultTimeoutError` is one of `TaskwireMiddleware`'s `pending_errors`: a call
+whose result wait timed out leaves its operation as it is. A task that is still in the broker queue
+then runs and ends the operation itself; one that never runs leaves it `queued` until `active_ttl`
+expires it. Writing `not_executed` instead would leave a tombstone the worker's `operation()` could
+not revise (TW-STORE-010).
 
-**What I assumed:** the application lists `TaskwireMiddleware` in `viewsets_command_middleware` itself,
-after `Idempotency`; `register_taskwire_rest` does not insert it. Before `Idempotency`, a repeat that
-`Idempotency` answers from a stored outcome would replace the operation's terminal document with a new
-`queued` one and then a `not_executed` failure, and the chain's order is the application's. Without the middleware no
-in-process action is reported, so `register_taskwire_rest` alone changes nothing for an existing
-application.
+**Still needs deciding:** whether a `queued` operation that outlived its call's answer by
+`active_ttl` is acceptable, or the receipt should write a distinct terminal state.
 
-**Still needs deciding:** whether `register_taskwire_rest` should insert it after an `Idempotency`
-instance, or warn when the execution hook is installed without it.
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-006 — an error status ends a tracked call `failed`
+
+**What I needed:** what the generic adapters write for a request the framework answered with an
+error status instead of an exception.
+
+**What I assumed:** any status of 400 or more ends the operation `failed` with `http_status`,
+`message.params.status`, and `retryable: true` for 502, 503 and 504 only. Without it, every ASGI and
+WSGI framework that turns an exception into a 4xx or 5xx response would report the call `done`.
+
+**Still needs deciding:** the code, and whether 4xx and 5xx should be told apart in it.
+
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-101 — `register_taskwire_rest` lists `TaskwireMiddleware`
+
+**What I assumed:** `register_taskwire_rest` appends a `TaskwireMiddleware` to
+`viewsets_command_middleware` when none is listed, which puts it after an `Idempotency` already
+listed; `track_calls=False` leaves it out. An application that lists it itself chooses its place.
+A middleware listed after `TaskwireMiddleware` that rejects a call ends the operation `not_executed`;
+one listed before it rejects the call before any write.
+
+**Still needs deciding:** whether tracking should be on by default for an application that upgrades.
 
 ---
 

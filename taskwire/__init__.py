@@ -15,6 +15,7 @@ from __future__ import annotations
 __version__ = "0.2.0"
 
 from .ambient import ask, current_reporter, progress
+from .calls import Call, call_token, execute_call, hand_off, receive_call
 from .conformance import run_conformance
 from .decorators import (
     declared_result_kind,
@@ -73,6 +74,8 @@ from .transport import LocalTransport, NullTransport, TaskwireTransport
 __all__ = [
     "Aggregate",
     "Button",
+    "Call",
+    "call_token",
     "Client",
     "Commit",
     "DialogAnswer",
@@ -126,6 +129,9 @@ __all__ = [
     "new_token",
     "TOKEN_HEADER",
     "operation",
+    "receive_call",
+    "execute_call",
+    "hand_off",
     "reset_configuration",
     "run_conformance",
     "settings",

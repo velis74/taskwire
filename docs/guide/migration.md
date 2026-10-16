@@ -8,3 +8,65 @@ This is the only page that names superseded APIs; everywhere else in this docume
 exists.
 
 <!-- New releases go directly below this comment, above the previous one, as `## Upgrading to vX.Y.Z (from vA.B.x)`. -->
+
+## Upgrading to v0.2.0 (from v0.1.x)
+
+0.2.0 tracks calls. `register_taskwire_rest` now lists `TaskwireMiddleware`, so every viewset call
+that carries `X-Taskwire-Token`, or a UUID `Idempotency-Key` on a method other than `GET`, `HEAD`
+and `OPTIONS`, runs inside `operation()` for that token. Every call a fastapi-viewsets 0.9.0 proxy
+makes carries such a key.
+
+### Upgrade the two packages taskwire binds to
+
+fastapi-viewsets 0.9.0 (`dynamicforms-fastapi-viewsets` and `@dynamicforms/fastapi-viewsets`) and
+muxws 0.4.0 are required.
+
+### Celery viewset actions
+
+`register_taskwire_celery_viewset()` and `wrap_sync_runner` are gone, together with the
+fastapi-viewsets hooks they were installed into. The worker calls `track_viewset_calls()` once at
+startup instead; the web process needs nothing beyond `register_taskwire_rest`.
+
+```python
+# 0.1
+register_taskwire_celery_viewset()
+
+# 0.2, in the worker
+configure_worker(store)
+track_viewset_calls()
+```
+
+A `celery_viewset` action no longer needs a `context: Context` parameter to be tracked.
+
+### Actions that report under their own token
+
+A viewset action that opened `operation()` for the token in its context now opens a second one
+inside the operation `TaskwireMiddleware` already opened, and the two write two terminal states.
+Report through `taskwire.progress` instead:
+
+```python
+# 0.1
+async with taskwire.operation(await context.taskwire_token, session=await context.taskwire_session):
+    await progress.set(percent=50)
+
+# 0.2
+await taskwire.progress.set(percent=50)
+```
+
+An action that handed its token to work running after it returns — a task, a thread — now has its
+operation ended `done` when it returns. Hand the operation over with `hand_off()`, or leave the
+action untracked:
+
+```python
+with hand_off() as carried:
+    import_rows.delay(rows=rows, **carried)
+
+@action_configuration({TaskwireMiddleware: False})
+async def start(self, context: Context) -> dict: ...
+```
+
+### Keeping 0.1's behaviour
+
+`register_taskwire_rest(router, track_calls=False)` registers the context processor and lists no
+middleware: viewset calls are not tracked, and `context["taskwire_token"]` still carries the call's
+token.

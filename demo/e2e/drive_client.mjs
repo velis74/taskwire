@@ -55,6 +55,7 @@
 
 import process from 'node:process';
 
+import { MuxwsProxyImpl, RestProxyImpl } from '@dynamicforms/fastapi-viewsets';
 import axios from 'axios';
 import { JsonCodec, registerCodec } from 'muxws';
 // A browser `connect()` cannot set handshake headers, and the demo's namespace is a cookie: the
@@ -691,6 +692,72 @@ async function phaseDismiss(h) {
 }
 
 /**
+ * `reprice`: an application viewset call, made through a fastapi-viewsets proxy on the wire under
+ * test, followed with `tw.awaitCall()` under its `Idempotency-Key` (TW-CALL-001, TW-TS-019).
+ *
+ * Nothing in the call names taskwire: the proxy sends its key, `TaskwireMiddleware` tracks the call,
+ * and the action reports through `taskwire.progress`. The operation is private, so it must never be a
+ * register row; over a socket its `origin_connection` is the socket's id, which only the muxws open
+ * interceptor can have put on the command stream (TW-TS-020).
+ */
+async function phaseTrackedCall(h) {
+  const { ledger } = h;
+  const options = { basePath: '/demo/positions', pkFieldName: 'id', validateSchema: false };
+  const Base = h.wire === 'websocket' ? MuxwsProxyImpl : RestProxyImpl;
+  class Positions extends Base {
+    reprice() {
+      return this.request('POST', '/reprice');
+    }
+  }
+  const positions = new Positions(
+    h.wire === 'websocket' ? { ...options, peer: h.peer } : { ...options, axiosInstance: h.client },
+  );
+
+  const samples = [];
+  // The server's register, read while the action runs: the one listing a second tab would see.
+  let listing = null;
+  const call = positions.reprice();
+  const answer = await h.tw.awaitCall(call, (operation) => {
+    const progress = operation.progress;
+    if (progress === null) return;
+    samples.push({ state: progress.state, percent: progress.percent });
+    if (progress.state === 'running' && listing === null) listing = h.serverRegisterTokens();
+  });
+  const ended = await until(() => samples.find((sample) => sample.state === 'done') ?? null, T.settles, 50);
+  const listed = listing === null ? null : (await listing).includes(call.key);
+
+  ledger.check(
+    'call.answers',
+    'a proxy call answers through `awaitCall()` and carries its key',
+    answer?.repriced > 0 && typeof call.key === 'string',
+    `answer ${JSON.stringify(answer)}, key ${call.key}`,
+  );
+  const moving = samples.filter((sample) => sample.state === 'running' && sample.percent > 0 && sample.percent < 100);
+  ledger.check(
+    'call.progress',
+    'the handler sees the action report under the call key while it runs',
+    moving.length > 0,
+    `samples ${JSON.stringify(samples)}`,
+  );
+  ledger.check('call.ends', 'the handler sees the operation end `done`', ended !== null, `samples ${JSON.stringify(samples)}`);
+  const snapshot = await h.serverSnapshot(call.key);
+  ledger.check(
+    'call.private',
+    "the call is a private operation: not in the server's register while it runs, its tombstone `done`",
+    listed === false && snapshot?.progress?.state === 'done' && snapshot?.progress?.result_kind == null,
+    `listed ${listed}, server ${JSON.stringify(snapshot?.progress ?? null)}`,
+  );
+  if (h.wire === 'websocket') {
+    ledger.check(
+      'ws.call_origin_connection',
+      "the command stream carried the socket's connection id",
+      snapshot?.progress?.origin_connection === h.connection,
+      `origin ${snapshot?.progress?.origin_connection}, socket ${h.connection}`,
+    );
+  }
+}
+
+/**
  * A client that was not here: it opens after the operation ended, calls `track()`, and reads what it
  * is told.
  *
@@ -859,6 +926,7 @@ async function runWire(base, wire) {
     await phaseCancelWhileAsking(h);
     await phaseDismiss(h);
     await phaseHold(h);
+    await phaseTrackedCall(h);
   } catch (error) {
     h.ledger.check('driver.completes', 'the driver reached the end of its phases', false, String(error?.stack ?? error));
   } finally {

@@ -699,10 +699,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     // even for the synchronous form the ambient binding exists to serve.
     this.interceptorId = this.http.interceptors.request.use(
       (config: InternalAxiosRequestConfig) => {
-        if (ambientToken !== null) config.headers.set(TOKEN_HEADER, ambientToken);
-        // Beside the token when there is one, and on every read too: the adapter fills
-        // `Client.connection` from this one header for both purposes (TW-REST-002).
-        if (this.connectionId !== null) config.headers.set(CONNECTION_HEADER, this.connectionId);
+        for (const [name, value] of Object.entries(this.headers())) config.headers.set(name, value);
         return config;
       },
       null,
@@ -922,6 +919,19 @@ export class Taskwire implements OperationHost, RegisterClient {
   /** The id this client stamps on its requests, or `null` when no socket has declared one. */
   get connection(): string | null {
     return this.connectionId;
+  }
+
+  /**
+   * The headers taskwire puts on a request made now: `X-Taskwire-Token` while `run()` has a token
+   * bound, and `X-Taskwire-Connection` once a socket declared an id (TW-TS-003, TW-REST-002). The
+   * axios interceptor writes exactly these; a request made with any other HTTP client spreads them
+   * into its own headers, in the synchronous part of `run()`'s `fn`.
+   */
+  headers(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (ambientToken !== null) headers[TOKEN_HEADER] = ambientToken;
+    if (this.connectionId !== null) headers[CONNECTION_HEADER] = this.connectionId;
+    return headers;
   }
 
   /**

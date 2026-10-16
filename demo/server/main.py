@@ -53,6 +53,7 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import PlainTextResponse
+from fastapi_viewsets.decorators.route_viewset import route_viewset
 from fastapi_viewsets.mux_ws import process_command
 from muxws import accept, PeerRegistry, Stream
 
@@ -63,6 +64,7 @@ from taskwire.contrib.viewsets import register_taskwire_rest
 
 from .jobs import JOBS
 from .market import blotter_rows, build_book, SECTORS, SYMBOLS
+from .positions import PositionsViewSet
 
 logger = logging.getLogger("demo")
 
@@ -135,6 +137,9 @@ def create_app() -> FastAPI:
 
     router = APIRouter()
     register_taskwire_rest(router)  # <- the six calls, on REST and on the socket both
+    # The application's own viewset. Its calls are tracked because `register_taskwire_rest` listed
+    # `TaskwireMiddleware`; nothing here mentions taskwire.
+    route_viewset(router, "/demo/positions")(PositionsViewSet)
     app.include_router(router)
 
     @app.websocket("/ws")

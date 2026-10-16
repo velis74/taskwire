@@ -101,9 +101,9 @@ the delay never appears. A failed or cancelled row stays for `progressUi.failure
 error message. Each row carries its own bar, **Cancel**, and **Hide**, which removes the row from
 this tab's view and leaves the operation running.
 
-A viewset call enters the same collection when the page follows it with
+A tracked call enters the same collection when the page follows it with
 `tw.trackCall(call, handler)` or `tw.awaitCall(call, handler)` — see
-[Following a viewset call](../api/typescript.md#following-a-viewset-call).
+[Following a call](../api/typescript.md#following-a-call).
 
 ## Sorting
 

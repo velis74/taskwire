@@ -82,6 +82,29 @@ export {
   type VisibilityOptions,
 } from './tab-hints';
 
+// TW-CALL-* - one call tracked as an operation, where it is received, executed and handed off.
+export {
+  type Call,
+  type CallExecution,
+  callFromCarried,
+  type CallReceipt,
+  callToken,
+  type CarriedCall,
+  DISPATCH_FAILED,
+  executeCall,
+  type ExecuteOptions,
+  type HeadersLike,
+  HTTP_STATUS,
+  IDEMPOTENCY_KEY_HEADER,
+  NOT_EXECUTED,
+  receiveCall,
+  type ReceiveOptions,
+  SAFE_METHODS,
+  statusError,
+  trackFetch,
+  type TrackFetchOptions,
+} from './call-tracking';
+
 // §5.5a - the operating half: this is what makes a browser-only program a first-class deployment.
 export {
   markFailed,

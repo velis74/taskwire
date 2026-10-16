@@ -26,6 +26,7 @@ export default defineConfig({
             { text: 'Collectable results', link: '/guide/results' },
             { text: 'Several operations', link: '/guide/several-operations' },
             { text: 'Transports', link: '/guide/transports' },
+            { text: 'Tracking calls', link: '/guide/tracking-calls' },
             { text: 'The WebSocket transport', link: '/guide/websockets' },
             { text: 'fastapi-viewsets integration', link: '/guide/fastapi-viewsets' },
             { text: 'Changelog', link: '/guide/changelog' },

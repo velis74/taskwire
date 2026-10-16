@@ -83,7 +83,7 @@
     }
   },
   "devDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.5.1",
+    "@dynamicforms/fastapi-viewsets": "^0.9.0",
     "@dynamicforms/vuetify-modal-form-kit": "^0.7.3",
     "@types/node": "^24",
     "@vitejs/plugin-vue": "^6",
@@ -93,7 +93,7 @@
     "eslint-config-velis": "^2.0.12",
     "jsdom": "^26.0.0",
     "markdownlint-cli2": "^0.18.1",
-    "muxws": "^0.3.1",
+    "muxws": "^0.4.0",
     "rollup-plugin-visualizer": "^5.14.0",
     "typescript": "^5",
     "vite": "^8",

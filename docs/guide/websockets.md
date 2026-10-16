@@ -128,9 +128,9 @@ configuration. One peer serves the whole application: taskwire's streams and you
 
 ## The headers on your own streams
 
-While attached, taskwire registers an open interceptor on the peer (`Peer.interceptOpen`, muxws
-0.4.0), so every stream opened on it — your own commands included — carries the same two headers the
-axios interceptor writes on a request:
+While attached, taskwire registers an open interceptor on the peer (`Peer.interceptOpen`), so every
+stream opened on it — your own commands included — carries the same two headers the axios
+interceptor writes on a request:
 
 - `X-Taskwire-Connection`, once the socket has a connection id;
 - `X-Taskwire-Token`, when the stream is opened in the synchronous part of a `run()` callback.
@@ -144,8 +144,7 @@ awaits before it calls sends no token, and `run(token => ...)` is the form that 
 muxws proxy opens a call's stream synchronously once its peer has resolved; a call issued before
 that opens its stream later, without the token. A fastapi-viewsets proxy opens a repeat of a call
 with the headers of its first stream, so a repeat carries the same token. `detachMuxws(tw)` removes
-the interceptor. A peer older than muxws 0.4.0 has no `interceptOpen`, and its streams carry neither
-header.
+the interceptor.
 
 ## Polling stops while the socket is up
 

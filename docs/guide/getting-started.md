@@ -100,13 +100,10 @@ async def start_import(request: Request) -> dict:
 The endpoint writes `queued` and returns; it does **not** open `operation()` around the work and wait
 for it, or every progress report would arrive after the thing it describes.
 
-A fastapi-viewsets action needs none of this code: with `TaskwireMiddleware` installed, every call a
-fastapi-viewsets proxy makes is an operation under the key of its `Idempotency-Key`, reported from
-`queued` to its terminal state where the action executes — see
-[Tracking every viewset call](./fastapi-viewsets.md#tracking-every-viewset-call). A viewset action
-that hands its token to background work, as this endpoint does, is configured
-`@action_configuration({TaskwireMiddleware: False})`, because the execution hook ends the operation
-when the action returns.
+A call that does its work before it answers needs none of this code: a
+[tracked call](./tracking-calls.md) is an operation under its `Idempotency-Key` or `X-Taskwire-Token`,
+reported from `queued` to its terminal state where it executes. Work that outlives the call, as this
+endpoint's does, is handed over with `hand_off()` from inside a tracked call.
 
 ## Report progress
 
