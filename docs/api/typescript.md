@@ -277,6 +277,12 @@ prefix the viewset is mounted under when it is not the client's own. The connect
 option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the socket puts
 every ladder back on its base rung. taskwire never dials a socket and never closes one.
 
+`attachMuxws` installs the peer's `onStream` handler. A stream whose headers carry `:event` goes to
+fastapi-viewsets' `handleEventStream`, and so to the event client `createEventClient({ peer })`
+registered for the peer; every other stream is parsed as a taskwire push, and dropped when it is not
+an envelope. `attachEvents(peer)` replaces the handler and is not called on a peer taskwire is
+attached to.
+
 ## Vue
 
 ```ts

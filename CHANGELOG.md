@@ -42,9 +42,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `taskwire_context_processor` puts `call_token()` of the request under `context["taskwire_token"]`.
 - `DISPATCH_FAILED` and `DIALOG_TIMEOUT` are defined in `taskwire.calls`; `taskwire.contrib.celery`
   re-exports them.
-- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets >= 0.9.0`. The npm
-  package's optional peer dependencies require `@dynamicforms/fastapi-viewsets ^0.9.0` and
-  `muxws ^0.4.0`.
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets >= 0.9.0`, and the
+  `muxws` extra requires `muxws >= 0.4.1`. The npm package's optional peer dependencies require
+  `@dynamicforms/fastapi-viewsets ^0.9.1` and `muxws ^0.4.1`.
+- `MuxwsClientTransport` passes a stream whose headers carry `:event` to fastapi-viewsets'
+  `handleEventStream`, so one peer carries taskwire's pushes and the fastapi-viewsets event client's
+  events.
 
 ### Removed
 

@@ -18,8 +18,12 @@ makes carries such a key.
 
 ### Upgrade the two packages taskwire binds to
 
-fastapi-viewsets 0.9.0 (`dynamicforms-fastapi-viewsets` and `@dynamicforms/fastapi-viewsets`) and
-muxws 0.4.0 are required.
+The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets` 0.9.0, and the `muxws`
+extra requires muxws 0.4.1. `taskwire/muxws` requires the optional npm peers
+`@dynamicforms/fastapi-viewsets` ^0.9.1 and `muxws` ^0.4.1; `taskwire` and `taskwire/vue` import
+neither. A server that serves fastapi-viewsets events and taskwire on one socket passes `peer=` to
+`process_command`, which needs `dynamicforms-fastapi-viewsets` 0.9.1 (see
+[One peer for taskwire and fastapi-viewsets events](./websockets.md#one-peer-for-taskwire-and-fastapi-viewsets-events)).
 
 ### Celery viewset actions
 

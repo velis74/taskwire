@@ -34,8 +34,10 @@ fastapi = ["fastapi>=0.100"]
 # of its action when its stream ends early (TW-CALL-*).
 viewsets = ["dynamicforms-fastapi-viewsets>=0.9.0"]
 # The socket carries the six request/response calls as viewset commands (TW-REST-004), so the muxws
-# extra needs the viewset layer's muxws half as well as muxws itself.
-muxws = ["muxws>=0.3.1", "dynamicforms-fastapi-viewsets[muxws]>=0.9.0"]
+# extra needs the viewset layer's muxws half as well as muxws itself. >=0.4.1: `Peer.close()` sends
+# every queued frame before closing the socket, so the `goaway` of `goaway_if_stale` (TW-WS-007)
+# reaches the client.
+muxws = ["muxws>=0.4.1", "dynamicforms-fastapi-viewsets[muxws]>=0.9.0"]
 demo = ["uvicorn>=0.27"]
 dev = ["coverage", "pytest", "pytest-asyncio", "pytest-cov", "hypothesis", "httpx", "ruff"]
 

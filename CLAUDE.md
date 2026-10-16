@@ -18,7 +18,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 
 ```bash
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 324 pass, 13 skip
-npx vitest run                                            # 426 pass
+npx vitest run                                            # 427 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
 python demo.py                                            # both halves, Ctrl-C stops the pair
@@ -68,6 +68,12 @@ fastapi-viewsets 0.9.0's `Middleware` (`__call__` receives a call, `execute()` r
 executes, a Celery worker included), beside `contrib/asgi.py`, `contrib/wsgi.py` and `trackFetch`.
 A feature that reaches tracked calls through one adapter only is incomplete.
 
+On npm it is an **optional** peer that `taskwire/muxws` alone imports: `MuxwsProxyImpl`, and
+`handleEventStream`, which `MuxwsClientTransport`'s `onStream` handler calls first so that one peer
+carries taskwire's pushes and fastapi-viewsets' events. The core imports nothing from it. The
+polling ladder in `ts/poll.ts` is taskwire's own; fastapi-viewsets' `vue/events/poll.ts` holds the same
+algorithm for its event client, and a change to one is made in both.
+
 Two traps found in it, worth remembering:
 
 - `build_schema.py` reads `response_model=None` as *"not specified, derive from the annotation"*. In
@@ -80,7 +86,6 @@ Two traps found in it, worth remembering:
 
 ## House rules
 
-- **No workflows, no subagents.** They burn credit without adding value here.
 - **Unit tests: reasonable, not excessive.** At muxws the tests ran 2.5× the code under test and
   still missed what the demo found in a minute. Target >95 % coverage but not at any cost. The
   current ratio is 1.16× (Python) and 0.95× (TS), deliberately.

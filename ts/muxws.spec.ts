@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createEventClient, defineEvent } from '@dynamicforms/fastapi-viewsets';
 import axios from 'axios';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -50,7 +51,7 @@ interface Opened {
 
 /** A muxws `Peer` reduced to what taskwire uses of one (TW-WS-001). */
 class FakePeer {
-  handler: ((payload: unknown) => void) | null = null;
+  handler: ((payload: unknown, stream: { headers: Record<string, unknown> }) => void) | null = null;
 
   requests: unknown[] = [];
 
@@ -80,7 +81,7 @@ class FakePeer {
     };
   }
 
-  onStream(handler: (payload: unknown) => void): void {
+  onStream(handler: (payload: unknown, stream: { headers: Record<string, unknown> }) => void): void {
     this.handler = handler;
   }
 
@@ -104,9 +105,9 @@ class FakePeer {
     return new FakeStream(this.response, this.status);
   }
 
-  /** Stand in for the server pushing one envelope down one stream. */
-  push(payload: unknown): void {
-    this.handler?.(payload);
+  /** Stand in for the server pushing one payload down one stream, with that stream's open headers. */
+  push(payload: unknown, headers: Record<string, unknown> = {}): void {
+    this.handler?.(payload, { headers });
   }
 
   /** The socket died; `willRetry` is muxws's business and taskwire reads only the fact. */
@@ -294,6 +295,35 @@ describe('the muxws client transport', () => {
     const late: boolean[] = [];
     transport.onHealth((healthy) => late.push(healthy));
     expect(late).toEqual([false]);
+  });
+
+  it("shares the peer's one stream handler with the fastapi-viewsets event client", async () => {
+    // A stream carrying `:event` is the event client's, and every other one is an envelope, so one
+    // peer carries both libraries' pushes. The handler stays installed after detaching.
+    const peer = new FakePeer();
+    peer.response = { rev: 1 };
+    const seen: Envelope[] = [];
+    const transport = new MuxwsClientTransport({ peer: peer as never });
+    const detach = transport.subscribe((e) => seen.push(e));
+    const events = createEventClient({ basePath: '/events', peer: peer as never });
+    const received: unknown[] = [];
+    const subscription = events.subscribe('imports', defineEvent<{ rows: number }>('import_finished'), {
+      onEvent: (payload) => received.push(payload),
+      onResync: () => undefined,
+    });
+    await subscription.ready;
+    const event = { ':event': 'import_finished', ':topic': 'imports', ':rev': 2, ':prev': 1, ':version': 1 };
+
+    peer.push({ rows: 412 }, event);
+    peer.push(envelope());
+    expect(received).toEqual([{ rows: 412 }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].kind).toBe('progress');
+
+    detach();
+    peer.push({ rows: 7 }, { ...event, ':rev': 3, ':prev': 2 });
+    expect(received).toEqual([{ rows: 412 }, { rows: 7 }]);
+    events.close();
   });
 
   it('attaches to a client without taking anything away from it (TW-TR-006)', () => {
