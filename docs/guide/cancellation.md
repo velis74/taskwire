@@ -1,6 +1,6 @@
 # Cancellation
 
-```
+```text
 POST /taskwire/{token}/cancel   ->  202
 ```
 

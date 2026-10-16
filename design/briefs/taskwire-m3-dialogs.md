@@ -422,6 +422,7 @@ Wire fixtures (read in place, `models_test.py`):
       their own entry; answering one leaves the other blocked (test 18).
 - [ ] An operation started with no `result_kind` shows its question in a second tab's register while
       it is open, and vanishes from that register again when it is answered (test 28).
+<!-- markdownlint-disable-next-line MD013 -->
 - [ ] `grep -rniE "timeout_at|dialog_timeout|DialogTimeout|expire_dialog|expired|timed_out" taskwire/ --include='*.py' | grep -v _test`
       returns nothing except the `code: "dialog_timeout"` constant reserved for M4's Celery path.
 - [ ] `grep -rn "dialog_id" taskwire/ --include='*.py' | grep -v _test` shows it used only as a

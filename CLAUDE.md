@@ -17,10 +17,10 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 273 pass, 9 skip
-npx vitest run                                            # 401 pass
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 324 pass, 13 skip
+npx vitest run                                            # 426 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
-npx eslint ts --fix && npx vue-tsc --noEmit
+npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
 python demo.py                                            # both halves, Ctrl-C stops the pair
 python demo/e2e/run_e2e.py                                # the two halves against each other, ~3 min
 ```
@@ -59,16 +59,14 @@ known token with a reason — `409 already_terminal`, `410` on a withdrawn dialo
 ## fastapi-viewsets
 
 `~/Projects/@dynamicforms/fastapi-viewsets`, published as `dynamicforms-fastapi-viewsets` (PyPI) and
-`@dynamicforms/fastapi-viewsets` (npm). **taskwire uses it to build its REST API.** It is a tool,
-not a consumer — the arrow the design document drew (`fastapi-viewsets --optional--> taskwire`) was
-wrong and has been corrected; see the amendment note in `design/taskwire-spec.md` §2.1.
+`@dynamicforms/fastapi-viewsets` (npm). **taskwire uses it to build its REST API**, and depends on
+it, never the reverse (`design/taskwire-spec.md` §2.1).
 
-Separately, and later, fastapi-viewsets will gain an extension point that opens a taskwire
-`operation()` around **every viewset action automatically**, and will declare the same viewsets over
-muxws. That work happens in *that* repository. **Every hook taskwire owes it is built**: `operation()`,
-the ambient reporter (`taskwire/ambient.py`), the header constants (`taskwire/headers.py`) and
-`wrap_sync_runner` (TW-CELERY-007) — the worker-side entry its Celery server wraps its own
-`run_until_complete` with. `NEXT.md` item 1 is the three edits left on that side.
+It is also one of four adapters for **tracked calls** (TW-CALL-*). The tracking itself is
+`taskwire/calls.py` and `ts/call-tracking.ts` and names no framework; `TaskwireMiddleware` binds it to
+fastapi-viewsets 0.9.0's `Middleware` (`__call__` receives a call, `execute()` runs where the action
+executes, a Celery worker included), beside `contrib/asgi.py`, `contrib/wsgi.py` and `trackFetch`.
+A feature that reaches tracked calls through one adapter only is incomplete.
 
 Two traps found in it, worth remembering:
 
@@ -82,8 +80,6 @@ Two traps found in it, worth remembering:
 
 ## House rules
 
-- **Slovenian to the user, English in the code.** No attribution to Claude or Anthropic anywhere —
-  not in commits, code, comments or docs. Write commits as a human developer would.
 - **No workflows, no subagents.** They burn credit without adding value here.
 - **Unit tests: reasonable, not excessive.** At muxws the tests ran 2.5× the code under test and
   still missed what the demo found in a minute. Target >95 % coverage but not at any cost. The
@@ -117,10 +113,7 @@ whichever tab happens to be open, and an entry the register loop adopted has no 
 a different set of readers (TW-REG-002). Latency is asserted for the same reason — a row that arrives
 eventually is not a row that arrived.
 
-**Next, in order** — the detail is in `NEXT.md`:
+**Next**: CI and publishing; the rest of the queue is in `NEXT.md`.
 
-1. Adopting `wrap_sync_runner` in fastapi-viewsets — three edits, all in that repository.
-2. CI and publishing.
-
-**The seam that has never run**: `wrap_sync_runner` against a real Celery worker — its tests drive
-the runner directly, because the caller that will apply it has not been changed yet.
+**The seam that has never run**: a `celery_viewset` action in a real Celery worker. Its test drives
+the worker's `lifecycle_runner` directly with a carried `Context`.

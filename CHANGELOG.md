@@ -6,9 +6,56 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- Tracked calls: a request or command that carries `X-Taskwire-Token`, or a UUID `Idempotency-Key`
+  on a method other than `GET`, `HEAD` and `OPTIONS`, is an operation under that token, reported from
+  `queued` to its terminal state. `taskwire.calls` holds the framework-free primitives — `call_token`,
+  `Call`, `receive_call`, `execute_call`, `hand_off`, `status_error` — and `ts/call-tracking.ts` their
+  TypeScript twins `callToken`, `receiveCall`, `executeCall`, `callFromCarried` and `statusError`.
+- Adapters for tracked calls: `taskwire.contrib.asgi.track_calls`, `taskwire.contrib.wsgi.track_calls`
+  and `trackFetch` for a WHATWG `fetch` handler.
+- `taskwire.contrib.viewsets.TaskwireMiddleware`, the binding for fastapi-viewsets 0.9.0: it receives
+  a call in the command middleware chain and executes it where the action executes, in the web
+  process or in the Celery worker. `track_viewset_calls()` lists it and the context processor.
+  `@action_configuration({TaskwireMiddleware: {"result_kind": kind}})` declares an action's result
+  kind and `{TaskwireMiddleware: False}` leaves it untracked.
+- `OperationScope.hand_off()` (Python) and `OperationScope.handOff()` / `failWith()` (TypeScript).
+- The reserved error codes `not_executed` and `http_status`.
+- `tw.trackCall(call, handler, options?)` follows the operation under `call.key` and removes the
+  handler when the operation ends; `tw.awaitCall(call, handler, options?)` does the same and resolves
+  with the call's outcome. `KeyedCall<R>` is the type of `call`.
+- `tw.headers()`: the headers a request made now carries, for an HTTP client other than axios.
+- `attachMuxws` registers an open interceptor on the peer: every stream opened on it carries
+  `X-Taskwire-Connection` and, inside `run()`, `X-Taskwire-Token`. `detachMuxws` removes it.
+- `taskwire/vuetify`: `TaskwireOperations`, a list of every operation in `tw.register` with select,
+  cancel, collect and dismiss; and `TaskwireProgressDialog`, a dialog over `tw.operations` that
+  shows no operation ending inside `progressUi.delay`.
+
+### Changed
+
+- `register_taskwire_rest` tracks the application's viewset calls: it lists `TaskwireMiddleware`
+  unless called with `track_calls=False`. A viewset action called with a token runs inside
+  `operation()` for that token, which ends when the action returns.
+- `taskwire_context_processor` puts `call_token()` of the request under `context["taskwire_token"]`.
+- `DISPATCH_FAILED` and `DIALOG_TIMEOUT` are defined in `taskwire.calls`; `taskwire.contrib.celery`
+  re-exports them.
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets >= 0.9.0`. The npm
+  package's optional peer dependencies require `@dynamicforms/fastapi-viewsets ^0.9.0` and
+  `muxws ^0.4.0`.
+
+### Removed
+
+- `taskwire.contrib.celery.wrap_sync_runner`, `register_taskwire_celery_viewset`, `TOKEN_KWARG` and
+  `SESSION_KWARG`. fastapi-viewsets 0.9.0 has no Celery kwargs or dispatch hooks; a `celery_viewset`
+  action is reported by `TaskwireMiddleware` in the worker.
+
 ## [0.1.0] - 2026-08-23
 
 ### Added
+
 - Initial release: progress reporting and awaitable dialogs for long-running operations, one
   protocol implemented three ways — a local in-process transport, REST, and a WebSocket transport
   over `muxws` — with the store as the single source of truth and a push as only an accelerator.

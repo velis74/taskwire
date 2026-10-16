@@ -86,6 +86,13 @@ export interface TrackOptions {
 }
 
 /**
+ * A call whose `key` is the token of the operation it starts: a `ViewSetCall` from
+ * `@dynamicforms/fastapi-viewsets`, whose `key` is the call's `Idempotency-Key` (TW-CALL-001), or
+ * any promise carrying a token under that name.
+ */
+export type KeyedCall<R> = PromiseLike<R> & { readonly key?: string };
+
+/**
  * The raw single-token surface. `subscribe()` hands back snapshots as they are read and nothing else -
  * no handle, no lifecycle, no promise.
  *
@@ -208,6 +215,15 @@ export function resetTaskwireConfig(): void {
  * else - the ambient token is the *only* condition under which the header is written.
  */
 let ambientToken: string | null = null;
+
+/**
+ * @internal The token `run()` has bound, or `null` outside the synchronous part of its `fn`. What
+ * `taskwire/muxws` stamps on the streams an application opens, as the axios interceptor below stamps
+ * requests (TW-TS-003, TW-TS-020).
+ */
+export function ambientTaskwireToken(): string | null {
+  return ambientToken;
+}
 
 function statusOf(error: unknown): number | null {
   const response = (error as { response?: { status?: unknown } } | null | undefined)?.response;
@@ -345,10 +361,12 @@ class TokenPoller {
    * cannot express.
    *
    * Nothing here while a transport carries the token: it delivers the same change sooner, and the
-   * ladder is held for exactly that reason (TW-TS-007).
+   * ladder is held for exactly that reason (TW-TS-007). `force` reads regardless: a settled viewset
+   * call is decided by one read of its token, and a call the server did not track pushes nothing
+   * that could decide it (TW-TS-019).
    */
-  readNow(): void {
-    if (this.stopped || !this.wanted || this.suspended) return;
+  readNow(force = false): void {
+    if (this.stopped || !this.wanted || (this.suspended && !force)) return;
     // A read on the wire was issued before the write landed, so it will answer with the document as
     // it stood before it. The request is owed rather than dropped, and `tick()` issues it on the way
     // out - where it also knows the rung it would otherwise have scheduled is the wrong one.
@@ -449,7 +467,7 @@ class TokenPoller {
     // already made wrong.
     if (this.owed) {
       this.owed = false;
-      this.readNow();
+      this.readNow(true);
       return;
     }
     // A read that landed after the ladder was suspended is delivered and not followed up: the
@@ -681,10 +699,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     // even for the synchronous form the ambient binding exists to serve.
     this.interceptorId = this.http.interceptors.request.use(
       (config: InternalAxiosRequestConfig) => {
-        if (ambientToken !== null) config.headers.set(TOKEN_HEADER, ambientToken);
-        // Beside the token when there is one, and on every read too: the adapter fills
-        // `Client.connection` from this one header for both purposes (TW-REST-002).
-        if (this.connectionId !== null) config.headers.set(CONNECTION_HEADER, this.connectionId);
+        for (const [name, value] of Object.entries(this.headers())) config.headers.set(name, value);
         return config;
       },
       null,
@@ -754,7 +769,62 @@ export class Taskwire implements OperationHost, RegisterClient {
   run<T>(fn: (token: string) => Promise<T>, options: RunOptions = {}): Operation<T> {
     const token = new_token();
     this.minted.add(token);
-    const promise = this.bind(token, fn);
+    return this.follow(token, this.bind(token, fn), options, false);
+  }
+
+  /**
+   * Call `handler` with the operation of `call` on every change, until the operation is `done`,
+   * `failed` or `cancelled`, or its handle closes (TW-TS-019). Returns the function that removes the
+   * handler earlier.
+   *
+   * The token is `call.key`: the `Idempotency-Key` a fastapi-viewsets proxy put on the call, which
+   * the server tracks the call under (TW-CALL-001). The handle is minted here as `run()` mints one:
+   * `startedHere`, entered into `tw.operations` after `progressUi.delay`, awaitable as `call` itself
+   * (TW-TS-002). When `call` settles the token is read once more, whether or not a transport holds
+   * the ladder, and a token that has no document then is dropped silently (TW-TS-004): the server did
+   * not track that call. A call issued inside `run()` carries `run()`'s token, which the server tracks
+   * it under instead of its key; such a call is followed through the handle `run()` returns. A second
+   * registration for the same key shares the first one's handle (TW-TS-005).
+   *
+   * Throws `TypeError` when `call` carries no `key`: a proxy method that awaits before it issues its
+   * request returns a promise without one.
+   */
+  trackCall<R>(call: KeyedCall<R>, handler: (operation: Operation<R>) => void, options: RunOptions = {}): () => void {
+    const token = call.key;
+    if (typeof token !== 'string') throw new TypeError('trackCall() takes a call with a `key`');
+    const handle = (this.handles.get(token) as Operation<R> | undefined) ?? this.followCall(token, call, options);
+    const stop = handle.onChange((operation) => {
+      const progress = operation.progress;
+      if (operation.closed || (progress !== null && isTerminal(progress))) stop();
+      handler(operation);
+    });
+    return stop;
+  }
+
+  /**
+   * `trackCall(call, handler, options)`, and `call`'s own outcome: resolves with what `call` resolved
+   * to and rejects with what it rejected with. The handler stays registered past that until the
+   * operation ends, as `trackCall()` leaves it.
+   */
+  awaitCall<R>(call: KeyedCall<R>, handler: (operation: Operation<R>) => void, options: RunOptions = {}): Promise<R> {
+    this.trackCall(call, handler, options);
+    return Promise.resolve(call);
+  }
+
+  private followCall<R>(token: string, call: KeyedCall<R>, options: RunOptions): Operation<R> {
+    this.minted.add(token);
+    const promise = new Promise<R>((resolve, reject) => {
+      call.then(resolve, reject);
+    });
+    return this.follow(token, promise, options, true);
+  }
+
+  /**
+   * One handle for a token this page minted, settled by `promise` (TW-TS-002). `readOnSettle` reads
+   * the token as soon as `promise` settles instead of on the ladder's next rung: a viewset call
+   * settles after its action has run, so that read finds the terminal document, or none.
+   */
+  private follow<T>(token: string, promise: Promise<T>, options: RunOptions, readOnSettle: boolean): Operation<T> {
     const handle = this.attach<T>(token, {
       promise,
       title: options.title,
@@ -762,7 +832,10 @@ export class Taskwire implements OperationHost, RegisterClient {
       startedHere: true,
     });
     const poller = this.pollerFor(token);
-    const settled = (): void => poller.searchIsOver();
+    const settled = (): void => {
+      poller.searchIsOver();
+      if (readOnSettle) poller.readNow(true);
+    };
     // The command's answer is the earliest moment a row can be shown. The front end mints the token
     // and sends it with its own command, and the server writes `queued` before it replies
     // (TW-CORE-007) - so a reply is proof that the register can already answer for this token, and
@@ -846,6 +919,19 @@ export class Taskwire implements OperationHost, RegisterClient {
   /** The id this client stamps on its requests, or `null` when no socket has declared one. */
   get connection(): string | null {
     return this.connectionId;
+  }
+
+  /**
+   * The headers taskwire puts on a request made now: `X-Taskwire-Token` while `run()` has a token
+   * bound, and `X-Taskwire-Connection` once a socket declared an id (TW-TS-003, TW-REST-002). The
+   * axios interceptor writes exactly these; a request made with any other HTTP client spreads them
+   * into its own headers, in the synchronous part of `run()`'s `fn`.
+   */
+  headers(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (ambientToken !== null) headers[TOKEN_HEADER] = ambientToken;
+    if (this.connectionId !== null) headers[CONNECTION_HEADER] = this.connectionId;
+    return headers;
   }
 
   /**

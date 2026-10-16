@@ -62,11 +62,18 @@ def store() -> Iterator[taskwire.MemoryStore]:
     memory = taskwire.MemoryStore()
     taskwire.configure(store=memory, transport=taskwire.NullTransport(), session_resolver=_resolve_session)
     yield memory
-    # The processor list is a module-level singleton of the *other* library; leaving taskwire's
-    # processor on it would make every later test in the session resolve a namespace it never asked
-    # for.
+    # The processor and middleware lists are module-level state of the *other* library; leaving
+    # taskwire's on them would make every later test in the session resolve a namespace and track
+    # operations it never asked for.
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
     if taskwire_context_processor in viewset_settings.viewsets_context_processors:
         viewset_settings.viewsets_context_processors.remove(taskwire_context_processor)
+    viewset_settings.viewsets_command_middleware = [
+        middleware
+        for middleware in viewset_settings.viewsets_command_middleware
+        if not isinstance(middleware, TaskwireMiddleware)
+    ]
     taskwire.reset_configuration()
 
 
@@ -317,16 +324,24 @@ class CommandStream:
         return self.reply_headers[STATUS_KEY]
 
 
-def command(method: str, path: str, *, body: Any = None, user: str = "alice") -> CommandStream:
-    """One inbound command stream, through the real `process_command`.
+def command(
+    http: TestClient,
+    method: str,
+    path: str,
+    *,
+    body: Any = None,
+    user: str = "alice",
+    headers: dict[str, str] | None = None,
+) -> CommandStream:
+    """One inbound command stream, through the real `process_command` and the test's application.
 
-    `connection=None` because there is no handshake here; the stream states the header itself, which
+    No `connection` because there is no handshake here; the stream states the header itself, which
     is the layer that wins over the handshake anyway.
     """
     from fastapi_viewsets.mux_ws import METHOD_KEY, PATH_KEY, process_command
 
-    stream = CommandStream({METHOD_KEY: method, PATH_KEY: path, USER_HEADER.lower(): user})
-    assert run(process_command(body, stream)) is True, "the stream was not recognised as a command"
+    stream = CommandStream({METHOD_KEY: method, PATH_KEY: path, USER_HEADER.lower(): user, **(headers or {})})
+    assert run(process_command(body, stream, app=http.app)) is True, "the stream was not recognised as a command"
     return stream
 
 
@@ -341,18 +356,18 @@ def test_the_same_six_endpoints_answer_over_a_muxws_stream(http: TestClient) -> 
     """
     token = http.post("/start", headers=HEADERS).json()["token"]
 
-    listing = command("GET", "/taskwire")
+    listing = command(http, "GET", "/taskwire")
     assert listing.status == 200
     assert [row["token"] for row in listing.payload["operations"]] == [token]
     assert listing.payload["poll_after_ms"] > 0
 
-    snapshot = command("GET", f"/taskwire/{token}")
+    snapshot = command(http, "GET", f"/taskwire/{token}")
     assert snapshot.status == 200
     assert snapshot.payload["progress"]["state"] == "queued"
 
-    cancelled = command("POST", f"/taskwire/{token}/cancel")
+    cancelled = command(http, "POST", f"/taskwire/{token}/cancel")
     assert cancelled.status == 202, "TW-CANCEL-003 holds on whichever transport asked"
-    assert command("GET", f"/taskwire/{token}").payload["cancel_requested"] is True
+    assert command(http, "GET", f"/taskwire/{token}").payload["cancel_requested"] is True
 
 
 def test_the_namespace_over_a_stream_is_the_one_the_resolver_returns(http: TestClient) -> None:
@@ -365,9 +380,9 @@ def test_the_namespace_over_a_stream_is_the_one_the_resolver_returns(http: TestC
     """
     token = http.post("/start", headers={USER_HEADER: "alice"}).json()["token"]
 
-    assert command("GET", f"/taskwire/{token}", user="alice").status == 200
-    assert command("GET", f"/taskwire/{token}", user="bob").status == 404
-    assert command("GET", "/taskwire", user="bob").payload["operations"] == []
+    assert command(http, "GET", f"/taskwire/{token}", user="alice").status == 200
+    assert command(http, "GET", f"/taskwire/{token}", user="bob").status == 404
+    assert command(http, "GET", "/taskwire", user="bob").payload["operations"] == []
 
 
 def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
@@ -395,9 +410,301 @@ def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
         )
     )
 
-    answered = command("POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "yes", "values": {}})
+    answered = command(http, "POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "yes", "values": {}})
     assert answered.status == 204
     assert answered.payload is None, "204 carries no body over a stream either"
 
-    second = command("POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
+    second = command(http, "POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
     assert second.status == 409, "the store arbitrated, and the second answer lost"
+
+
+# ------------------------------------------------------------------ tracked viewset calls (TW-CALL-*)
+
+KEY_HEADER = "Idempotency-Key"
+
+
+class _Refuse:
+    """A command middleware after `TaskwireMiddleware` that rejects a call before its action runs."""
+
+    async def __call__(self, request: Request | None, _viewset: Any, _context: Any, call_next: Any) -> Any:
+        if request is not None and request.headers.get("x-test-refuse"):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=403, detail="refused")
+        return await call_next()
+
+
+class ItemViewSet:
+    """An application viewset. Declared at module level: a deferred action is looked up on its class."""
+
+    from fastapi_viewsets.action_configuration import action_configuration
+
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
+    __router = APIRouter()
+
+    @__router.post("export")
+    @taskwire.panel_result("acme.export")
+    async def export(self) -> dict:
+        await taskwire.progress.set(percent=50)
+        return {"token": taskwire.progress.token}
+
+    @__router.post("plain")
+    async def plain(self) -> dict:
+        return {"token": taskwire.progress.token}
+
+    @__router.get("read")
+    async def read(self) -> dict:
+        return {"token": taskwire.progress.token}
+
+    @__router.post("opted-out")
+    @action_configuration({TaskwireMiddleware: False})
+    async def opted_out(self) -> dict:
+        return {"token": taskwire.progress.token}
+
+    @__router.post("deferred")
+    async def deferred(self, outcome: str = "done") -> dict:
+        """Stands in for a `celery_viewset_client` method: it hands the call on instead of executing."""
+        from fastapi_viewsets.exceptions import ActionDispatchError, ResultTimeoutError
+
+        if outcome == "dispatch":
+            raise ActionDispatchError("items.deferred")
+        if outcome == "timeout":
+            raise ResultTimeoutError("items.deferred", 1.0)
+        return {"token": taskwire.progress.token}
+
+
+ItemViewSet.__viewset_deferred_actions__ = frozenset({"deferred"})
+
+
+@pytest.fixture
+def tracked(store: taskwire.MemoryStore) -> Iterator[tuple[TestClient, list[taskwire.Envelope]]]:
+    """`ItemViewSet` behind `TaskwireMiddleware`, and every envelope its calls publish."""
+    from fastapi_viewsets.conf import settings as viewset_settings
+    from fastapi_viewsets.decorators.route_viewset import route_viewset
+
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
+    seen: list[taskwire.Envelope] = []
+
+    class Recorder(taskwire.TaskwireTransport):
+        async def notify(self, session: str, envelope: taskwire.Envelope) -> None:  # noqa: ARG002
+            seen.append(envelope)
+
+    taskwire.configure(transport=Recorder())
+    previous = viewset_settings.viewsets_command_middleware
+    viewset_settings.viewsets_command_middleware = [TaskwireMiddleware(), _Refuse()]
+
+    app = _make_app(store)
+    router = APIRouter()
+    route_viewset(router, "/items")(ItemViewSet)
+    app.include_router(router)
+    try:
+        with TestClient(app) as client:
+            yield client, seen
+    finally:
+        viewset_settings.viewsets_command_middleware = previous
+
+
+def _states(seen: list[taskwire.Envelope], token: str) -> list[str]:
+    return [envelope.body["state"] for envelope in seen if envelope.token == token]
+
+
+def _ended(store: taskwire.MemoryStore, token: str) -> Any:
+    snapshot = run(store.snapshot(taskwire.key("ns:alice", token)))
+    assert snapshot is not None
+    return snapshot.progress
+
+
+def test_the_idempotency_key_is_the_token_of_a_tracked_call(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-001, TW-CALL-101: `queued` from the command chain, `running` and `done` around the
+    action, under the key of `Idempotency-Key`."""
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    answer = http.post("/items/export", headers={**HEADERS, KEY_HEADER: f'"{key}"', CONNECTION_HEADER: "conn-1"})
+
+    assert answer.status_code == 200
+    assert answer.json() == {"token": key}, "the ambient reporter is bound around the action"
+    assert _states(seen, key) == ["queued", "running", "done"]
+    ended = _ended(store, key)
+    assert ended.result_kind == "acme.export", "declared by the result decorator (TW-CALL-103)"
+    assert ended.origin_connection == "conn-1"
+
+
+def test_x_taskwire_token_wins_and_tracks_a_read(tracked) -> None:
+    """TW-CALL-001, TW-CALL-002: the explicit token wins over the key, and is what tracks a GET."""
+    http, seen = tracked
+    token, key = taskwire.new_token(), taskwire.new_token()
+
+    answer = http.get("/items/read", headers={**HEADERS, KEY_HEADER: f'"{key}"', taskwire.TOKEN_HEADER: token})
+
+    assert answer.json() == {"token": token}
+    assert _states(seen, token) == ["queued", "running", "done"]
+    assert _states(seen, key) == []
+
+
+def test_an_operation_without_a_result_kind_is_private(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-103, TW-PRIV-001: no declared kind, no listing."""
+    http, _ = tracked
+    key = taskwire.new_token()
+
+    http.post("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"'})
+
+    assert _ended(store, key).result_kind is None
+
+
+def test_a_call_without_a_usable_token_runs_untracked(tracked) -> None:
+    """TW-CALL-001, TW-CALL-002, TW-CALL-102: a key that is no UUID, a malformed header, a read with
+    only a key, an opted-out action and a call to taskwire's own viewset all run untracked."""
+    http, seen = tracked
+
+    assert http.post("/items/plain", headers={**HEADERS, KEY_HEADER: '"not-a-uuid"'}).json() == {"token": None}
+    assert http.post("/items/plain", headers={**HEADERS, KEY_HEADER: "unquoted"}).json() == {"token": None}
+    assert http.get("/items/read", headers={**HEADERS, KEY_HEADER: f'"{taskwire.new_token()}"'}).json() == {
+        "token": None
+    }
+    assert http.post("/items/opted-out", headers={**HEADERS, KEY_HEADER: f'"{taskwire.new_token()}"'}).json() == {
+        "token": None
+    }
+    assert http.get("/taskwire", headers={**HEADERS, taskwire.TOKEN_HEADER: taskwire.new_token()}).status_code == 200
+
+    assert seen == []
+
+
+def test_a_call_rejected_before_its_action_ends_failed(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-005: an operation still `queued` when its call ends is `failed`, `not_executed`."""
+    from taskwire.calls import NOT_EXECUTED
+
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    answer = http.post("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"', "X-Test-Refuse": "1"})
+
+    assert answer.status_code == 403
+    assert _states(seen, key) == ["queued", "failed"]
+    error = _ended(store, key).error
+    assert (error.code, error.retryable) == (NOT_EXECUTED, False)
+
+
+def test_a_deferred_action_is_ended_by_how_its_hand_off_went(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-005, TW-CALL-101: the web process never executes a deferred action. A send the broker
+    refused is `dispatch_failed`, a result wait that timed out leaves the operation `queued`, and a call
+    that came back with its operation still `queued` was not executed."""
+    from taskwire.calls import DISPATCH_FAILED, NOT_EXECUTED
+
+    http, seen = tracked
+    refused, waited, returned = taskwire.new_token(), taskwire.new_token(), taskwire.new_token()
+
+    assert (
+        http.post("/items/deferred?outcome=dispatch", headers={**HEADERS, KEY_HEADER: f'"{refused}"'}).status_code
+        == 503
+    )
+    http.post("/items/deferred?outcome=timeout", headers={**HEADERS, KEY_HEADER: f'"{waited}"'})
+    assert http.post("/items/deferred", headers={**HEADERS, KEY_HEADER: f'"{returned}"'}).json() == {"token": None}
+
+    error = _ended(store, refused).error
+    assert (error.code, error.retryable) == (DISPATCH_FAILED, True)
+    assert _states(seen, waited) == ["queued"]
+    assert _ended(store, returned).error.code == NOT_EXECUTED
+
+
+def test_the_executor_reports_a_deferred_action_from_its_carried_context(store: taskwire.MemoryStore) -> None:
+    """TW-CALL-101: in the executor's process `execute()` runs around the action with the context the
+    call carried, and an action dispatched from inside another one reports into nothing of its own."""
+    from fastapi_viewsets.conf import settings as viewset_settings
+    from fastapi_viewsets.context import Context
+    from fastapi_viewsets.decorators.lifecycle_runner import lifecycle_runner
+    from fastapi_viewsets.middleware import ExecutionRef
+
+    from taskwire.contrib.viewsets import SESSION_KEY, TOKEN_KEY, track_viewset_calls
+
+    class WorkerViewSet:
+        async def work(self) -> str | None:
+            await taskwire.progress.set(percent=10)
+            return taskwire.progress.token
+
+    previous = list(viewset_settings.viewsets_command_middleware)
+    track_viewset_calls()
+    try:
+        token = taskwire.new_token()
+        carried = Context({TOKEN_KEY: token, SESSION_KEY: "ns:alice"})
+        executed = run(lifecycle_runner(WorkerViewSet.work, WorkerViewSet(), WorkerViewSet, context=carried))
+        nested = run(
+            lifecycle_runner(
+                WorkerViewSet.work,
+                WorkerViewSet(),
+                WorkerViewSet,
+                context=Context({TOKEN_KEY: taskwire.new_token(), SESSION_KEY: "ns:alice"}),
+                parent=ExecutionRef("acme.Parent", "start"),
+            )
+        )
+    finally:
+        viewset_settings.viewsets_command_middleware = previous
+
+    assert executed == token
+    assert _ended(store, token).state == "done"
+    assert nested is None
+
+
+def test_a_command_stream_is_tracked_by_its_idempotency_key(tracked) -> None:
+    """TW-CALL-001 on muxws: the stream's own headers carry the key, as a request's do."""
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    stream = command(http, "POST", "/items/plain", headers={KEY_HEADER.lower(): f'"{key}"'})
+
+    assert stream.status == 200
+    assert stream.payload == {"token": key}
+    assert _states(seen, key) == ["queued", "running", "done"]
+
+
+def test_a_repeat_that_executes_anew_starts_a_fresh_operation(tracked, store: taskwire.MemoryStore) -> None:
+    """TW-CALL-003: a call under a key whose operation is terminal replaces the tombstone."""
+    http, seen = tracked
+    key = taskwire.new_token()
+    headers = {**HEADERS, KEY_HEADER: f'"{key}"'}
+
+    assert http.post("/items/plain", headers={**headers, "X-Test-Refuse": "1"}).status_code == 403
+    assert http.post("/items/plain", headers=headers).json() == {"token": key}
+
+    assert _states(seen, key) == ["queued", "failed", "queued", "running", "done"]
+    ended = _ended(store, key)
+    assert ended.state == "done"
+    assert ended.error is None
+
+
+@pytest.mark.usefixtures("store")
+def test_register_taskwire_rest_tracks_the_applications_calls() -> None:
+    """TW-CALL-101: the registration call is the whole of the wiring; `track_calls=False` leaves it out."""
+    from fastapi_viewsets.conf import settings as viewset_settings
+
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
+    def listed() -> int:
+        return sum(isinstance(m, TaskwireMiddleware) for m in viewset_settings.viewsets_command_middleware)
+
+    register_taskwire_rest(APIRouter(), track_calls=False)
+    assert listed() == 0
+    register_taskwire_rest(APIRouter())
+    register_taskwire_rest(APIRouter())
+    assert listed() == 1
+
+
+def test_an_action_whose_running_write_failed_is_not_failed_unexecuted(
+    tracked, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TW-CALL-004, TW-CALL-005: a store failure on entry runs the action unreported, and the receipt
+    does not end that operation `not_executed`."""
+    import taskwire.calls as calls
+
+    class _Unreachable:
+        async def __aenter__(self) -> None:
+            raise ConnectionError("store down")
+
+    monkeypatch.setattr(calls, "operation", lambda *_args, **_kwargs: _Unreachable())
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    assert http.post("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"'}).status_code == 200
+    assert _states(seen, key) == ["queued"]

@@ -32,16 +32,56 @@ interceptor back off the axios instance.
 ```ts
 tw.run(fn, { title?, resultKind?, progressUi? });   // mint a token, bind it, hand it to fn
 tw.track(token, { title?, resultKind? });           // watch a token somebody else minted
+tw.trackCall(call, handler, { title?, resultKind?, progressUi? });   // follow a call by its key
+tw.awaitCall(call, handler, { title?, resultKind?, progressUi? });   // ... and resolve with it
 tw.subscribe(token);                                // raw snapshots, no handle and no lifecycle
 tw.onRegisterChange(cb);  tw.onOperationsChange(cb);
 tw.select(token | null);  tw.show(token);  tw.hide(token);
 tw.attachTransport(transport);  tw.detachTransport();
 tw.setConnection(id | null);    tw.connection;
+tw.headers();                       // the two headers a request made now carries
 ```
 
 `run()` mints the token and binds it for the **synchronous** part of `fn`, so the request `fn` issues
 carries `X-Taskwire-Token`. A callback that awaits before it requests sends no header, and the server
 then mints a token of its own that nothing is watching.
+
+`headers()` returns `X-Taskwire-Token` while `run()` has a token bound and `X-Taskwire-Connection`
+once a socket declared an id — exactly what the axios interceptor writes — for a request made with
+any other HTTP client.
+
+### Following a call
+
+A call whose promise carries the token it is tracked under as `key` is followed by that key
+([Tracking calls](../guide/tracking-calls.md)). Every call a fastapi-viewsets proxy makes returns a
+`ViewSetCall`, a promise carrying the call's `Idempotency-Key` as `key`. A call made inside `run()`
+carries `X-Taskwire-Token`, and the server tracks it under `run()`'s token instead; such a call is
+followed through the handle `run()` returns, not through `trackCall`.
+
+```ts
+const call = api.import(rows);                   // ViewSetCall<ImportReport>
+const stop = tw.trackCall(call, (operation) => {
+  bar.value = operation.progress?.percent ?? null;
+});
+
+const report = await tw.awaitCall(api.import(rows), (operation) => { /* ... */ });
+```
+
+`trackCall(call, handler, options?)` calls `handler` with the operation's handle on every change.
+The handler is removed after the change that ends the operation — `done`, `failed`, `cancelled`, or
+the handle closing — and that change is the last one it receives; the returned function removes it
+earlier. `awaitCall(call, handler, options?)` registers the same handler and resolves or rejects
+exactly as `call` does; the handler stays registered until the operation ends.
+
+The handle is minted as `run()` mints one: `startedHere`, joining `tw.operations` after
+`progressUi.delay`, and awaitable as `call`. Two registrations for one key share one handle. When
+`call` settles, the client reads the token once more at once, also while a transport holds the
+ladder: a call the server did not track has no document and its handle is dropped silently, after
+one call of the handler with a closed handle.
+
+`call` is any `KeyedCall<R>` — `PromiseLike<R> & { readonly key?: string }`. A call without a string
+`key` throws `TypeError`; a proxy method that awaits before it issues its request returns a promise
+without one. The server tracks a key that is a UUID, which is what the proxy generates.
 
 ### The handle
 
@@ -171,6 +211,31 @@ before it sends the command.
 A store publishes through its `dispatch` option, which is what a transport is wired to; without one a
 `MemoryStore` keeps state correctly and pushes nothing.
 
+`OperationScope.handOff()` makes the disposal write no state, for an operation another process
+continues; `failWith(error)` names the error the block ends `failed` with.
+
+### Tracked calls
+
+```ts
+import { callToken, executeCall, receiveCall, trackFetch } from 'taskwire';
+
+callToken(headers, method?)                                   // string | null
+receiveCall(call, { store, dispatchError?, pendingError? }, (receipt) => ...)
+receipt.execute((execution) => ...)                           // execution: CallExecution | null
+executeCall(call, { store }, (execution) => ...)              // the receiving side of a hand-off
+execution.handOff((carried) => queue.send(carried))           // { token, ns }
+execution.fail(statusError(503)!)
+trackFetch(handler, { store, resolveNs, excludePrefix?, resultKind? })
+```
+
+The same rules as `taskwire.calls` in Python ([Tracking calls](../guide/tracking-calls.md)), with the
+execution passed to the body instead of bound: `execution.reporter` is the operation's reporter.
+`dispatchError` and `pendingError` are predicates over the error the body threw. `callFromCarried()`
+turns carried values back into a `Call`. `trackFetch` wraps a WHATWG `fetch` handler
+`(request, execution) => Promise<Response>`: a request carrying a token runs inside a receipt and an
+execution, a status of 400 or more ends its operation `http_status`, and requests under
+`excludePrefix` (default `DEFAULT_BASE_PATH`) pass through.
+
 `store.commit()` answers with `{ rev, cancelled }` — both of a write's outcomes at once, so a
 reporter refreshing `cancelled` after every commit costs one round trip rather than two.
 
@@ -183,7 +248,8 @@ The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `fl
 |---|---|
 | `RedisStore` and the pub/sub backplane | the polling client and its ladder |
 | the Celery worker entry | the `/vue` and `/vuetify` subpaths |
-| the FastAPI / ASGI adapters, and the muxws server half | `tw.register`, `tw.aggregate`, `tw.selected` |
+| the FastAPI / ASGI / WSGI adapters, and the muxws server half | `tw.register`, `tw.aggregate`, `tw.selected` |
+| `timeout_errors` and `dialog_timeout` on an executor's limit | `trackFetch` |
 | the ambient `progress` proxy | the tab-hint rules |
 
 The ambient proxy is the one worth knowing about: `contextvars` has no browser equivalent, and an
@@ -203,10 +269,13 @@ detachMuxws(tw);                                 // back to polling; the socket 
 ```
 
 Attaching does two things: it takes the pushes, and it moves the six calls of TW-REST-004 onto the
-socket. `{ routeCalls: false }` takes the pushes and leaves the calls on HTTP, and `{ basePath }`
-names the prefix the viewset is mounted under when it is not the client's own. The connection id
-needs no option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the
-socket puts every ladder back on its base rung. taskwire never dials a socket and never closes one.
+socket. While attached, every stream opened on the peer — the application's own commands included —
+carries `X-Taskwire-Connection` once the socket has an id, and `X-Taskwire-Token` when it is opened
+in the synchronous part of a `run()` callback, as the axios interceptor writes them on a request.
+`{ routeCalls: false }` takes the pushes and leaves the calls on HTTP, and `{ basePath }` names the
+prefix the viewset is mounted under when it is not the client's own. The connection id needs no
+option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the socket puts
+every ladder back on its base rung. taskwire never dials a socket and never closes one.
 
 ## Vue
 
@@ -228,7 +297,9 @@ is usable from React, from Svelte or from a plain script tag.
 ## Vuetify
 
 ```ts
-import { TaskwireFooter, useTaskwireDialogs } from 'taskwire/vuetify';
+import {
+  TaskwireFooter, TaskwireOperations, TaskwireProgressDialog, useTaskwireDialogs,
+} from 'taskwire/vuetify';
 
 useTaskwireDialogs({ components: { 'acme.overwrite': 'AcmeOverwriteDialog' } });
 ```
@@ -241,7 +312,26 @@ mounting it twice presents each question twice. `dialogId` maps to a component e
 buttons, which is a worse dialog but never a missing one.
 
 `<TaskwireFooter />` draws the aggregate and the selected operation's own percentage, and renders
-nothing when the aggregate is null. Both take an optional `client` and `translate`.
+nothing when the aggregate is null.
+
+`<TaskwireOperations />` lists `tw.register`, one row per operation, each with its title, its label
+and its own bar. Clicking a row selects it (`tw.select`); the selected row has
+`aria-current="true"`. A row offers **Cancel** while the operation has not ended and holds no
+result, and **Collect** and **Dismiss** while it holds one. It emits `collected` with the released
+`Result` and the operation, and `error` with the error and the operation when a write rejects. It
+renders nothing while the register is empty.
+
+`<TaskwireProgressDialog />` shows `tw.operations`, this tab's visible collection: an operation
+started here appears once `progressUi.delay` has passed and it is not `done`, and once its first
+document has been read. A `failed` or `cancelled` row stays for `progressUi.failureLinger`, showing
+its error message. Each row has its own bar, **Cancel** while the operation can be cancelled, and
+**Hide** (`operation.hide()`, this tab only). It emits `error` when a cancel rejects, and renders
+nothing while it has no row. Mount it once.
+
+All four take an optional `client` and `translate`. The three components render unstyled markup
+with `taskwire-footer*`, `taskwire-operations*` and `taskwire-progress-dialog*` classes, and
+`data-state` on each row. Button captions are `Text`s with the keys `taskwire.cancel`,
+`taskwire.collect`, `taskwire.dismiss` and `taskwire.hide`, which `translate` receives.
 
 ## The tab rules
 

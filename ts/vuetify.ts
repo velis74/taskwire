@@ -5,8 +5,8 @@
  * TW-TS-010). `ts/index.ts` must not reach either, and a test walks its transitive imports to keep
  * it so: taskwire has to stay usable from React, from Svelte, or from a plain script tag.
  *
- * Two things ship here, and each exists because getting it wrong is easy and the consequence is
- * quiet:
+ * The dialog adapter and three components ship here. The first two below exist because getting
+ * them wrong is easy and the consequence is quiet:
  *
  * ## The dialog adapter
  *
@@ -30,15 +30,34 @@
  *
  * The selection is FIFO by default: the oldest entry that is `queued` or `running`, advancing on its
  * own when that one leaves the register.
+ *
+ * ## `TaskwireOperations` and `TaskwireProgressDialog`
+ *
+ * `TaskwireOperations` lists `tw.register` - the namespace's operations and this tab's private ones -
+ * one row per token, each with its own percentage, and selects, cancels, collects and dismisses.
+ * `TaskwireProgressDialog` shows `tw.operations`, this tab's visible collection, which an operation
+ * started here enters only after `progressUi.delay` (§4.3), so an operation that ends inside the
+ * delay is never shown.
  */
 
+/* eslint-disable vue/one-component-per-file -- `taskwire/vuetify` is one module, one entry point */
 import { modal } from '@dynamicforms/vuetify-modal-form-kit';
-import { computed, defineComponent, h, onScopeDispose, type PropType, shallowRef, watchEffect } from 'vue';
+import {
+  computed,
+  defineComponent,
+  h,
+  onScopeDispose,
+  type PropType,
+  shallowRef,
+  toRaw,
+  type VNode,
+  watchEffect,
+} from 'vue';
 
 import type { Operation } from './operation';
 import { DialogAdoption, type Timers } from './tab-hints';
 import { type Taskwire, taskwireConfig, use_taskwire } from './taskwire';
-import type { DialogRequest, Text } from './wire';
+import { type DialogRequest, isTerminal, type Result, type Text } from './wire';
 
 /**
  * How a `Text` becomes something to render.
@@ -243,6 +262,215 @@ export const TaskwireFooter = defineComponent({
               // there is deliberately none to render here (TW-REG-011).
               `${counts.value.running ?? 0}/${counts.value.total ?? 0}`,
             ),
+      ]);
+    };
+  },
+});
+
+/** The button captions of the two components below; `text` is what `defaultTranslate` shows. */
+const CAPTIONS = {
+  cancel: { key: 'taskwire.cancel', text: 'Cancel' },
+  collect: { key: 'taskwire.collect', text: 'Collect' },
+  dismiss: { key: 'taskwire.dismiss', text: 'Dismiss' },
+  hide: { key: 'taskwire.hide', text: 'Hide' },
+} satisfies Record<string, Text>;
+
+/** Whether a cancel can still reach the operation: it has not ended and holds no result. */
+function cancellable(operation: Operation<unknown>): boolean {
+  const progress = operation.progress;
+  return progress !== null && !isTerminal(progress) && (progress.result ?? null) === null;
+}
+
+/**
+ * One operation's own bar: `percent` as the width, indeterminate when the operation reports no
+ * percentage (TW-REG-013).
+ */
+function ownBar(className: string, percent: number | null): VNode {
+  return h('div', {
+    class: className,
+    role: 'progressbar',
+    'aria-valuenow': percent ?? undefined,
+    'aria-valuemin': 0,
+    'aria-valuemax': 100,
+    'data-indeterminate': percent === null ? 'true' : 'false',
+    style: percent === null ? undefined : { width: `${percent}%` },
+  });
+}
+
+function actionButton(className: string, caption: string, act: () => void): VNode {
+  return h(
+    'button',
+    {
+      type: 'button',
+      class: className,
+      onClick: (event: Event) => {
+        // A row is selected by clicking it; a button inside the row acts and selects nothing.
+        event.stopPropagation();
+        act();
+      },
+    },
+    caption,
+  );
+}
+
+/**
+ * Every current operation of the namespace, one row each: `tw.register`, in its order (TW-REG-005).
+ *
+ * ```vue
+ * <TaskwireOperations @collected="(result, operation) => open(result)" />
+ * ```
+ *
+ * A row shows the operation's title, its label and **its own** percentage (TW-REG-013), and carries
+ * `data-state` with the derived state (TW-PROG-010). Clicking a row selects it (`tw.select`), which
+ * is the operation `TaskwireFooter` draws; the selected row carries `aria-current="true"`. Per row:
+ *
+ * - **Cancel** while the operation has not ended and holds no result (TW-CANCEL-003);
+ * - **Collect** and **Dismiss** while it holds a result (TW-REST-008). `collected` is emitted with
+ *   the released `Result` and the operation (TW-TS-013).
+ *
+ * A write that rejects is emitted as `error` with the error and the operation; the handle already
+ * resolves the 404, 409 and 410 of a race with another tab quietly. Nothing is rendered while the
+ * register is empty (TW-REG-017).
+ */
+export const TaskwireOperations = defineComponent({
+  name: 'TaskwireOperations',
+  props: {
+    client: { type: Object as PropType<Taskwire>, default: undefined },
+    translate: { type: Function as PropType<Translate>, default: undefined },
+  },
+  emits: {
+    collected: (result: Result, operation: Operation<unknown>) => result !== undefined && operation !== undefined,
+    error: (error: unknown, operation: Operation<unknown>) => operation !== undefined,
+  },
+  setup(props, { emit }) {
+    // The handles keep their state in private fields, which a reactive proxy of the client would
+    // hand out as proxies that cannot read them.
+    const client = toRaw(props.client) ?? use_taskwire();
+    const translate = props.translate ?? defaultTranslate;
+
+    const entries = shallowRef(client.register);
+    const selected = shallowRef(client.selected);
+    onScopeDispose(
+      client.onRegisterChange((operations) => {
+        entries.value = operations;
+        selected.value = client.selected;
+      }),
+    );
+
+    const write = (operation: Operation<unknown>, act: () => Promise<unknown>): void => {
+      act().catch((error: unknown) => emit('error', error, operation));
+    };
+
+    const row = (operation: Operation<unknown>): VNode => {
+      const progress = operation.progress;
+      const actions: VNode[] = [];
+      if (cancellable(operation)) {
+        actions.push(
+          actionButton('taskwire-operations__cancel', translate(CAPTIONS.cancel), () =>
+            write(operation, () => operation.cancel()),
+          ),
+        );
+      }
+      if (operation.result !== null) {
+        actions.push(
+          actionButton('taskwire-operations__collect', translate(CAPTIONS.collect), () =>
+            write(operation, async () => emit('collected', await operation.collect(), operation)),
+          ),
+          actionButton('taskwire-operations__dismiss', translate(CAPTIONS.dismiss), () =>
+            write(operation, () => operation.dismiss()),
+          ),
+        );
+      }
+      return h(
+        'li',
+        {
+          key: operation.token,
+          class: 'taskwire-operations__row',
+          'data-state': progress?.state,
+          'aria-current': selected.value?.token === operation.token ? 'true' : undefined,
+          onClick: () => client.select(operation.token),
+        },
+        [
+          h('div', { class: 'taskwire-operations__title' }, translate(operation.title, '')),
+          h('div', { class: 'taskwire-operations__label' }, translate(progress?.label ?? null, '')),
+          ownBar('taskwire-operations__bar', progress?.percent ?? null),
+          h('div', { class: 'taskwire-operations__actions' }, actions),
+        ],
+      );
+    };
+
+    return () => {
+      if (entries.value.length === 0) return null;
+      return h('ul', { class: 'taskwire-operations' }, entries.value.map(row));
+    };
+  },
+});
+
+/**
+ * The progress of what this tab started, in one dialog: `tw.operations`, the visible collection.
+ *
+ * ```vue
+ * <TaskwireProgressDialog />
+ * ```
+ *
+ * Mount it once, high up. An operation started here enters `tw.operations` once `progressUi.delay`
+ * has elapsed and it is not `done` (§4.3), so an operation shorter than the delay never shows; one
+ * that has not been read yet shows from its first document. A `failed` or `cancelled` operation
+ * stays for `progressUi.failureLinger` with its error message. Each row carries its own bar,
+ * **Cancel** while the operation can still be cancelled, and **Hide**, which takes the row out of
+ * this tab's visible collection only (`operation.hide()`). A cancel that rejects is emitted as
+ * `error` with the error and the operation. The dialog is not rendered while it has no row, nor at
+ * all under `progressUi: false`.
+ */
+export const TaskwireProgressDialog = defineComponent({
+  name: 'TaskwireProgressDialog',
+  props: {
+    client: { type: Object as PropType<Taskwire>, default: undefined },
+    translate: { type: Function as PropType<Translate>, default: undefined },
+  },
+  emits: {
+    error: (error: unknown, operation: Operation<unknown>) => operation !== undefined,
+  },
+  setup(props, { emit }) {
+    // The handles keep their state in private fields, which a reactive proxy of the client would
+    // hand out as proxies that cannot read them.
+    const client = toRaw(props.client) ?? use_taskwire();
+    const translate = props.translate ?? defaultTranslate;
+
+    const operations = shallowRef(client.operations);
+    onScopeDispose(
+      client.onOperationsChange((visible) => {
+        operations.value = visible;
+      }),
+    );
+    const shown = computed(() => operations.value.filter((operation) => operation.progress !== null));
+
+    const row = (operation: Operation<unknown>): VNode => {
+      const progress = operation.progress;
+      const error = progress?.error ?? null;
+      return h('li', { key: operation.token, class: 'taskwire-progress-dialog__row', 'data-state': progress?.state }, [
+        h('div', { class: 'taskwire-progress-dialog__title' }, translate(operation.title, '')),
+        h(
+          'div',
+          { class: 'taskwire-progress-dialog__label' },
+          translate(error?.message ?? progress?.label ?? null, ''),
+        ),
+        ownBar('taskwire-progress-dialog__bar', progress?.percent ?? null),
+        h('div', { class: 'taskwire-progress-dialog__actions' }, [
+          cancellable(operation)
+            ? actionButton('taskwire-progress-dialog__cancel', translate(CAPTIONS.cancel), () => {
+                operation.cancel().catch((failure: unknown) => emit('error', failure, operation));
+              })
+            : null,
+          actionButton('taskwire-progress-dialog__hide', translate(CAPTIONS.hide), () => operation.hide()),
+        ]),
+      ]);
+    };
+
+    return () => {
+      if (shown.value.length === 0) return null;
+      return h('div', { class: 'taskwire-progress-dialog', role: 'dialog', 'aria-modal': 'true' }, [
+        h('ul', { class: 'taskwire-progress-dialog__list' }, shown.value.map(row)),
       ]);
     };
   },

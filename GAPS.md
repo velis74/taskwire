@@ -333,40 +333,6 @@ operation, and TW-PRIV-003 then pushes a private operation's progress to no sock
 
 ---
 
-## taskwire-m4-redis-and-celery.md note 19 / TW-CELERY-007 — `wrap_sync_runner`'s signature
-
-**What the brief said:** "Provide instead a wrapper `wrap_sync_runner(fn)` that
-`celery_viewset_server.sync_wrapper` can apply around its `loop.run_until_complete(...)`, resetting
-the `contextvars.Token` in a `finally`."
-
-**What one argument cannot do:** `token` and `session` reach the worker as Celery kwargs, and
-`sync_wrapper` splats every remaining kwarg into the action through `_reconstruct_kwargs`, which
-passes through any key it has no type hint for. A hook that sees only the runner cannot remove them,
-so the action is called with two keywords it never declared. The signature is therefore
-`wrap_sync_runner(runner, kwargs) -> (runner, kwargs)`, and the keys are spelled `_taskwire_token` /
-`_taskwire_session` — an action is free to declare a parameter of its own called `token`, and
-reading that one as an operation address would write a namespace's progress wherever the application
-happened to mean.
-
-**Two things the brief's wording does settle, and they pull in opposite directions from the obvious
-implementation:**
-
-- The operation is entered and left **from the caller's frame**, not from inside the awaitable. A
-  worker's execution limit raises at whatever the thread is executing, and a thread waiting on an
-  action is inside the runner: an `async with operation(...)` in the awaitable is left suspended,
-  its `__aexit__` never runs, and the operation expires on its TTL with no terminal write at all —
-  which is exactly the case TW-DLG-006 exists for.
-- It is entered on the **caller's loop**, not through the synchronous form. `operation()`'s
-  synchronous form owns a second loop on a second thread (TW-API-002), which suits a synchronous
-  task body; an action is `async def`, so its own awaits would run on the caller's loop while the
-  operation ran on the other, and a `redis.asyncio` client cannot serve connections opened on a loop
-  that is not driving them.
-
-**What the author may prefer instead:** amending note 19 and TW-CELERY-007 to the signature that
-works, or a different spelling of the two kwargs.
-
----
-
 ## `taskwire/contrib/viewsets.py` — `@action_configuration` and `raise_on_cancel`'s claimed third level
 
 **What the module docstring claims:** "`@action_configuration` supplies the middle level of
@@ -387,3 +353,81 @@ new documentation.
 docstring describes an idea that was dropped and never corrected. Either the resolution gains a third
 level that actually reads per-viewset/per-action configuration, or the docstring's claim is struck.
 
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-001 — an `Idempotency-Key` that is not a UUID
+
+**What I needed:** whether any `Idempotency-Key` is a token.
+
+**What I assumed:** only a key that parses as a UUID. Every REST and muxws read of an operation
+refuses a token that is not a UUID before touching the store (TW-REST-006), so an operation under any
+other key could be written but never read. A malformed header or a non-UUID key leaves the call
+untracked; taskwire does not reject it, since rejecting is `Idempotency`'s decision.
+
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-002 — a read is not tracked by its `Idempotency-Key`
+
+**What I needed:** whether every call that carries a UUID `Idempotency-Key` is an operation.
+
+**What I assumed:** not a `GET`, `HEAD` or `OPTIONS`. A fastapi-viewsets proxy puts a key on every
+call, its reads included, and tracking each `list` and `retrieve` would cost four store writes, a push
+and a 900-second tombstone per read. A read is tracked under an explicit `X-Taskwire-Token`, which
+`run()` puts on it.
+
+**Still needs deciding:** whether reads should be tracked by their key, or the safe methods made a
+setting.
+
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-005 — a Celery call whose result wait timed out
+
+**What I assumed:** `ResultTimeoutError` is one of `TaskwireMiddleware`'s `pending_errors`: a call
+whose result wait timed out leaves its operation as it is. A task that is still in the broker queue
+then runs and ends the operation itself; one that never runs leaves it `queued` until `active_ttl`
+expires it. Writing `not_executed` instead would leave a tombstone the worker's `operation()` could
+not revise (TW-STORE-010).
+
+**Still needs deciding:** whether a `queued` operation that outlived its call's answer by
+`active_ttl` is acceptable, or the receipt should write a distinct terminal state.
+
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-006 — an error status ends a tracked call `failed`
+
+**What I needed:** what the generic adapters write for a request the framework answered with an
+error status instead of an exception.
+
+**What I assumed:** any status of 400 or more ends the operation `failed` with `http_status`,
+`message.params.status`, and `retryable: true` for 502, 503 and 504 only. Without it, every ASGI and
+WSGI framework that turns an exception into a 4xx or 5xx response would report the call `done`.
+
+**Still needs deciding:** the code, and whether 4xx and 5xx should be told apart in it.
+
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-101 — `register_taskwire_rest` lists `TaskwireMiddleware`
+
+**What I assumed:** `register_taskwire_rest` appends a `TaskwireMiddleware` to
+`viewsets_command_middleware` when none is listed, which puts it after an `Idempotency` already
+listed; `track_calls=False` leaves it out. An application that lists it itself chooses its place.
+A middleware listed after `TaskwireMiddleware` that rejects a call ends the operation `not_executed`;
+one listed before it rejects the call before any write.
+
+**Still needs deciding:** whether tracking should be on by default for an application that upgrades.
+
+---
+
+## taskwire-spec.md §5.5 / §5.6 — TW-TS-019, TW-PKG-005 — the frontend half of tracked calls
+
+**What I needed:** the shape of the per-call handler API, and the look of the two new components.
+
+**What I assumed:** `tw.trackCall(call, handler, options?)` returns the function that removes the
+handler, and `tw.awaitCall(call, handler, options?)` resolves with the call; the handler receives the
+`Operation` handle, not a `Snapshot`, so it reads the derived `waiting_input` and the open dialog the
+same way a template does. `TaskwireOperations` and `TaskwireProgressDialog` render unstyled markup
+with `taskwire-*` classes, as `TaskwireFooter` does, rather than Vuetify components, and the dialog
+leaves out a visible operation that has no document yet.
+
+**Still needs deciding:** the two names, and whether the components should render Vuetify's own
+`VList` / `VDialog` / `VProgressLinear` instead.

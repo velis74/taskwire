@@ -636,6 +636,133 @@ describe('track distinguishes not-written-yet from gone (TW-TS-004)', () => {
   });
 });
 
+/** A call as a fastapi-viewsets proxy returns it: its promise, with the `Idempotency-Key` as `key`. */
+function keyed<R>(promise: Promise<R>, key: string): Promise<R> & { readonly key: string } {
+  return Object.assign(promise, { key });
+}
+
+/** A promise and the function that settles it, for a call whose answer the test decides. */
+function pending<R>(): { promise: Promise<R>; resolve: (value: R) => void } {
+  let resolve: (value: R) => void = () => undefined;
+  const promise = new Promise<R>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+describe('trackCall follows a viewset call under its key (TW-TS-019)', () => {
+  it('calls the handler on every change and drops it on the terminal state', async () => {
+    const token = new_token();
+    server.handler = script(token, [
+      { status: 200, data: snapshotPayload(token, 'running', { rev: 1 }) },
+      {
+        status: 200,
+        data: snapshotPayload(token, 'done', { rev: 2, progress: progressPayload('done', { percent: 100 }) }),
+      },
+    ]);
+    const call = pending<string>();
+    const states: (string | undefined)[] = [];
+
+    const answer = tw.awaitCall(keyed(call.promise, token), (operation) => states.push(operation.progress?.state));
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(states).toEqual(['running']);
+
+    // The call answers after its action has run, and the token is read at once rather than on the
+    // next rung of the ladder.
+    call.resolve('imported');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states).toEqual(['running', 'done']);
+    await expect(answer).resolves.toBe('imported');
+
+    const handle = tw.handle(token);
+    expect(handle).toBeNull();
+    expect(tw.startedHere(token)).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(states).toEqual(['running', 'done']);
+  });
+
+  it('drops a call the server did not track, once the call has settled (TW-TS-004)', async () => {
+    const token = new_token();
+    server.handler = () => ({ status: 404 });
+    const seen: { closed: boolean; seen: boolean }[] = [];
+
+    tw.trackCall(keyed(Promise.resolve({ ok: true }), token), (operation) =>
+      seen.push({ closed: operation.closed, seen: operation.seen }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(seen).toEqual([{ closed: true, seen: false }]);
+    expect(server.polls(token)).toHaveLength(1);
+  });
+
+  it('reads a settled call while a transport holds the ladder, and drops it untracked (TW-TS-007)', async () => {
+    const token = new_token();
+    server.handler = () => ({ status: 404 });
+    tw.attachTransport({ subscribe: () => () => undefined });
+    const call = pending<void>();
+    const seen: boolean[] = [];
+
+    tw.trackCall(keyed(call.promise, token), (operation) => seen.push(operation.closed));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const before = server.polls(token).length;
+
+    call.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(server.polls(token)).toHaveLength(before + 1);
+    expect(seen).toEqual([true]);
+    expect(tw.handle(token)).toBeNull();
+  });
+
+  it('shows a call in tw.operations only once progressUi.delay has passed (§4.3)', async () => {
+    const slow = new_token();
+    const fast = new_token();
+    server.handler = (url) => {
+      if (url === `${DEFAULT_BASE_PATH}/${slow}`) return { status: 200, data: snapshotPayload(slow, 'running') };
+      return {
+        status: 200,
+        data: snapshotPayload(fast, 'done', { rev: 2, progress: progressPayload('done', { percent: 100 }) }),
+      };
+    };
+
+    tw.trackCall(keyed(pending<void>().promise, slow), () => undefined);
+    tw.trackCall(keyed(Promise.resolve(), fast), () => undefined);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(tw.operations).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(tw.operations.map((operation) => operation.token)).toEqual([slow]);
+  });
+
+  it('shares one handle between two registrations, and lets each go on its own', async () => {
+    const token = new_token();
+    server.handler = script(token, [{ status: 200, data: snapshotPayload(token, 'running') }]);
+    const call = keyed(pending<void>().promise, token);
+    const first: number[] = [];
+    const second: number[] = [];
+
+    const stopFirst = tw.trackCall(call, () => first.push(1));
+    tw.trackCall(call, () => second.push(1));
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(first).toEqual([1]);
+    expect(second).toEqual([1]);
+    expect(server.polls(token)).toHaveLength(1);
+
+    stopFirst();
+    server.handler = script(token, [{ status: 200, data: snapshotPayload(token, 'running', { rev: 2 }) }]);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(first).toEqual([1]);
+    expect(second).toEqual([1, 1]);
+  });
+
+  it('rejects a call without a key, and hands back the rejection of one with a key', async () => {
+    expect(() => tw.trackCall(Promise.resolve(1), () => undefined)).toThrow(TypeError);
+
+    server.handler = () => ({ status: 404 });
+    const failure = new Error('400 Bad Request');
+    await expect(tw.awaitCall(keyed(Promise.reject(failure), new_token()), () => undefined)).rejects.toBe(failure);
+  });
+});
+
 describe('Operation is a thenable, not a Promise (TW-TS-001, TW-TS-002)', () => {
   it('await run(fn) resolves with fn value and rejects with fn error', async () => {
     server.handler = () => ({ status: 404 });

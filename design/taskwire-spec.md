@@ -666,6 +666,7 @@ adapters to things outside the process, never a capability the core lacks.
   `stream.cancel()` MUST NOT be used on the delivery path. The delivery path is server→client; a
   client opening a stream to *call* the server is a caller, not a delivery, and `MuxwsCalls` reaches
   `peer.open()` through fastapi-viewsets' proxy rather than through anything this rule governs.
+  The client's open interceptor (TW-TS-020) is on the calling side too.
 - **TW-WS-002** taskwire MUST NOT depend on muxws's frame format, stream id space or `Codec`
   selection.
 - **TW-WS-003** `MuxwsTransport.notify()` MUST call `peer.notify(envelope)` once per namespace peer —
@@ -944,20 +945,24 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-CELERY-003** The token and the resolved namespace MUST cross into the worker as plain strings,
   without `SerializableObject` / `LazyObject` wrapping, and the namespace MUST NOT be re-resolved
   there (TW-AMB-008).
-- **TW-CELERY-004** In a Celery deployment **exactly one process owns the terminal write, and it is
-  the worker.** The web side writes `queued` and — only if dispatch itself failed — `failed`. That
-  dispatch failure MUST be written as `code: "dispatch_failed"` with `retryable: true`: an
-  unreachable broker is transient, so a frontend may legitimately offer a retry.
-- **TW-CELERY-005** The web-side middleware MUST NOT open `operation()` for a Celery-dispatching
-  action; command middleware never runs in the worker, so the contextvar would be unbound there and
-  every `progress.set()` would be a silent no-op. Test: M4 — a test asserting the middleware alone is
-  not sufficient.
-- **TW-CELERY-006** For a non-Celery action the same middleware MUST open `operation()` around
-  `call_next()`, because the web process is the worker there.
-- **TW-CELERY-007** The worker-side entry MUST be `celery_viewset_server.sync_wrapper` wrapping its
-  `loop.run_until_complete(...)` in `operation(token, session=ns)` with the `contextvars.Token` reset
-  in a `finally`. Celery's `task_prerun` / `task_postrun` signals MUST NOT be used (`postrun` fires
-  after the result has already been `RPUSH`ed, so a client could observe the result before `done`).
+- **TW-CELERY-004** In a Celery deployment **the worker owns the terminal write of every operation
+  it runs.** The web side writes `queued`, and `failed` only for an operation that never reached
+  `running`. A dispatch failure MUST be written as `code: "dispatch_failed"` with `retryable: true`:
+  an unreachable broker is transient, so a frontend may legitimately offer a retry. For a tracked
+  call the web side's writes follow TW-CALL-003 and TW-CALL-005.
+- **TW-CELERY-005** The web process MUST NOT open `operation()` around work it dispatches to a
+  worker: the block would end with the request and write a terminal state while the worker runs. An
+  executing call hands its operation over (TW-CALL-007); a `celery_viewset` action is executed in
+  the worker (TW-CELERY-007).
+- **TW-CELERY-006** For an in-process viewset action `TaskwireMiddleware.execute()` MUST open
+  `operation()` in the web process, around the action itself, because the web process is the worker
+  there (TW-CALL-101).
+- **TW-CELERY-007** For a `celery_viewset` action the worker-side `operation()` MUST be opened by
+  `TaskwireMiddleware.execute()` around the action inside the worker's `lifecycle_runner`, from the
+  context the task carried (TW-CALL-101). The operation MUST be closed before the action returns, and
+  therefore before the result is published. Celery's `task_prerun` / `task_postrun` signals MUST NOT
+  be used (`postrun` fires after the result has already been `RPUSH`ed, so a client could observe the
+  result before `done`).
 - **TW-CELERY-008** `taskwire.contrib.celery.taskwire_task` MUST provide the same for a plain
   Celery task, using the synchronous `with operation(...)` form.
 - **TW-CELERY-009** `result_kind` MUST be written once, by the `queued` write in the web process; the
@@ -972,9 +977,10 @@ adapters to things outside the process, never a capability the core lacks.
   implement; and that the author intends to research whether an asyncio loop inside a Celery worker
   is viable before committing to an answer. A future rule may close this; none of the current ones
   claims to.
-- **TW-CELERY-011** The command token MUST travel as the `X-Taskwire-Token` **header**, never a
-  query parameter, and the connection id — when the client has one — as `X-Taskwire-Connection`
-  beside it. Both cross into the worker as plain strings on the deserialized `Context`.
+- **TW-CELERY-011** The command token MUST travel as a **header**, never a query parameter:
+  `X-Taskwire-Token`, or the `Idempotency-Key` of the call (TW-CALL-001). The connection id — when
+  the client has one — travels as `X-Taskwire-Connection` beside it. The token and the namespace
+  cross into the worker as plain strings (TW-CELERY-003).
 
 ### 2.20 Security (`TW-SEC-*`)
 
@@ -1060,6 +1066,7 @@ adapters to things outside the process, never a capability the core lacks.
   | the FastAPI / ASGI adapters (TW-REST-001) | `tw.register`, `tw.aggregate`, `tw.selected`, `tw.operations` |
   | `MuxwsTransport`'s server side (`TW-WS-*`) | the tab-hint rules (`TW-TAB-*`) |
   | the ambient reporter proxy (`TW-AMB-*`, see TW-SYM-004) | — |
+  | tracked viewset calls (`TW-CALL-*`) | — |
 
   Anything not in this table MUST exist in both. A capability MUST NOT be added to one language alone
   because it was convenient there.
@@ -1071,6 +1078,79 @@ adapters to things outside the process, never a capability the core lacks.
   would be a progress bar that never moves, with no error anywhere. Explicit passing is also already
   the rule for concurrent siblings in both languages (TW-NEST-014). Test:
   `packaging.spec.ts::no ambient progress proxy is exported`.
+
+### 2.23 Tracked calls (`TW-CALL-*`)
+
+A call — an HTTP request, a command on a muxws stream, work handed to another process — is an
+operation of its own when the caller names one. TW-CALL-001..007 bind `taskwire.calls` and
+`ts/call-tracking.ts` and name no framework; TW-CALL-101..104 bind the adapters.
+
+- **TW-CALL-001** **The token of a call MUST be its `X-Taskwire-Token` header when present, and
+  otherwise the key of its `Idempotency-Key` header** (`draft-ietf-httpapi-idempotency-key-header-07`,
+  a Structured Field string) when that key is a UUID. A missing, repeated or malformed
+  `Idempotency-Key`, or a key that is not a UUID, MUST leave the call without a token; taskwire MUST
+  NOT reject the call for it (`call_token` / `callToken`). Every call made inside one `run()` carries
+  `run()`'s token and reports into that one operation.
+- **TW-CALL-002** **A call with no token, or with a `None` namespace, MUST be untracked and MUST run
+  unchanged** (TW-AMB-009). A call whose method is `GET`, `HEAD` or `OPTIONS` MUST NOT take its token
+  from `Idempotency-Key`; it is tracked only under an explicit `X-Taskwire-Token`.
+- **TW-CALL-003** **Where a call is received, `queued` MUST be written before the call proceeds**
+  (`receive_call` / `receiveCall`), with the call's `result_kind` and its `X-Taskwire-Connection` as
+  `origin_connection`. The write follows `mark_queued`: an existing `queued`, `running` or
+  `waiting_input` document is left as it is. A call that is received executes anew, so a terminal
+  document under its token MUST be dropped before the write. A receipt nested in one for the same
+  token MUST write nothing. A store failure MUST be logged and the call MUST run.
+- **TW-CALL-004** **Where a call executes, `operation(token, session=ns, connection=...,
+  result_kind=...)` MUST be opened around the work** (`execute_call`, `executeCall`,
+  `CallReceipt.execute`), which flips `queued` to `running`, binds the ambient reporter and writes
+  exactly one completion on exit (TW-API-001). In Python an execution entered inside another
+  execution MUST open no operation and yield `None`: the work belongs to the outer call's operation.
+  A store failure on entry MUST leave the work to run unreported; a failure of the terminal write
+  MUST be logged and MUST NOT replace the work's own outcome. An exception in `timeout_errors` ending
+  the work while the operation holds an open question MUST end it `dialog_timeout` (TW-DLG-006).
+- **TW-CALL-005** **A received call that ends — returns or raises — while its operation is still
+  `queued` and no execution was entered for it in the receiving context MUST end that operation
+  `failed`:** `dispatch_failed` with `retryable: true` when the call ended with one of the receipt's
+  `dispatch_errors`, and `not_executed` with `retryable: false` otherwise, a normal return included.
+  A call that ended with one of the receipt's `pending_errors` MUST leave the operation as it is: the
+  work may still execute elsewhere, and `active_ttl` expires the document otherwise. An operation in
+  any other state MUST be left as it is.
+- **TW-CALL-006** **An execution whose framework answers a failed call with a status instead of an
+  exception MUST end `failed` for a status of 400 or more**, with `code: "http_status"`,
+  `message.params: {"status": status}` and `retryable: true` for 502, 503 and 504 only.
+- **TW-CALL-007** **An execution MAY hand its operation to another process** (`hand_off()` /
+  `CallExecution.handOff(send)`), which receives the token and the namespace as plain strings
+  (TW-CELERY-003). When the hand-off completes, the execution's exit MUST write no state; the
+  receiving process's `operation()` continues the same document and writes its terminal state. When
+  the hand-off raises, the operation MUST end `dispatch_failed` with `retryable: true`. Work executing
+  under a call MUST NOT open `operation()` for the call's own token: the two blocks would write two
+  completions.
+- **TW-CALL-101** **`taskwire.contrib.viewsets.TaskwireMiddleware` binds TW-CALL-003..005 to
+  fastapi-viewsets ≥ 0.9.0.** Its `__call__`, in the command middleware chain, receives the call with
+  `ActionDispatchError` as a dispatch error and `ResultTimeoutError` as a pending one; its
+  `execute()` executes it where the action executes — in the FastAPI process for an in-process
+  action, in the executor's process for a `celery_viewset` action, from the context the task carried
+  — and MUST open nothing for an execution with a `parent`. `timeout_errors` defaults to Celery's
+  `SoftTimeLimitExceeded` when Celery is installed. `taskwire_context_processor` MUST place the token
+  under `context["taskwire_token"]`, the namespace under `["taskwire_session"]` and
+  `X-Taskwire-Connection` under `["taskwire_connection"]`, on REST and on muxws alike.
+  `register_taskwire_rest` (unless `track_calls=False`) and `track_viewset_calls` MUST append the
+  processor and a `TaskwireMiddleware` when absent; an executor's process calls
+  `track_viewset_calls`.
+- **TW-CALL-102** A call to `TaskwireViewSet`, and a call to an action whose action configuration for
+  `TaskwireMiddleware` is `False`, MUST be untracked.
+- **TW-CALL-103** **The `result_kind` of a viewset call MUST be the `result_kind` entry of the
+  action's configuration for `TaskwireMiddleware`
+  (`@action_configuration({TaskwireMiddleware: {"result_kind": kind}})`), and otherwise the kind the
+  action method declares with a result decorator.** With neither, the operation is private
+  (TW-PRIV-001).
+- **TW-CALL-104** **`taskwire.contrib.asgi.track_calls`, `taskwire.contrib.wsgi.track_calls` and
+  `trackFetch` MUST track every request of the application they wrap that carries a token**, with the
+  namespace from the resolver called with the adapter's own request object (the ASGI scope, the WSGI
+  environ, the WHATWG `Request`). The request runs inside a receipt and an execution, and its status
+  decides TW-CALL-006. Requests under the excluded prefix (`settings.rest_prefix` /
+  `DEFAULT_BASE_PATH`: taskwire's own endpoints) and non-HTTP scopes MUST pass through untouched.
+  The WSGI adapter MUST end both blocks when the server closes the response iterable.
 
 ---
 
@@ -1115,7 +1195,9 @@ taskwire MUST NOT attempt to validate. **TW-TXT-003** The dual form MUST NOT app
 | `updated_at` | RFC 3339 Z | yes | – | |
 
 `Error`: `{"code": string, "message": Text, "retryable": boolean}`. Reserved codes:
-`dispatch_failed` (TW-CELERY-004) and `dialog_timeout` (TW-DLG-006), both `retryable: true`.
+`dispatch_failed` (TW-CELERY-004, TW-CALL-005) and `dialog_timeout` (TW-DLG-006), both
+`retryable: true`; `not_executed` (TW-CALL-005), `retryable: false`; `http_status` (TW-CALL-006),
+`retryable: true` for 502, 503 and 504 only.
 
 ### 3.3 `Result`
 
@@ -1472,11 +1554,17 @@ interface Taskwire {
   onOperationsChange(cb: (ops: Operation<unknown>[]) => void): () => void;
   subscribe(token: string): Subscription;       // raw single-token surface; polls {prefix}/{token}
   track<T>(token: string, o?: { title?: Text; resultKind?: string }): Operation<T>;
+  trackCall<R>(call: KeyedCall<R>, handler: (op: Operation<R>) => void,
+               o?: RunOptions): () => void;     // follow a viewset call under its key
+  awaitCall<R>(call: KeyedCall<R>, handler: (op: Operation<R>) => void,
+               o?: RunOptions): Promise<R>;     // the same, resolving with the call's outcome
   attachTransport(t: ClientTransport): void;    // additive; polling is unchanged without it
   mute(token: string): void;                    // declare false for this connection
   unmute(token: string): void;                  // declare true - revives a backend-suppressed op
   clearOverride(token: string): void;           // remove the key; defer to push_filter
 }
+
+type KeyedCall<R> = PromiseLike<R> & { readonly key?: string };   // e.g. fastapi-viewsets' ViewSetCall
 
 class Operation<T> implements PromiseLike<T> {
   readonly token: string;
@@ -1655,8 +1743,36 @@ function use_register(options?: TaskwireOptions):
 - **TW-TS-009** A pending dialog on **any** `tw.register` entry MUST be surfaced by the application
   even when that entry is not in `tw.operations`; the guide MUST state this as a requirement.
 - **TW-TS-010** `taskwire` MUST NOT declare Vue, Vuetify or
-  `@dynamicforms/vuetify-modal-form-kit` as dependencies. The dialog adapter and `TaskwireFooter`
-  ship in the `/vuetify` subpath only.
+  `@dynamicforms/vuetify-modal-form-kit` as dependencies. The dialog adapter, `TaskwireFooter`,
+  `TaskwireOperations` and `TaskwireProgressDialog` ship in the `/vuetify` subpath only.
+- **TW-TS-019** **`tw.trackCall(call, handler, options?)` MUST follow the operation whose token is
+  `call.key`** — the token the server tracks the call under: the `Idempotency-Key` a
+  fastapi-viewsets proxy sent, or any token the caller put on the request (TW-CALL-001) — and MUST call
+  `handler` with its handle on every change of that handle. The handler MUST be removed
+  automatically on the first change that leaves the operation `done`, `failed` or `cancelled`, or
+  the handle closed, and that change MUST be the last one it receives; the returned function removes
+  it earlier. The handle MUST be minted as `run()` mints one: in `startedHere`, entering
+  `tw.operations` under §4.3's first door, and awaitable as `call` (TW-TS-002). A key that already
+  has a handle MUST reuse it (TW-TS-005). When `call` settles the client MUST end the search
+  (TW-TS-004) and read the token once more without waiting for the ladder, also while a transport
+  holds it (TW-TS-007), so a call the server did not track is dropped silently and a call whose
+  action ended inside `progressUi.delay` never enters `tw.operations`. A call made inside `run()` is
+  tracked under `run()`'s token (TW-CALL-001) and is followed through `run()`'s handle. A `call`
+  without a string `key` MUST be refused with a `TypeError`.
+  `tw.awaitCall(call, handler, options?)` MUST register the same handler and resolve or reject
+  exactly as `call`. Tests: `client.spec.ts::trackCall follows a viewset call under its key`.
+- **TW-TS-020** **`attachMuxws` MUST register an open interceptor on the peer** (muxws
+  `Peer.interceptOpen`, WSM-API-026) that writes `X-Taskwire-Connection` once the socket has a
+  connection id, and `X-Taskwire-Token` while `run()` has a token bound, on every stream opened on
+  the peer — the application's own commands included. It is the socket's counterpart of TW-TS-003's
+  axios interceptor and follows the same rules: the token covers only the synchronous part of `fn`,
+  and a header the caller set is overwritten only by a value the client holds. The interceptor MUST
+  be removed when the transport is detached (`detachMuxws`, a replacing `attachTransport`,
+  `dispose`). Test: `muxws.spec.ts::the headers on every stream opened on an attached peer`.
+- **TW-TS-021** `tw.headers()` MUST return the headers the axios interceptor would write on a request
+  made at that moment — `X-Taskwire-Token` while `run()` has a token bound, `X-Taskwire-Connection`
+  once a socket declared an id — so that any other HTTP client can carry them. The axios interceptor
+  MUST write exactly these. Test: `call-tracking.spec.ts::Taskwire.headers`.
 
 ### 5.6 Shipped deliverables
 
@@ -1673,6 +1789,12 @@ function use_register(options?: TaskwireOptions):
   sort (TW-REG-005), a result row rendered by `result.kind` and degrading past `expires_at` or on
   404, `show()`, `collect()`, `dismiss()` and a per-entry cancel. It MUST NOT draw a bar for the
   aggregate, because the aggregate has no percentage to draw.
+- **TW-PKG-005** `taskwire/vuetify` MUST ship `TaskwireOperations`, which lists `tw.register` with
+  each entry's own percentage, selects an entry (`tw.select`), and offers cancel on an entry that
+  has not ended and holds no result, and collect and dismiss on one that holds a result; and
+  `TaskwireProgressDialog`, which shows `tw.operations` and therefore no operation that ended inside
+  `progressUi.delay` (§4.3), with each operation's own bar, a cancel and a `hide()`. Neither MAY draw
+  a percentage derived across operations (TW-REG-011).
 
 ---
 

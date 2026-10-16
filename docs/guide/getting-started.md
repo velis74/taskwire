@@ -6,6 +6,7 @@ something when it cannot decide alone.
 ## Install
 
 ::: code-group
+
 ```bash [Python]
 pip install taskwire               # core: no runtime dependencies at all
 pip install "taskwire[viewsets]"   # the REST API as a fastapi-viewsets viewset
@@ -18,6 +19,7 @@ pip install "taskwire[muxws]"      # the WebSocket transport
 ```bash [TypeScript]
 npm install taskwire
 ```
+
 :::
 
 The Python core has **no runtime dependencies at all**; the npm package requires axios and nothing
@@ -98,6 +100,11 @@ async def start_import(request: Request) -> dict:
 The endpoint writes `queued` and returns; it does **not** open `operation()` around the work and wait
 for it, or every progress report would arrive after the thing it describes.
 
+A call that does its work before it answers needs none of this code: a
+[tracked call](./tracking-calls.md) is an operation under its `Idempotency-Key` or `X-Taskwire-Token`,
+reported from `queued` to its terminal state where it executes. Work that outlives the call, as this
+endpoint's does, is handed over with `hand_off()` from inside a tracked call.
+
 ## Report progress
 
 ```python
@@ -152,4 +159,4 @@ which is the point: a user who starts an import in one tab and switches to anoth
 - [Transports](./transports.md) — one protocol, three implementations.
 - [The WebSocket transport](./websockets.md) — one endpoint, one call, and polling stops.
 - [fastapi-viewsets integration](./fastapi-viewsets.md) — the context processor, `@action_configuration`,
-  and tracking a Celery-dispatched viewset action.
+  tracking every viewset call, and tracking a Celery-dispatched viewset action.

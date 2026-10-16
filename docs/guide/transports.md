@@ -2,7 +2,7 @@
 
 The layering is the shape of the source tree:
 
-```
+```text
              protocol            documents, envelopes, the six kinds, the state
                  │               machines, validation.  Knows of no transport.
      ┌───────────┼───────────┐

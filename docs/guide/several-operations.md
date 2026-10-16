@@ -73,6 +73,38 @@ entry that is `queued` or `running` — and it advances on its own when that one
 When the selected operation's percentage is `null` the bar is indeterminate. That is the honest
 rendering of "this operation does not know", rather than zero or a guess.
 
+## A list of every operation
+
+```vue
+<script setup>
+import { TaskwireOperations } from 'taskwire/vuetify';
+</script>
+
+<template><TaskwireOperations @collected="(result, operation) => openResult(result)" /></template>
+```
+
+`TaskwireOperations` lists `tw.register` — every shared operation of the namespace and this tab's
+private ones — one row each, with each operation's **own** bar. Clicking a row selects it, which is
+the operation `TaskwireFooter` draws. A row offers **Cancel** while the operation runs and holds no
+result, and **Collect** and **Dismiss** while it holds one; `collected` hands the application the
+released `Result`, and what it does with it is the application's.
+
+## A progress dialog for what this tab started
+
+```vue
+<template><TaskwireProgressDialog /></template>
+```
+
+`TaskwireProgressDialog` shows `tw.operations`, so it follows the visible collection's rules: an
+operation started here appears once `progressUi.delay` has passed, and an operation that ends inside
+the delay never appears. A failed or cancelled row stays for `progressUi.failureLinger` with its
+error message. Each row carries its own bar, **Cancel**, and **Hide**, which removes the row from
+this tab's view and leaves the operation running.
+
+A tracked call enters the same collection when the page follows it with
+`tw.trackCall(call, handler)` or `tw.awaitCall(call, handler)` — see
+[Following a call](../api/typescript.md#following-a-call).
+
 ## Sorting
 
 `needs_attention` first, then `created_at` **ascending** — oldest first — within both groups. There

@@ -816,6 +816,8 @@ class OperationScope:
         # on the way out - so binding there would leave nothing bound where the body runs and a
         # Token that cannot be reset. See `bind_ambient_in_caller`.
         self._caller_binds_ambient = False
+        # True once the operation was handed to another process, which then owns its terminal write.
+        self._handed_off = False
 
     @property
     def _inert(self) -> bool:
@@ -916,6 +918,13 @@ class OperationScope:
         if reporter is None or isinstance(reporter, InertReporter):
             return False
 
+        if self._handed_off:
+            # The process the operation was handed to writes its terminal state (TW-CALL-007). A
+            # terminal write here would end an operation that is still running there.
+            with contextlib.suppress(Exception):
+                await reporter.flush()
+            return False
+
         state, error = _terminal_for(exc_type, exc)
         # An error the operation named for itself outranks one derived from the exception's class
         # (`name_error`). The class is the more specific fact only when nobody knew better: a worker
@@ -954,16 +963,23 @@ class OperationScope:
     def bind_ambient_in_caller(self) -> None:
         """Leave the ambient binding to the caller, who binds around the body in its own context.
 
-        For a caller that enters this scope from a synchronous frame by driving `__aenter__` on a
-        loop it already owns. The task that drives it has a context of its own which is discarded on
-        the way out, so a binding made inside `__aenter__` would be invisible where the body runs and
-        would carry a `contextvars.Token` that can never be reset (TW-AMB-005, TW-INV-011). Call this
-        before `__aenter__`, then `taskwire.ambient.bind` around the body and `unbind` in a `finally`.
+        For a caller whose `__aenter__` and `__aexit__` may run in different contexts. A binding made
+        inside `__aenter__` is reset by `__aexit__`, and a `contextvars.Token` can be reset only in the
+        context that created it (TW-AMB-005, TW-INV-011). Call this before `__aenter__`, then
+        `taskwire.ambient.bind` around the body and `unbind` in a `finally`.
 
-        `__enter__` does exactly that for the synchronous form; `wrap_sync_runner` does it for a
-        worker that owns its own loop (TW-CELERY-007).
+        `__enter__` does exactly that for the synchronous form, whose `__aenter__` runs in a task of
+        its own on a private loop.
         """
         self._caller_binds_ambient = True
+
+    def hand_off(self) -> None:
+        """Leave the terminal write to the process this operation was handed to (TW-CALL-007).
+
+        The exit then flushes pending progress and writes no state, whether the body returned or
+        raised; the operation stays `running` until the other process's `operation()` ends it.
+        """
+        self._handed_off = True
 
     # ---------------------------------------------------------------- sync form
 

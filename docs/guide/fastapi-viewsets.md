@@ -12,13 +12,16 @@ register_taskwire_rest(router)
 app.include_router(router)
 ```
 
-That single call does three things, and an application never has to remember a second one:
+That single call:
 
 - mounts the six calls of `TW-REST-004` on `router`, over REST and — unless told otherwise — over
   muxws as well (see [`register_muxws`](#which-transports-get-mounted) below);
 - registers `taskwire_context_processor` globally, so `context["taskwire_session"]`,
   `["taskwire_connection"]` and `["taskwire_token"]` become available to **every** viewset action in
   the process that declares a `context: Context` parameter, not only taskwire's own endpoints;
+- appends a `TaskwireMiddleware` to `viewsets_command_middleware` when none is listed, which tracks
+  every viewset call that carries a token (see [Tracking viewset calls](#tracking-viewset-calls));
+  `track_calls=False` leaves it out;
 - is idempotent per router — calling it twice mounts one copy, never two.
 
 ## What this buys, beyond not writing six routes by hand
@@ -39,7 +42,7 @@ a call arrived, and nothing should.
 ## Which transports get mounted
 
 ```python
-register_taskwire_rest(router, base_path=None, *, register_muxws=None)
+register_taskwire_rest(router, base_path=None, *, register_muxws=None, track_calls=True)
 ```
 
 `register_muxws` is the one knob:
@@ -54,55 +57,79 @@ attaches a specific `Peer` and subscribes its namespace to the store's backplane
 independent: this one decides whether taskwire's routes exist on muxws at all; that one decides
 whether *this* socket carries them.
 
-## Tracking a Celery-dispatched viewset action
+## Tracking viewset calls
 
-`celery_viewset_client` / `celery_viewset_server` move a viewset action's execution onto a Celery
-worker (`>= dynamicforms-fastapi-viewsets 0.5.4`). Wiring taskwire into that path is one more call,
-made once on every process that either dispatches or executes such an action:
+Requires `dynamicforms-fastapi-viewsets >= 0.9.0`. Every call a fastapi-viewsets proxy makes carries
+an `Idempotency-Key`, so every viewset command is a [tracked call](./tracking-calls.md) without the
+frontend sending a token of its own. `TaskwireMiddleware` is the binding:
 
-```python
-from taskwire.contrib.celery import register_taskwire_celery_viewset
+| Step | Written by | Where |
+|---|---|---|
+| `queued` | `TaskwireMiddleware.__call__`, in the command middleware chain | web process |
+| `running`, then `done` / `failed` / `cancelled` | `TaskwireMiddleware.execute()`, around the action | where the action executes: the web process, or the Celery worker for a `celery_viewset` action |
+| `failed` with `not_executed` or `dispatch_failed` | `TaskwireMiddleware.__call__`, when the call ended with the operation still `queued` | web process |
 
-register_taskwire_celery_viewset()
-```
-
-This installs both halves fastapi-viewsets exposes for exactly this purpose — `set_celery_kwargs_hook`
-on the worker side, `set_celery_dispatch_hook` on the dispatching side — without fastapi-viewsets
-importing taskwire anywhere to do it: taskwire registers itself into a hook slot fastapi-viewsets
-merely calls, by name, on both hooks' behalf.
-
-**The action must declare `context: Context`.** That is the only per-action requirement, and it is
-not automatic — an action with no `context` parameter is dispatched exactly as it would be with no
-taskwire installed. Once it declares one, `register_taskwire_rest`'s global context processor has
-already put the namespace and the token into it before dispatch (the same `context` that already
-survives the Celery/Redis round trip for everything else), and the dispatch hook reads
-`context["taskwire_token"]` / `["taskwire_session"]` from there to write `queued` and carry the
-token onto the worker.
+`register_taskwire_rest` lists the middleware. An application that lists it itself puts it after
+`Idempotency`, so a repeat that `Idempotency` answers from a stored or running call never reaches it:
 
 ```python
-from fastapi_viewsets.context import Context
-
-@celery_viewset_client(celery_app, task_prefix="acme.import", redis_client=redis_client)
-class ImportViewSet:
-    async def run(self, context: Context, *, rows: list) -> str: ...
+settings.viewsets_command_middleware = [Idempotency(redis_client=redis), TaskwireMiddleware()]
 ```
 
-Two things worth knowing rather than discovering:
+**Untracked calls.** Besides the calls [every adapter leaves untracked](./tracking-calls.md#the-token-of-a-call),
+a call to taskwire's own six endpoints and a call to an action configured
+`@action_configuration({TaskwireMiddleware: False})` run unchanged and write nothing.
 
-- **No `result_kind` at the queued write.** The dispatch hook sees only the current call's kwargs,
-  never which route or task prefix it belongs to, so it cannot derive one. The operation still
-  reports — state, percent, dialogs, cancellation all work — with the generic rendering a missing
-  `result_kind` gets on the frontend (TW-RES-002) rather than a guessed one.
-- **An action with no token still runs.** Reporting is an accelerator (TW-AMB-009): a caller that
-  never sent `X-Taskwire-Token`, or whose viewset never declared `context`, gets the plain
-  `celery_viewset_client` behaviour, not an error.
+**Privacy.** An operation is private unless the action declares a `result_kind`: with a result
+decorator on the action method, or with
+`@action_configuration({TaskwireMiddleware: {"result_kind": "acme.export"}})` — the form to use on a
+`perform_*` method.
+
+```python
+class ExportViewSet:
+    __router = APIRouter()
+
+    @__router.post("run")
+    @taskwire.panel_result("acme.export")
+    async def run(self, *, rows: list) -> dict:
+        await taskwire.progress.set(percent=50)
+        ...
+```
+
+**The action reports through the ambient reporter**, which `execute()` binds around it. It does not
+open `operation()` for its own token. An action that dispatches a plain Celery task hands the
+operation over with [`hand_off()`](./tracking-calls.md#handing-a-call-to-a-worker); an action
+dispatched from inside another action's execution reports into nothing of its own.
+
+**A `celery_viewset` action** executes in the worker, and `execute()` runs there, from the context the
+task carried. The worker's process lists the same command middleware, so it calls
+`track_viewset_calls()` once at startup, next to `configure_worker(store)`:
+
+```python
+from taskwire.contrib.celery import configure_worker
+from taskwire.contrib.viewsets import track_viewset_calls
+
+configure_worker(store)
+track_viewset_calls()
+```
+
+In the web process the call is received and never executed: a send the broker refused
+(`ActionDispatchError`) ends it `dispatch_failed`, a result wait that timed out (`ResultTimeoutError`)
+leaves it `queued` for the worker, and a call that came back while the operation was still `queued`
+ends it `not_executed`. A soft time limit that ends the action while it holds an open question ends
+it `dialog_timeout`.
+
+**On the frontend**, `tw.trackCall(call, handler)` and `tw.awaitCall(call, handler)` follow a proxy
+call under its `key` — see [Tracking calls](./tracking-calls.md#on-the-frontend). Over muxws,
+`attachMuxws` puts `X-Taskwire-Connection` on the command stream, so a private operation's progress
+reaches the socket that made the call.
 
 See [The Celery worker entry](../api/python.md#the-celery-worker-entry) for `taskwire_task` and
-`wrap_sync_runner` — the manual pair this same worker-side hook is built from, for a task that is not
-a viewset action at all.
+`dispatch`, the pair for a Celery task that is not a viewset action.
 
 ## What to read next
 
 - [Getting started](./getting-started.md) — the REST path end to end.
+- [Tracking calls](./tracking-calls.md) — the same tracking for any ASGI, WSGI or `fetch` application.
 - [The WebSocket transport](./websockets.md) — `register_taskwire_muxws`, connection ids, and what
   stops polling.

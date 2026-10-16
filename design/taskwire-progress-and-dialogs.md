@@ -23,7 +23,7 @@ Target artefacts:
 
 Dependency direction is strict and never inverted:
 
-```
+```text
 taskwire  --optional-->  fastapi-viewsets      (taskwire's REST API is declared as a viewset)
 taskwire  --optional-->  muxws                 (the WebSocket transport)
 
@@ -1059,7 +1059,7 @@ fanned out so every other tab learns, not the request itself.
 
 ### Store keys (Redis implementation)
 
-```
+```text
 tw:{ns}:{token}:progress            string, JSON Progress
 tw:{ns}:{token}:dialogs             hash, id -> JSON DialogRequest
 tw:{ns}:{token}:d:{did}:reply       list, wakeup channel for a blocked worker
@@ -1112,8 +1112,8 @@ the register, and is a private operation again with nothing rewritten.
 `twx:{ns}` is **one channel per namespace**, and every envelope published on it is delivered to every
 socket that namespace currently has open, with no per-token subscription anywhere in the system. Five
 tabs of one login means five sockets and five copies of every push, and that is the design rather
-than a cost the design tolerates. The author's own summary of it: *"če to pomeni 5 websocketov, pa 5"*
-- if it means five WebSockets, then five.
+than a cost the design tolerates. The author's own summary of it: *"če to pomeni 5 websocketov, pa 5"* -
+if it means five WebSockets, then five.
 
 Two narrowings are applied at the last hop rather than at the channel, and neither one changes any of
 what follows: the delivery decision ("Delivery is decided twice") and privacy ("Private operations").
@@ -1394,7 +1394,7 @@ what an operation *is* on the application's behalf.
 **The whole of it is therefore one hook and one message.** The hook is a predicate the backend
 evaluates; the message is a declaration the frontend sends. Together:
 
-```
+```text
 effective_delivery = fe_override  if present  else  push_filter(client, operation)
 ```
 
@@ -1718,7 +1718,7 @@ The property this document claims throughout - one implementation, not two - has
 is broken in the deployment with the least test coverage. It survives by nothing on the REST surface
 ever *narrowing*:
 
-```
+```text
 GET {prefix}/operations      # every entry, plus the aggregate. Always. There is no other form.
 ```
 
@@ -2399,7 +2399,7 @@ therefore has the one thing it needs to answer a register read the same way the 
 which is why the handlers take a `Client` rather than a bare namespace string, and it is the only
 change that requirement makes anywhere on this surface.
 
-```
+```text
 GET  {prefix}/operations
      -> 200 Register  { "v", "operations": [...], "aggregate": {...}, "server_time",
                         "poll_after_ms" }
@@ -4324,7 +4324,7 @@ muxws brief specifies. taskwire ships strictly more artefacts than muxws - a Pyt
 contrib adapters, an npm package with two subpath exports, and a shared corpus - which is a reason to
 be more explicit about layout, not less.
 
-```
+```text
 taskwire/
 ├── taskwire/                # PyPI: taskwire
 │   ├── __init__.py             # operation, progress, ask, t, new_token, configure, Reporter,
@@ -4527,8 +4527,8 @@ follows from that sentence.
 **Header, not query param.** `X-Taskwire-Token` applies uniformly to GET, POST, PUT, PATCH and
 DELETE, including the bulk endpoints, without adding a parameter to a single endpoint signature or to
 the OpenAPI schema of every action. A query param would have to be either declared on every route
-(noise in every signature and every schema) or read out of `request.query_params` out-of-band anyway
-- at which point it is a header with worse properties, since URLs end up in access logs, browser
+(noise in every signature and every schema) or read out of `request.query_params` out-of-band anyway -
+at which point it is a header with worse properties, since URLs end up in access logs, browser
 history and cache keys.
 
 **Crossing into the Celery worker.** The token and the resolved namespace are plain strings in
@@ -4620,8 +4620,8 @@ a set of offered actions, and that the answer is which action was taken.
 | `DialogRequest.inputs` / `DialogReply.values` | `ModalOptions.form`, a `@dynamicforms/vue-forms` `Form.Group` |
 | the one mounted progress-collection component | `<modal-view />`, mounted once at the application root |
 
-**The reply needs no translation layer at all.** `modal.custom()` returns a `CloseablePromise<string>`
-- an ordinary `Promise<string>` with two extra members, `close(value)` and a `dialogId` symbol, which
+**The reply needs no translation layer at all.** `modal.custom()` returns a `CloseablePromise<string>` -
+an ordinary `Promise<string>` with two extra members, `close(value)` and a `dialogId` symbol, which
 is the kit's own handle on one open modal and is neither of taskwire's two ids: the adapter keys
 its open-modal map by `DialogRequest.id` and never by that symbol - and it resolves to *the name of
 the action that closed the dialog*: the key that action was registered under in
@@ -5275,8 +5275,8 @@ twice), `Text`,
 `Snapshot`, `OperationSummary` (including `progress_delivery`, which is `true` on every entry until
 M8 gives it something to say, for exactly the same reason), `Register`, `Envelope`;
 `TaskwireStore` + `MemoryStore` (including
-`touch`, `publish`, `drop`, `list_operations` and the atomicity requirement); `TaskwireTransport`
-+ `NullTransport`; `Reporter` with explicit passing only; `operation()` in both async and sync forms;
+`touch`, `publish`, `drop`, `list_operations` and the atomicity requirement); `TaskwireTransport` +
+`NullTransport`; `Reporter` with explicit passing only; `operation()` in both async and sync forms;
 the per-token REST handlers **and the register endpoint** with the `tw:{ns}:index` key and its lazy
 pruning, plus the FastAPI adapter; inline-clock throttling; the TS `use_taskwire` client polling
 the register with backoff and the `poll_after_ms` clamp, `tw.register`, `tw.aggregate` with the

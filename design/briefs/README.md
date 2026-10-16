@@ -106,7 +106,7 @@ renumbered by any of these splits.**
 
 ## The dependency chain
 
-```
+```text
 M0 → M1 ─┬─→ M2 ──→ M3 ─┬─→ M4 ─→ M5 ─→ M6 ─→ M7 ─→ M7b ─→ M8 ─→ M9
          │              │         ▲
          ├─→ M1b → M1c ─┴─→ M3b ──┘

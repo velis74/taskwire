@@ -14,11 +14,11 @@ One call, and the whole REST surface exists::
     register_taskwire_rest(router)          # <- the entire REST transport
     app.include_router(router)
 
-That call registers the context processor taskwire needs, applies `@route_viewset` and mounts six
-endpoints - **on REST and on muxws both**, since `route_viewset` publishes a viewset on the two
-transports at once. There is deliberately nothing else to wire: an application that has to remember a
-second call is an application where somebody eventually forgets it, and the failure would be a
-progress bar that never moves with nothing logged.
+That call applies `@route_viewset` and mounts six endpoints - **on REST and on muxws both**, since
+`route_viewset` publishes a viewset on the two transports at once - and tracks the application's own
+viewset calls (`track_viewset_calls`): `taskwire_context_processor` names the call's token, and
+`TaskwireMiddleware` places `taskwire.calls`' `receive_call()` and `execute_call()` in the command
+middleware chain (TW-CALL-101).
 
 ## Why a viewset rather than a hand-rolled router
 
@@ -51,14 +51,19 @@ reach the same handlers over a stream instead of over HTTP.
 # narrow but it has teeth: a module a third-party decorator reads signatures off must expose real
 # objects, not text. Everything else in `taskwire/` keeps the import.
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi_viewsets.conf import settings as viewset_settings
 from fastapi_viewsets.context import Context
 from fastapi_viewsets.decorators.route_viewset import route_viewset
+from fastapi_viewsets.exceptions import ActionDispatchError, ResultTimeoutError
+from fastapi_viewsets.middleware import ActionExecution, Middleware, ViewSetResult
 from fastapi_viewsets.response_classes import NOT_FOUND_RESPONSE
 
+from ..calls import Call, call_token, execute_call, receive_call
+from ..decorators import declared_result_kind
 from ..delivery import Client
 from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported
 from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
@@ -74,12 +79,7 @@ CONNECTION_KEY = "taskwire_connection"
 """Where the value of `CONNECTION_HEADER`, or `None`, sits in the context."""
 
 TOKEN_KEY = "taskwire_token"
-"""Where the value of `TOKEN_HEADER`, or `None`, sits in the context.
-
-Read by `taskwire.contrib.celery`'s dispatch hook (TW-CELERY-007): a `celery_viewset_client` action
-has no `Request` of its own, only whatever a context processor put in `context` before dispatch, and
-this is the one key that carries the token across that boundary.
-"""
+"""Where `taskwire.calls.call_token()` of the request sits in the context, or `None` (TW-CALL-001)."""
 
 
 async def taskwire_context_processor(request: Request, _viewset: Any = None) -> dict[str, Any]:
@@ -97,7 +97,7 @@ async def taskwire_context_processor(request: Request, _viewset: Any = None) -> 
     return {
         SESSION_KEY: resolver(request) if resolver is not None else None,
         CONNECTION_KEY: request.headers.get(CONNECTION_HEADER),
-        TOKEN_KEY: request.headers.get(TOKEN_HEADER),
+        TOKEN_KEY: call_token(request.headers, request.method),
     }
 
 
@@ -239,6 +239,111 @@ class TaskwireViewSet:
         _check(*await reply_to_dialog(await _client(context), token, did, reply.model_dump()))
 
 
+def _action_name(request: Request | None) -> str | None:
+    """The viewset method a call routes to: the name of the route endpoint, which `route_viewset`
+    wraps with `functools.wraps`. Set on REST and on muxws, which routes each command through the
+    same application."""
+    endpoint = request.scope.get("endpoint") if request is not None else None
+    return getattr(endpoint, "__name__", None)
+
+
+def _result_kind(viewset_class: type, action: str | None, configuration: Any) -> str | None:
+    """The configured `result_kind`, else the one the action method declares (TW-CALL-103)."""
+    if isinstance(configuration, dict) and configuration.get("result_kind") is not None:
+        return configuration["result_kind"]
+    return declared_result_kind(getattr(viewset_class, action, None)) if action else None
+
+
+async def _call(context: Context | None, viewset_class: type, action: str | None) -> Call | None:
+    """The tracked call `context` names, or None (TW-CALL-002, TW-CALL-102)."""
+    if context is None or issubclass(viewset_class, TaskwireViewSet):
+        return None
+    configuration = context.configuration_for(TaskwireMiddleware)
+    if configuration is False or TOKEN_KEY not in context or SESSION_KEY not in context:
+        return None
+    token = await context[TOKEN_KEY]
+    session = await context[SESSION_KEY]
+    if token is None or session is None:
+        return None
+    connection = await context[CONNECTION_KEY] if CONNECTION_KEY in context else None
+    return Call(
+        token=token,
+        session=session,
+        connection=connection,
+        result_kind=_result_kind(viewset_class, action, configuration),
+    )
+
+
+def _executor_limits() -> tuple[type[BaseException], ...]:
+    try:
+        from celery.exceptions import SoftTimeLimitExceeded
+    except ImportError:
+        return ()
+    return (SoftTimeLimitExceeded,)
+
+
+class TaskwireMiddleware(Middleware):
+    """Tracks every viewset call that carries a token: `receive_call()` in the command chain and
+    `execute_call()` around the action, where the action executes (TW-CALL-101).
+
+    `register_taskwire_rest` and `track_viewset_calls` append an instance to
+    `settings.viewsets_command_middleware` when none is listed. Listed by the application, it goes
+    after `Idempotency`: a repeat `Idempotency` answers from a stored or running call then does not
+    reach it.
+
+    - `__call__` receives the call: `queued` before the rest of the chain, and `failed` when the chain
+      ends with the operation still `queued` and the action not executed in this process -
+      `dispatch_failed` for `ActionDispatchError`, nothing for `ResultTimeoutError`, `not_executed`
+      otherwise.
+    - `execute()` executes it: in the FastAPI process for an in-process action, in the executor's
+      process for a `celery_viewset` action. An action dispatched from inside another action's
+      execution (`ActionExecution.parent`) reports into nothing of its own. `timeout_errors` names the
+      executor's limit for TW-DLG-006; it defaults to Celery's `SoftTimeLimitExceeded` when Celery is
+      installed.
+
+    `@action_configuration({TaskwireMiddleware: False})` leaves an action untracked, and
+    `{TaskwireMiddleware: {"result_kind": kind}}` declares its result kind; without one the kind is the
+    one a result decorator on the action method declares, and with neither the operation is private
+    (TW-CALL-103). Calls to `TaskwireViewSet` are never tracked.
+    """
+
+    def __init__(self, *, timeout_errors: tuple[type[BaseException], ...] | None = None) -> None:
+        self.timeout_errors = timeout_errors if timeout_errors is not None else _executor_limits()
+
+    async def __call__(
+        self,
+        request: Request | None,
+        viewset: Any,
+        context: Context,
+        call_next: Callable[[], Awaitable[ViewSetResult]],
+    ) -> ViewSetResult:
+        viewset_class = viewset if isinstance(viewset, type) else type(viewset)
+        call = await _call(context, viewset_class, _action_name(request))
+        async with receive_call(call, dispatch_errors=(ActionDispatchError,), pending_errors=(ResultTimeoutError,)):
+            return await call_next()
+
+    async def execute(self, execution: ActionExecution, call_next: Callable[[], Awaitable[Any]]) -> Any:
+        if execution.parent is not None:
+            return await call_next()
+        call = await _call(execution.context, execution.viewset_class, execution.action)
+        async with execute_call(call, timeout_errors=self.timeout_errors):
+            return await call_next()
+
+
+def track_viewset_calls() -> None:
+    """Append `taskwire_context_processor` to `viewsets_context_processors` and a `TaskwireMiddleware`
+    to `viewsets_command_middleware`, each when absent.
+
+    `register_taskwire_rest` calls it. A Celery worker that executes `celery_viewset` actions calls it
+    too, since the executor's process runs the same command middleware (TW-CALL-101).
+    """
+    if taskwire_context_processor not in viewset_settings.viewsets_context_processors:
+        viewset_settings.viewsets_context_processors.append(taskwire_context_processor)
+    middlewares = viewset_settings.viewsets_command_middleware
+    if not any(isinstance(middleware, TaskwireMiddleware) for middleware in middlewares):
+        middlewares.append(TaskwireMiddleware())
+
+
 _registered: set[int] = set()
 
 
@@ -247,6 +352,7 @@ def register_taskwire_rest(
     base_path: str | None = None,
     *,
     register_muxws: bool | None = None,
+    track_calls: bool = True,
 ) -> type[TaskwireViewSet]:
     """Mount the whole request/response surface on `router`. The only call an application makes.
 
@@ -273,16 +379,21 @@ def register_taskwire_rest(
     arrives the same way - stated on the stream when the client states it. Nothing here branches on
     how the call arrived, and nothing may.
 
+    With `track_calls` (the default) it calls `track_viewset_calls()`, which tracks every viewset call
+    of the application that carries a token (TW-CALL-101).
+
     Idempotent per router: calling it twice mounts one copy, because `route_viewset` registers
     routes as a side effect and a doubly-mounted viewset answers every request twice through two
     middleware chains.
     """
+    if track_calls:
+        track_viewset_calls()
+    elif taskwire_context_processor not in viewset_settings.viewsets_context_processors:
+        viewset_settings.viewsets_context_processors.append(taskwire_context_processor)
+
     if id(router) in _registered:
         return TaskwireViewSet
     _registered.add(id(router))
-
-    if taskwire_context_processor not in viewset_settings.viewsets_context_processors:
-        viewset_settings.viewsets_context_processors.append(taskwire_context_processor)
 
     return route_viewset(
         router,

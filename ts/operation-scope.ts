@@ -177,6 +177,14 @@ export interface OperationScope extends AsyncDisposable {
    * ended the block.
    */
   failed(error: unknown): Promise<void>;
+  /** Name the error that ends this block `failed`, as `failed()` does for an error object. */
+  failWith(error: TaskwireError): void;
+  /**
+   * Leave the terminal write to the process this operation was handed to (TW-CALL-007). The disposal
+   * then flushes pending progress and writes no state; the operation stays `running` until that
+   * process's `operation()` ends it.
+   */
+  handOff(): void;
 }
 
 /**
@@ -197,6 +205,8 @@ export async function operationScope(opts: OperationOptions): Promise<OperationS
     return {
       reporter: inert,
       failed: async () => undefined,
+      failWith: () => undefined,
+      handOff: () => undefined,
       [Symbol.asyncDispose]: async () => undefined,
     };
   }
@@ -248,6 +258,7 @@ export async function operationScope(opts: OperationOptions): Promise<OperationS
 
   let outcome: { state: TerminalState; error?: TaskwireError } = { state: 'done' };
   let ended = false;
+  let handedOff = false;
 
   return {
     reporter,
@@ -256,12 +267,26 @@ export async function operationScope(opts: OperationOptions): Promise<OperationS
       if (outcome.state === 'done') outcome = terminalFor(error);
     },
 
+    failWith(error: TaskwireError): void {
+      if (outcome.state === 'done') outcome = { state: 'failed', error };
+    },
+
+    handOff(): void {
+      handedOff = true;
+    },
+
     async [Symbol.asyncDispose](): Promise<void> {
       if (ended) return;
       ended = true;
       // Stopped before the terminal write, so no keepalive can touch a key the next lines are about
       // to put on `tombstoneTtl`, and stretch it back to a running operation's TTL behind them.
       clearInterval(keepalive);
+
+      if (handedOff) {
+        // The process the operation was handed to writes its terminal state (TW-CALL-007).
+        await reporter.flush().catch(() => undefined);
+        return;
+      }
 
       if (outcome.state === 'done' && reporter.hasParkedResult) {
         // TW-RES-004: the work is over, the record is not. The operation parks in `waiting_input`

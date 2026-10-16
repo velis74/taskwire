@@ -143,6 +143,7 @@ REST row (TW-REST-004): `POST {prefix}/{token}/cancel` → `202` requested; `404
 `409` already terminal, **or holding an uncollected result** (TW-CANCEL-010).
 
 State-machine facts (§4.1, §4.2) that must hold:
+
 - A cancel request sets the sticky flag and does **not** by itself change `state`; the state becomes
   `cancelled` only when `operation()` writes it — and that write drops the entry, as every terminal
   write does.
