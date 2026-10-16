@@ -96,7 +96,8 @@ useBusyDialog();
 ```
 
 Call `useBusyDialog()` once, in the setup of a component that lives as long as the page, with
-`<ModalView />` of `@dynamicforms/vuetify-modal-form-kit` mounted. `viewsetCallSource()` reports
+`<ModalView />` of `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 mounted. `taskwire/vuetify` also
+imports `@dynamicforms/vuetify-inputs`, which the modal kit requires as well. `viewsetCallSource()` reports
 every proxy call, over REST and muxws, with its repeats; `tw.retryNow()` calls fastapi-viewsets'
 `retryNow()`. A request listed in `tw.busy` is followed under its key as `tw.trackCall()` follows
 it, so a server-tracked call brings its operation's progress and an untracked one shows none.
@@ -108,13 +109,15 @@ it, so a server-tracked call brings its operation's progress and an untracked on
 | `client` | `use_taskwire()` | the client whose `tw.busy` the dialog shows |
 | `translate` | `text`, else `key` | renders every `Text`: title, label, notice, button |
 | `title` | `{ key: 'taskwire.busy', text: 'Performing operation' }` | the dialog title |
-| `component` | `TaskwireBusy` | the body: a component, or the name of a registered one; it receives `client`, `translate` and `showCalls` |
+| `component` | `TaskwireBusy` | the body: a component, or the name of a globally registered one; it receives `client`, `translate` and `showCalls` |
 | `showCalls` | `false` | the body lists every listed request with its operation's title, label and bar |
 
-The body is passed to `modal.custom()` under its component name and in the `components` option. A
-modal kit that resolves a `custom()` body among globally registered components only needs
-`app.component('TaskwireBusy', TaskwireBusy)`. The notice and button texts carry the keys
-`taskwire.unreachable` and `taskwire.try_now`.
+The body is passed to `modal.custom()` as a component and needs no registration. Its props do not
+change while the dialog is open: the body subscribes to `tw.busy` itself. **Try now** is a button of
+the body rather than a dialog action, because a dialog action settles the dialog when it runs. The
+kit adds its own **Close** action; a dialog the user closes stays closed until `tw.busy.visible` has
+been false once, and the next slow request after that opens it again. The notice and button texts
+carry the keys `taskwire.unreachable` and `taskwire.try_now`.
 
 ### A look of your own
 
@@ -163,6 +166,10 @@ does nothing for it. A request made inside `tw.run()` is followed through `run()
 Both sources may be attached at once. A proxy call reaches both under one key and is one request in
 `tw.busy`, which leaves when both have settled it. Over REST, each repeat of a proxy call is a new
 axios request; only `viewsetCallSource()` keeps the call listed between them.
+
+A proxy call made inside `tw.run()` is reported under its `Idempotency-Key`, while the server tracks
+it under `run()`'s token (TW-CALL-001). `tw.busy` follows the key, which has no document, so it
+shows no progress for that call; the handle `run()` returns does.
 
 ## Per call
 

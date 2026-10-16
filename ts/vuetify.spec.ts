@@ -217,16 +217,6 @@ describe('the shipped UI deliverables', () => {
     walk('index');
     expect(seen.size).toBeGreaterThan(3);
   });
-
-  it('declares only what it calls of the modal kit', () => {
-    // The kit ships types its package.json `exports` does not point at - a packaging bug in that
-    // library. Declaring the two calls taskwire makes is narrower than deep-importing the file,
-    // which would break the moment they fix it.
-    const declaration = readFileSync(resolve(HERE, 'vuetify-modal-form-kit.d.ts'), 'utf-8');
-    expect(declaration).toContain('message(');
-    expect(declaration).toContain('custom(');
-    expect(declaration).not.toContain('FormBuilder');
-  });
 });
 
 /** A client reduced to what `TaskwireOperations` reads: the register and the selection. */

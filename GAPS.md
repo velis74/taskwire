@@ -570,24 +570,5 @@ because axios knows nothing of `RequestOptions.background`. A proxy call made in
 therefore followed under its `Idempotency-Key`, which the server does not track it under (TW-CALL-001),
 and shows no progress in `tw.busy`; `run()`'s own handle still does.
 
-**Still needs deciding:** whether `axiosCallSource` should leave out requests that carry an
-`Idempotency-Key`, so that the two sources never overlap.
-
----
-
-## taskwire-spec.md §5.6 — TW-PKG-006 — the modal kit `useBusyDialog` runs on
-
-**What I needed:** which modal kit API `useBusyDialog` may use. The peer range is
-`@dynamicforms/vuetify-modal-form-kit ^0.7.0`, which excludes 0.8 and later; the reactive
-`CloseablePromise.props`, a component object in `custom()` and `CustomOptions.model` exist from 0.10.
-
-**What I assumed:** `useBusyDialog` uses what 0.7 has: `custom(title, name, props, { components })`
-and `close(value)`. The body follows `tw.busy` itself, so it needs neither `props` nor `model`, and
-**Try now** is a button of the body rather than a dialog action, which would take a
-`@dynamicforms/vue-forms` `Action`. The body component is passed under its name in `components`,
-which 0.10 resolves a `custom()` body against; 0.7 resolves it among globally registered components
-only. The kit adds its default **Close** action to a dialog with no actions of its own, and a dialog
-closed with it stays closed until `tw.busy.visible` has been false once.
-
-**Still needs deciding:** whether the peer range moves to `^0.10.0`. `useTaskwireDialogs`' fallback
-passes plain `{ name, label }` objects as `actions`, where 0.7.4 and later declare `Form.Action`.
+**Still open:** a proxy call made inside `run()` shows no progress in `tw.busy`. The guide states
+it (`docs/guide/long-running-requests.md`).

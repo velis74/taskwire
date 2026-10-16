@@ -39,6 +39,7 @@ export default defineConfig({
         // match one thrown by a frozen copy inlined here, and the declared version range would be
         // bypassed by whatever happened to be installed when this was built (TW-CORE-006).
         '@dynamicforms/fastapi-viewsets',
+        '@dynamicforms/vuetify-inputs',
         '@dynamicforms/vuetify-modal-form-kit',
         'muxws',
         'axios',
@@ -52,5 +53,7 @@ export default defineConfig({
     coverage: { provider: 'v8', include: ['ts/**/*'], exclude: ['**/index.ts'] },
     globals: true,
     environment: 'jsdom',
+    // `@dynamicforms/vuetify-inputs` imports Vuetify's components, whose CSS Node cannot load.
+    server: { deps: { inline: ['vuetify', '@dynamicforms/vuetify-inputs'] } },
   },
 });

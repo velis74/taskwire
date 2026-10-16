@@ -222,11 +222,18 @@ describe('the vue composables (§5.5)', () => {
   it('the core entry reaches no optional peer, and the build keeps every one of them out', () => {
     // TW-CORE-006 / TW-TS-010: the core must not import Vue, Vuetify, the modal kit, muxws or the
     // viewset proxy outside a subpath export, and `ts/index.ts` is the core's entry point. Every
-    // one of the five is behind a subpath - `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws`,
+    // one of the six is behind a subpath - `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws`,
     // `taskwire/fastapi-viewsets` - so the list is the whole of the policy and each entry is checked
     // three ways: the core does not reach it, it is not a dependency, and the bundle does not inline
     // it.
-    const PEERS = ['vue', 'vuetify', '@dynamicforms/vuetify-modal-form-kit', 'muxws', '@dynamicforms/fastapi-viewsets'];
+    const PEERS = [
+      'vue',
+      'vuetify',
+      '@dynamicforms/vuetify-inputs',
+      '@dynamicforms/vuetify-modal-form-kit',
+      'muxws',
+      '@dynamicforms/fastapi-viewsets',
+    ];
     const forbidden = new RegExp(`^(${PEERS.map((name) => name.replace(/[^\w]/g, '\\$&')).join('|')})$`);
 
     const seen = new Set<string>();

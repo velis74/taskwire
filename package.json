@@ -63,7 +63,8 @@
   },
   "peerDependencies": {
     "@dynamicforms/fastapi-viewsets": "^0.9.2",
-    "@dynamicforms/vuetify-modal-form-kit": "^0.7.0",
+    "@dynamicforms/vuetify-inputs": "^0.14.1",
+    "@dynamicforms/vuetify-modal-form-kit": "^0.10.0",
     "axios": "^1.13.6",
     "muxws": "^0.4.1",
     "vue": "^3.4",
@@ -71,6 +72,9 @@
   },
   "peerDependenciesMeta": {
     "@dynamicforms/fastapi-viewsets": {
+      "optional": true
+    },
+    "@dynamicforms/vuetify-inputs": {
       "optional": true
     },
     "@dynamicforms/vuetify-modal-form-kit": {
@@ -88,7 +92,8 @@
   },
   "devDependencies": {
     "@dynamicforms/fastapi-viewsets": "^0.9.2",
-    "@dynamicforms/vuetify-modal-form-kit": "^0.7.3",
+    "@dynamicforms/vuetify-inputs": "^0.14.1",
+    "@dynamicforms/vuetify-modal-form-kit": "^0.10.0",
     "@types/node": "^24",
     "@vitejs/plugin-vue": "^6",
     "@vitest/coverage-v8": "^3",

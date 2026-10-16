@@ -26,7 +26,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.9.2.
+- The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.9.2, and
+  `@dynamicforms/vuetify-modal-form-kit` requires ^0.10.0. `taskwire/vuetify` imports
+  `@dynamicforms/vuetify-inputs` ^0.14.1, a new optional peer dependency that the modal kit requires
+  as well.
+
+### Fixed
+
+- `useTaskwireDialogs` states the buttons of a dialog without a mapped component as `Action`s, as
+  the modal kit's `actions` option takes them, and answers nothing when the modal settles with the
+  kit's own **Close** action.
 
 ### Removed
 

@@ -1763,8 +1763,8 @@ function use_register(options?: TaskwireOptions):
   documented default.
 - **TW-TS-009** A pending dialog on **any** `tw.register` entry MUST be surfaced by the application
   even when that entry is not in `tw.operations`; the guide MUST state this as a requirement.
-- **TW-TS-010** `taskwire` MUST NOT declare Vue, Vuetify or
-  `@dynamicforms/vuetify-modal-form-kit` as dependencies. The dialog adapter, `useBusyDialog`,
+- **TW-TS-010** `taskwire` MUST NOT declare Vue, Vuetify, `@dynamicforms/vuetify-modal-form-kit` or
+  `@dynamicforms/vuetify-inputs` as dependencies. The dialog adapter, `useBusyDialog`,
   `TaskwireFooter`, `TaskwireOperations` and `TaskwireBusy` ship in the `/vuetify` subpath only.
 - **TW-TS-019** **`tw.trackCall(call, handler, options?)` MUST follow the operation whose token is
   `call.key`** — the token the server tracks the call under: the `Idempotency-Key` a
@@ -1843,8 +1843,9 @@ function use_register(options?: TaskwireOptions):
   has not ended and holds no result, and collect and dismiss on one that holds a result. It MUST NOT
   draw a percentage derived across operations (TW-REG-011).
 - **TW-PKG-006** `taskwire/vuetify` MUST ship `useBusyDialog(options?)`, which opens one modal
-  through the modal kit's `custom()` when `tw.busy.visible` becomes true and closes it when it
-  becomes false, and is called by the application or not at all (TW-TS-022). Its default body,
+  through the modal kit's `custom()`, with the body passed as a component, when `tw.busy.visible`
+  becomes true and closes it when it becomes false, and is called by the application or not at all
+  (TW-TS-022). Its default body,
   `TaskwireBusy`, MUST draw `busy.percent` (indeterminate when `null`) and `busy.label`, and while
   `busy.unreachable` holds a notice with an action that calls `tw.retryNow()`. A dialog the user
   closes MUST stay closed until `visible` has been false once. Tests:

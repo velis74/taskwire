@@ -43,6 +43,7 @@
  */
 
 /* eslint-disable vue/one-component-per-file -- `taskwire/vuetify` is one module, one entry point */
+import { Action } from '@dynamicforms/vuetify-inputs';
 import { modal } from '@dynamicforms/vuetify-modal-form-kit';
 import {
   type Component,
@@ -138,14 +139,24 @@ export function useTaskwireDialogs(options: DialogAdapterOptions = {}): { stop: 
               actions: Object.fromEntries(
                 dialog.buttons.map((button) => [
                   button.id,
-                  { name: button.id, label: translate(button.label, button.id) },
+                  new Action({
+                    value: {
+                      name: button.id,
+                      label: translate(button.label, button.id),
+                      renderAs: 'button',
+                      showLabel: true,
+                    },
+                  }),
                 ]),
-              ) as never,
+              ),
             });
     } catch {
-      // A modal dismissed by the user without choosing is not an answer. Leaving the question open
-      // is correct: another tab may still adopt it, and inventing a button here would act on a
-      // choice nobody made (TW-DLG-007).
+      chosen = '';
+    }
+    // A modal dismissed by the user without choosing is not an answer: the kit's own close action, a
+    // rejection. Leaving the question open is correct: another tab may still adopt it, and inventing
+    // a button here would act on a choice nobody made (TW-DLG-007).
+    if (!dialog.buttons.some((button) => button.id === chosen)) {
       presenting.delete(id);
       return;
     }
@@ -479,7 +490,7 @@ export interface BusyDialogOptions {
   client?: Taskwire;
   translate?: Translate;
   /**
-   * The dialog body: a component, or the name of one the modal kit resolves. It receives the props
+   * The dialog body: a component, or the name of a globally registered one. It receives the props
    * `client`, `translate` and `showCalls`. `TaskwireBusy` when absent.
    */
   component?: string | Component;
@@ -498,19 +509,16 @@ export interface BusyDialogOptions {
  * ```
  *
  * Opens `modal.custom(title, body, { client, translate, showCalls })` when `tw.busy.visible`
- * becomes true and closes it, with `close('idle')`, when it becomes false. The body follows
- * `tw.busy` itself. A component given as an object, `TaskwireBusy` included, is passed under its
- * `name` in the modal's `components` option; a modal kit that resolves a `custom()` body among
- * globally registered components only needs it registered under that name. A dialog the user
- * closes stays closed until `visible` has been false once. `stop()` closes an open dialog and
- * stops following; the surrounding effect scope calls it when it ends.
+ * becomes true and closes it, with `close('idle')`, when it becomes false. The body subscribes to
+ * `tw.busy` itself, so the props stay the same while the dialog is open. **Try now** is a button of
+ * the body: a dialog action settles the dialog when it runs. The kit adds its **Close** action; a
+ * dialog the user closes stays closed until `visible` has been false once. `stop()` closes an open
+ * dialog and stops following; the surrounding effect scope calls it when it ends.
  */
 export function useBusyDialog(options: BusyDialogOptions = {}): { stop: () => void } {
   const client = options.client ?? use_taskwire();
   const translate = options.translate ?? defaultTranslate;
   const body = options.component ?? TaskwireBusy;
-  const name = typeof body === 'string' ? body : ((body as { name?: string }).name ?? 'TaskwireBusyBody');
-  const components = typeof body === 'string' ? undefined : { [name]: body };
 
   let open: ReturnType<typeof modal.custom> | null = null;
   let dismissed = false;
@@ -524,12 +532,11 @@ export function useBusyDialog(options: BusyDialogOptions = {}): { stop: () => vo
       return;
     }
     if (open !== null || dismissed) return;
-    const dialog = modal.custom(
-      translate(options.title ?? CAPTIONS.busy),
-      name,
-      { client, translate, showCalls: options.showCalls ?? false },
-      components === undefined ? {} : { components },
-    );
+    const dialog = modal.custom(translate(options.title ?? CAPTIONS.busy), body, {
+      client,
+      translate,
+      showCalls: options.showCalls ?? false,
+    });
     open = dialog;
     const ended = (): void => {
       if (open !== dialog) return;

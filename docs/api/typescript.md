@@ -368,7 +368,9 @@ the tab rules: the tab that started the operation presents at once, every other 
 `dialogAdoptDelay` and presents only if the question is still open. **Mount it once, high up** —
 mounting it twice presents each question twice. `dialogId` maps to a component exactly as a
 `Result.kind` does, and anything unmapped falls back to a plain message dialog carrying the declared
-buttons, which is a worse dialog but never a missing one.
+buttons as `Action`s of `@dynamicforms/vuetify-inputs`, which is a worse dialog but never a missing
+one. A modal that settles with anything but one of the declared buttons — the kit's own **Close** —
+answers nothing and leaves the question open.
 
 `<TaskwireFooter />` draws the aggregate and the selected operation's own percentage, and renders
 nothing when the aggregate is null.
@@ -380,9 +382,13 @@ result, and **Collect** and **Dismiss** while it holds one. It emits `collected`
 `Result` and the operation, and `error` with the error and the operation when a write rejects. It
 renders nothing while the register is empty.
 
+`taskwire/vuetify` imports `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and
+`@dynamicforms/vuetify-inputs` ^0.14.1, both optional peers.
+
 `useBusyDialog({ client?, translate?, title?, component?, showCalls? })` opens one modal through
-the modal kit's `custom()` while `tw.busy.visible` holds and closes it when it does not; a dialog
-the user closes stays closed until `visible` has been false once. `<TaskwireBusy />` is its default
+the modal kit's `custom()`, with the body passed as a component, while `tw.busy.visible` holds and
+closes it when it does not; a dialog the user closes stays closed until `visible` has been false
+once. `<TaskwireBusy />` is its default
 body: `busy.label`, a bar for `busy.percent` (indeterminate when `null`), with `show-calls` one row
 per listed call, and while `busy.unreachable` holds a notice with **Try now**, which calls
 `tw.retryNow()`. Options and wiring: [Handling long-running
