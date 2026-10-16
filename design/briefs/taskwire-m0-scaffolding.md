@@ -23,7 +23,7 @@ None. This is the first milestone. Do not `git clone` the sibling repo - reprodu
 
 ## 3. Files to create
 
-```
+```text
 taskwire/
 ├── pyproject.toml
 ├── package.json
@@ -353,7 +353,7 @@ export default defineConfig({
 
 ### `.gitignore`
 
-```
+```text
 .idea
 node_modules
 coverage

@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.2.0] - Unreleased
 
 ### Added
+
 - Every fastapi-viewsets call is an operation: the key of its `Idempotency-Key` header is the token
   when the call carries no `X-Taskwire-Token` (`X-Taskwire-Token` wins when both are present).
   Requires `dynamicforms-fastapi-viewsets >= 0.9.0`.
@@ -37,6 +38,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shows no operation ending inside `progressUi.delay`.
 
 ### Changed
+
 - `register_taskwire_rest` and `register_taskwire_celery_viewset` install `taskwire_execution_hook`
   with fastapi-viewsets' `set_execution_hook`, replacing any execution hook the application
   installed.
@@ -58,6 +60,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.1.0] - 2026-08-23
 
 ### Added
+
 - Initial release: progress reporting and awaitable dialogs for long-running operations, one
   protocol implemented three ways — a local in-process transport, REST, and a WebSocket transport
   over `muxws` — with the store as the single source of truth and a push as only an accelerator.

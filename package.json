@@ -41,8 +41,7 @@
   "scripts": {
     "build": "vite build",
     "test": "vitest run --coverage",
-    "lint": "eslint ts --fix && vue-tsc --noEmit",
-    "lint:ci": "eslint ts && vue-tsc --noEmit",
+    "lint": "node scripts/lint.mjs",
     "docs:dev": "npm run docs:dev -w docs",
     "docs:build": "npm run docs:build -w docs",
     "docs:preview": "npm run docs:preview -w docs"
@@ -93,6 +92,7 @@
     "@vue/tsconfig": "^0.7.0",
     "eslint-config-velis": "^2.0.12",
     "jsdom": "^26.0.0",
+    "markdownlint-cli2": "^0.18.1",
     "muxws": "^0.3.1",
     "rollup-plugin-visualizer": "^5.14.0",
     "typescript": "^5",

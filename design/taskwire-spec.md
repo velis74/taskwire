@@ -1144,9 +1144,10 @@ middleware chain and execution hook.
   (TW-CELERY-003). For a call the middleware does not run, it reads the token, the namespace and the
   connection id from `context`, writes `queued` with that connection as `origin_connection`, and
   carries the same two values. A dispatch made from inside an action the execution hook reports
-  MUST carry nothing. `wrap_sync_runner` consumes the two values and makes them visible to the execution hook in the worker. When
-  the worker's execution limit unwinds the runner while the hook's operation is open, the action's
-  coroutine is left suspended and its `__aexit__` does not run: `wrap_sync_runner` MUST then write the
+  MUST carry nothing. `wrap_sync_runner` consumes the two values and makes them visible to the
+  execution hook in the worker. When the worker's execution limit unwinds the runner while the
+  hook's operation is open, the action's coroutine is left suspended and its `__aexit__` does not
+  run: `wrap_sync_runner` MUST then write the
   terminal state itself, `dialog_timeout` under TW-DLG-006's condition, and the hook's own exit, should
   the suspended coroutine ever resume, MUST write nothing.
 
@@ -1753,7 +1754,8 @@ function use_register(options?: TaskwireOptions):
   (TW-TS-004) and read the token once more without waiting for the ladder, also while a transport
   holds it (TW-TS-007), so a call the server did not track is dropped silently and a call whose
   action ended inside `progressUi.delay` never enters `tw.operations`. A call made inside `run()` is
-  tracked under `run()`'s token (TW-CALL-001) and is followed through `run()`'s handle. A `call` without a string `key` MUST be refused with a `TypeError`.
+  tracked under `run()`'s token (TW-CALL-001) and is followed through `run()`'s handle. A `call`
+  without a string `key` MUST be refused with a `TypeError`.
   `tw.awaitCall(call, handler, options?)` MUST register the same handler and resolve or reject
   exactly as `call`. Tests: `client.spec.ts::trackCall follows a viewset call under its key`.
 - **TW-TS-020** **`attachMuxws` MUST register an open interceptor on the peer** (muxws

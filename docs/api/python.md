@@ -88,7 +88,6 @@ the token the caller is already watching answers with the failure instead of han
 async def migrate_namespace(from_ns: str, to_ns: str) -> int
 ```
 
-
 The **only** way operations change namespace, and the application is the only caller — on login,
 move the anonymous session's operations onto the account with one call, the same shape as merging a
 shopping cart. Returns how many were re-keyed (`0` when no store is configured). Idempotent,

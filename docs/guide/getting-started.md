@@ -6,6 +6,7 @@ something when it cannot decide alone.
 ## Install
 
 ::: code-group
+
 ```bash [Python]
 pip install taskwire               # core: no runtime dependencies at all
 pip install "taskwire[viewsets]"   # the REST API as a fastapi-viewsets viewset
@@ -18,6 +19,7 @@ pip install "taskwire[muxws]"      # the WebSocket transport
 ```bash [TypeScript]
 npm install taskwire
 ```
+
 :::
 
 The Python core has **no runtime dependencies at all**; the npm package requires axios and nothing

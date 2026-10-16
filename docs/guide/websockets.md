@@ -18,6 +18,7 @@ the same states, the same dialogs, the same cancellations and the same results, 
 ## Install
 
 ::: code-group
+
 ```bash [Python]
 pip install "taskwire[fastapi,viewsets,muxws]"
 ```
@@ -25,6 +26,7 @@ pip install "taskwire[fastapi,viewsets,muxws]"
 ```bash [TypeScript]
 npm install taskwire muxws @dynamicforms/fastapi-viewsets
 ```
+
 :::
 
 [muxws](https://docs.velis.si/muxws/) is the multiplexed WebSocket library the transport is written

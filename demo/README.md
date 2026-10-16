@@ -54,7 +54,7 @@ here.
 
 ## The layout
 
-```
+```text
 demo.py               starts both halves; one Ctrl-C stops them
 demo/server/          FastAPI: the viewset registration, the socket, the jobs, the fake book
   main.py             the app. taskwire costs it three lines, one of them the /ws endpoint

@@ -24,6 +24,7 @@ a single flat `Reporter` (inline-clock throttling off an injected `clock`, `set(
 `taskwire/reader.py` as the only caller of `transport.notify()`.
 
 Two specific hooks M1 left open for this milestone:
+
 - `operation()` currently does everything TW-API-001 requires **except** "bind the ambient reporter".
 - `Reporter.__enter__` / `__exit__` exist only as the forced-flush pair; they do not bind anything.
 

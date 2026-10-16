@@ -20,7 +20,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 273 pass, 9 skip
 npx vitest run                                            # 401 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
-npx eslint ts --fix && npx vue-tsc --noEmit
+npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
 python demo.py                                            # both halves, Ctrl-C stops the pair
 python demo/e2e/run_e2e.py                                # the two halves against each other, ~3 min
 ```
@@ -82,8 +82,6 @@ Two traps found in it, worth remembering:
 
 ## House rules
 
-- **Slovenian to the user, English in the code.** No attribution to Claude or Anthropic anywhere —
-  not in commits, code, comments or docs. Write commits as a human developer would.
 - **No workflows, no subagents.** They burn credit without adding value here.
 - **Unit tests: reasonable, not excessive.** At muxws the tests ran 2.5× the code under test and
   still missed what the demo found in a minute. Target >95 % coverage but not at any cost. The

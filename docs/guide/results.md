@@ -68,7 +68,7 @@ result that outlives its file is a dead download the user will click anyway.
 
 ## Releasing it: three paths, one arbiter
 
-```
+```text
 POST /taskwire/{token}/collect    ->  204   "I have taken it"
 POST /taskwire/{token}/dismiss    ->  204   "I do not want it"
                                             ...or the result_ttl backstop

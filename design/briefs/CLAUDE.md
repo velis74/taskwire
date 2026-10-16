@@ -90,7 +90,7 @@ differ between the two languages in the same repository:
 Keep a `GAPS.md` at the root of the implementation repository. Append an entry whenever a brief is
 silent, ambiguous, self-contradictory, or contradicted by the spec. One entry per problem:
 
-```
+```text
 ## <brief filename> — <rule id if any>
 What I needed: ...
 What the brief says: ...

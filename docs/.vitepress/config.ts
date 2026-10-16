@@ -29,6 +29,7 @@ export default defineConfig({
             { text: 'The WebSocket transport', link: '/guide/websockets' },
             { text: 'fastapi-viewsets integration', link: '/guide/fastapi-viewsets' },
             { text: 'Changelog', link: '/guide/changelog' },
+            { text: 'Migration guide', link: '/guide/migration' },
           ],
         },
       ],
