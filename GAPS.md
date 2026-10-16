@@ -431,3 +431,200 @@ leaves out a visible operation that has no document yet.
 
 **Still needs deciding:** the two names, and whether the components should render Vuetify's own
 `VList` / `VDialog` / `VProgressLinear` instead.
+
+---
+
+## taskwire-spec.md §2.1 — TW-CORE-006 — the npm core imports the polling ladder from fastapi-viewsets
+
+**What I needed:** whether `ts/poll.ts`, which the core reaches through `taskwire.ts` and
+`register.ts`, may import the polling ladder from `@dynamicforms/fastapi-viewsets`, and what that
+makes of the package's peer dependencies.
+
+**What the spec says:** TW-CORE-006 read:
+
+> Python core MUST NOT import FastAPI, Celery, Redis, pydantic or fastapi-viewsets. Framework imports
+> are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify or the modal kit
+> outside a subpath export.
+
+and its note:
+
+> **taskwire uses fastapi-viewsets as a tool to build its own REST API** (`contrib/viewsets.py`),
+> under the same confinement as FastAPI and Celery — banned from the core, allowed in `contrib`, and
+> nothing more. Separately, applications built *with* fastapi-viewsets use taskwire for progress. Two
+> relationships, and neither closes a circle.
+
+The rule does not name fastapi-viewsets for the npm core; the note bans it from "the core" and names
+no language. The events API's implementation plan moves the ladder into fastapi-viewsets and has
+taskwire import it. `vue.spec.ts` and `muxws.spec.ts` kept fastapi-viewsets out of the core, as an
+optional peer of `taskwire/muxws` alone.
+
+**What I assumed:** the core imports the ladder algorithm, and `@dynamicforms/fastapi-viewsets` is a
+required peer beside axios. fastapi-viewsets' bundle imports axios and nothing else, so the core
+still reaches no UI library and no muxws. `poll.ts` is the one core module that imports it, and it
+takes `PollLadder`, `PollLadderState` and `PollSettings` and nothing else; the specs assert both. The
+numbers are taskwire's: `TASKWIRE_POLL_SETTINGS` in `poll.ts` holds TW-REST-010's cadence, and both
+loops construct their `PollLadder` with it. `package.json` declares
+`"engines": { "node": "^20.19.0 || >=22.12.0" }`.
+
+TW-CORE-006 and its note were edited to match, which is a change to the specification made without
+the author:
+
+- the rule gains the sentence "Of `@dynamicforms/fastapi-viewsets` the npm core imports the polling
+  ladder, `PollLadder` with its state type `PollLadderState` and its settings type `PollSettings`,
+  and nothing else, in `ts/poll.ts`; it is a required peer dependency, as axios is.";
+- in the note, "banned from the core" reads "banned from the Python core";
+- in the note, ", and nothing more" is deleted;
+- the note gains the sentence "On npm the core runs its polling ladder from it and `taskwire/muxws`
+  its muxws proxy."
+
+**What it costs:**
+
+- Every application installs fastapi-viewsets, including one that only polls or only runs
+  `LocalTransport`. npm 7 and later and pnpm 8 and later install a required peer themselves. yarn,
+  npm 6, npm with `legacy-peer-deps` (the flag or `.npmrc`) and pnpm with `auto-install-peers=false`
+  do not: the install succeeds, and `taskwire`, `taskwire/vue` and `taskwire/vuetify` then fail to
+  load because the package is not found. `taskwire/conformance` is the one entry that loads without
+  it.
+- Its bundle carries more of fastapi-viewsets than the ladder. fastapi-viewsets is built for
+  `es2015`, so the mixin classes' static `actions` fields compile to helper calls a bundler keeps,
+  together with the proxy base they reference: an esbuild bundle of `use_taskwire` grows from 9.7 kB
+  to 12.5 kB gzipped. Native static fields (an `es2022` target) or `/* @__PURE__ */` annotations in
+  fastapi-viewsets would leave the ladder alone.
+- `dist/index.cjs`, `dist/vue.cjs` and `dist/vuetify.cjs` `require()` an ES-module-only package.
+  `require('taskwire')` works on Node.js versions that can `require()` an ES module (20.19, 22.12 and
+  later) and throws `ERR_REQUIRE_ESM` on older ones; `engines` makes npm warn about those at
+  install. Jest in its default CommonJS mode does not load an ES module through `require()` on any
+  Node.js version and does not transform `node_modules`, so a Jest test that imports `taskwire`
+  fails with `SyntaxError: Cannot use import statement outside a module` unless
+  `transformIgnorePatterns` lets `@dynamicforms/fastapi-viewsets` through to a transform that
+  compiles ES modules. `dist/muxws.cjs` already had both properties.
+- The algorithm follows the installed fastapi-viewsets within `^0.9.1`: a release that changes how
+  `PollLadder` climbs, jitters or floors changes taskwire's polling with no taskwire release, and
+  `poll.spec.ts` catches it only in a taskwire test run against that release. The numbers do not
+  follow it.
+- taskwire cannot be installed until `@dynamicforms/fastapi-viewsets` 0.9.1 is on npm (`NEXT.md`).
+
+**Still needs deciding:** whether the core may require fastapi-viewsets. The alternative keeps a
+copy of the ladder in `ts/poll.ts`, leaves fastapi-viewsets an optional peer of `taskwire/muxws`,
+and keeps two ladders that have to be kept equal. A CommonJS build of fastapi-viewsets would remove
+the Node.js and Jest costs and leave the install cost.
+
+---
+
+## taskwire-spec.md §2.14 — TW-WS-010 — the client half installs the peer's stream handler
+
+**What I needed:** whether TW-WS-010 binds the browser half, where `MuxwsClientTransport` installs
+the peer's `onStream` handler, and shares it with fastapi-viewsets' event client.
+
+**What the spec says:** TW-WS-010 read "taskwire MUST NOT install the peer's stream handler", with
+the reason "A library that took the slot would lock the application out of its own socket". The
+rest of the rule describes the server half only (`register_taskwire_muxws`, `on_stream`,
+`process_command`) and names no language.
+
+**What I assumed:** the rule binds the server half. Its first sentence now reads "taskwire's server
+half MUST NOT install the peer's stream handler", and its note states what the client half does,
+which is a change to the specification made without the author. `MuxwsClientTransport`'s handler
+passes every stream to `handleEventStream(peer, payload, stream)`, which takes a stream whose
+headers carry a string `:event` for the event client `createEventClient({ peer })` registered for
+the peer; every other stream is parsed as an envelope, and one that does not parse is dropped with
+no trace (`ts/muxws.ts`, `deliver`). The handler stays installed after `detachMuxws`.
+
+**What it costs:** the lock-out the rule guards against exists in the browser. A stream the
+application's server opens to the browser for its own purposes, on a peer taskwire is attached to,
+reaches taskwire's `deliver()` and is dropped. fastapi-viewsets' `attachEvents(peer, fallback)`
+composes the other way: it passes a non-event stream to `fallback`, or resets it with `REFUSED`, and
+installs its own handler in place of taskwire's.
+
+**Still needs deciding:** whether the client half takes an application handler for the streams that
+are neither events nor envelopes (an option of `attachMuxws`, or a handler taskwire returns for the
+application to install, as the server half does), whether such a stream is reset rather than
+dropped, and whether TW-WS-010 gains a client clause.
+
+---
+
+## fastapi-viewsets 0.9.1 — taskwire's push path on `fastapi_viewsets.events`
+
+**What I needed:** whether taskwire's envelopes should travel as fastapi-viewsets events: the store
+publishes `publish("taskwire:" + ns, envelope)`, `MuxwsTransport` and `RedisReader` give way to the
+events store, its reader and `deliver()`, and a delivery filter carries the per-connection decisions
+(TW-DEL-010, TW-PRIV-003). The client half already shares the peer: `MuxwsClientTransport` hands a
+stream carrying `:event` to `handleEventStream` and treats every other one as an envelope.
+
+**What the spec says:** the push path is written against its own channel, reader and fan-out, and
+the move contradicts several rules as they stand:
+
+- **TW-TR-004** — no list of interested connections anywhere. The events subscription table is one,
+  keyed by topic and socket.
+- **TW-TR-007** — the shipped implementations are `NullTransport`, `LocalTransport` and
+  `MuxwsTransport`. `MuxwsTransport` gives way to the events store's `deliver()`, so the third entry
+  becomes a transport whose `notify()` calls `publish("taskwire:" + ns, envelope)`, or goes, if the
+  store publishes itself.
+- **TW-KEY-001** — the Redis keyspace is exactly its table, whose last row is the `twx:{ns}`
+  channel. `RedisEventStore` keys `{prefix}rev:taskwire:{ns}`, `{prefix}log:taskwire:{ns}` and the
+  channel `{prefix}ch:taskwire:{ns}` in its place. TW-KEY-002 holds: the subscription table lives in
+  each web process's memory, not in the keyspace.
+- **TW-BP-001** — the channel is `twx:{ns}`. It becomes `{prefix}ch:taskwire:{ns}` of
+  `RedisEventStore`. TW-BP-004's per-process subscription holds, as `store.watch()` on a topic's
+  first subscription.
+- **TW-BP-003** — every envelope published on `twx:{ns}` reaches every socket of the namespace,
+  subject only to TW-DEL-010 and TW-PRIV-003. `deliver()` reaches the sockets subscribed to
+  `taskwire:{ns}`, which are the namespace's sockets only while `register_taskwire_muxws` subscribes
+  every one of them.
+- **TW-BP-002** — no per-token subscription mechanism. The topic stays per namespace, so the rule
+  holds only while nothing subscribes a socket to a topic of its own: a topic is a string any
+  connected client can name, and the events viewset subscribes a socket to whatever its authorizers
+  admit.
+- **TW-CORE-005** — no event log, no sequence numbers, no replay endpoint, no gap detection. The
+  events store assigns every event a `rev` and a `prev`, keeps the last `viewsets_event_log_size`
+  events of a topic, and `poll` replays them. The setting is global, so taskwire's topics would keep
+  a log whenever the application's do.
+- **TW-CORE-003 / TW-CORE-004** — the reader is the only caller of `transport.notify()`. With a
+  `RedisStore` the worker's `store.publish()` calls `publish()` and no reader of taskwire's runs in
+  the web process; `deliver()` is the only entry into a socket. `test_only_reader_calls_notify`
+  asserts the present arrangement.
+- **TW-BP-005 / TW-BP-006** — `start_taskwire_reader()`, `stop_taskwire_reader()` and
+  `check_taskwire_readers()` give way to `start_events()`, `stop_events()` and `check_events()`, and
+  `RedisEventStore` is configured in the web process and in the worker.
+- **TW-WS-001** — muxws is used through `peer.notify(payload)` and `PeerRegistry.peers_for` and
+  nothing else. `deliver()` calls `peer.notify(payload, headers=...)` and `peer.on_close`, and fan-out
+  no longer reads the session tag (TW-WS-007, TW-WS-011); `goaway_if_stale` still does.
+- **TW-WS-011** — `register_taskwire_muxws` subscribes the process to `twx:{ns}`, and `release_peer`
+  unsubscribes once the process holds no socket of the namespace. Under the move it subscribes the
+  socket with `fastapi_viewsets.events.subscribe`, the events module watches the topic on its first
+  subscription in the process and unwatches it on the last, and `release_peer` unsubscribes nothing.
+- **TW-TR-003** — `settings.push_timeout` bounds a push. `viewsets_event_push_timeout` bounds it
+  instead, a second setting with the same default.
+- **TW-DEL-003 / TW-PRIV-003** — a raising `push_filter` counts as `True`, and so does a raising
+  delivery filter. For TW-DEL-010 that is the rule; for TW-PRIV-003 it pushes a private operation's
+  progress to every socket of the namespace. The privacy half of the filter has to catch its own
+  exceptions and answer `False`.
+- **TW-DEL-023** — overrides are pruned at the last hop that fans a terminal envelope out. The
+  delivery filter is that hop, so it prunes as a side effect of answering.
+- **TW-SYM-003** — the asymmetry table names the `twx:{ns}` backplane, and TW-STORE-011 places it
+  with `RedisStore`.
+
+**What would have to change:**
+
+- In fastapi-viewsets: a source whose topics no client may subscribe to or poll, whatever the
+  application's authorizer list says, since the first `True` decides and an `allow_all` listed
+  before `DeclaredSources()` would otherwise open `taskwire:{ns}` of any namespace to any caller;
+  and a log size per source, 0 for taskwire's, so that no envelope is kept for `poll`.
+- In taskwire's server half: `register_taskwire_muxws` subscribes the socket itself with
+  `fastapi_viewsets.events.subscribe(peer, context, "taskwire:" + ns)`, since the client does not know
+  its namespace and is not told it (TW-WS-007); a namespace is encoded into the key, which may hold no
+  whitespace or control character; an `Event` subclass carries the envelope's fields unchanged, in
+  `contrib`, since it is a pydantic model (TW-CORE-006); the `[muxws]` extra requires
+  `dynamicforms-fastapi-viewsets >= 0.9.1`.
+- In taskwire's client half: `MuxwsClientTransport` delivers a stream whose `:topic` starts with
+  `taskwire:` as an envelope before `handleEventStream` sees it, and ignores its `:rev` and `:prev`.
+  The envelope's own `rev` is the only one the client compares (TW-REV-*), so TW-CORE-005 holds on the
+  client.
+- In the specification: TW-TR-003, TW-TR-004, TW-TR-007, TW-KEY-001, TW-BP-001, TW-BP-002,
+  TW-BP-003, TW-BP-005, TW-BP-006, TW-CORE-003, TW-CORE-004, TW-CORE-005, TW-WS-001, TW-WS-011 and
+  TW-SYM-003 rewritten for the events store, and the tests that assert them. TW-DEL-003 and
+  TW-PRIV-003 keep their text and gain the delivery filter as the hop they bind, with the rule that
+  the privacy check answers `False` on an exception; TW-DEL-023 keeps its text, with the delivery
+  filter as its last hop. TW-BP-004 and TW-KEY-002 hold unchanged.
+
+**Still needs deciding:** whether the push path moves at all, as a specification change of its own.
+Nothing of it is implemented.

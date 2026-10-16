@@ -2,24 +2,29 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
-
 import {
-  DEFAULT_POLL_SETTINGS,
-  jitterMultiplier,
-  ladderInterval,
-  nextDelay,
+  type Draw,
+  jitterMultiplier as jitterOf,
+  ladderInterval as intervalOf,
+  nextDelay as delayOf,
   PollLadder,
   type PollLadderState,
-  registerLadderState,
-  revsOf,
-  snapshotLadderState,
-} from './poll';
+} from '@dynamicforms/fastapi-viewsets';
+import { describe, expect, it } from 'vitest';
+
+import { registerLadderState, revsOf, snapshotLadderState, TASKWIRE_POLL_SETTINGS } from './poll';
 import type { DialogRequest, Progress, ProgressState, Register, Snapshot } from './wire';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-const { baseIntervalMs: BASE, ceilingMs: CEILING, backoffFactor: FACTOR } = DEFAULT_POLL_SETTINGS;
+const SETTINGS = TASKWIRE_POLL_SETTINGS;
+
+const { baseIntervalMs: BASE, ceilingMs: CEILING, backoffFactor: FACTOR } = SETTINGS;
+
+/** The imported ladder's three functions, on taskwire's settings. */
+const ladderInterval = (state: PollLadderState): number => intervalOf(state, SETTINGS);
+const nextDelay = (state: PollLadderState, draw: Draw): number => delayOf(state, draw, SETTINGS);
+const jitterMultiplier = (draw: Draw): number => jitterOf(draw, SETTINGS);
 
 /** The middle of the jitter window: multiplier exactly 1, so the ladder is readable in the assertion. */
 const centre = (): number => 0.5;
@@ -107,7 +112,7 @@ describe('the ladder while something is running (TW-REST-010)', () => {
   });
 
   it('multiplies by 1.5 up to the 5 s ceiling when no rev changed', () => {
-    const ladder = new PollLadder(DEFAULT_POLL_SETTINGS, centre);
+    const ladder = new PollLadder(SETTINGS, centre);
     const running = { anyActive: true, anyDialogOpen: false, revChanged: false };
 
     const walked = Array.from({ length: 12 }, () => ladder.next(running));
@@ -119,7 +124,7 @@ describe('the ladder while something is running (TW-REST-010)', () => {
   });
 
   it('resets to the base interval on any change', () => {
-    const ladder = new PollLadder(DEFAULT_POLL_SETTINGS, centre);
+    const ladder = new PollLadder(SETTINGS, centre);
     const running = { anyActive: true, anyDialogOpen: false, revChanged: false };
     Array.from({ length: 8 }, () => ladder.next(running));
     expect(ladder.ladder).toBe(CEILING);
@@ -132,8 +137,8 @@ describe('the ladder while something is running (TW-REST-010)', () => {
   it('climbs on the un-jittered ladder, so unlucky draws cannot compound', () => {
     // Two ladders differing only in their draw take the same *ladder* steps; only what they sleep for
     // differs. Feeding the jittered emission back in would make the unlucky one climb 20 % faster.
-    const unlucky = new PollLadder(DEFAULT_POLL_SETTINGS, low);
-    const lucky = new PollLadder(DEFAULT_POLL_SETTINGS, high);
+    const unlucky = new PollLadder(SETTINGS, low);
+    const lucky = new PollLadder(SETTINGS, high);
     const running = { anyActive: true, anyDialogOpen: false, revChanged: false };
     Array.from({ length: 4 }, () => {
       unlucky.next(running);
@@ -219,7 +224,7 @@ describe('poll_after_ms may only slow the ladder (TW-REST-014)', () => {
 
 describe('jitter', () => {
   it('is +/- 20 % and is actually applied', () => {
-    expect(DEFAULT_POLL_SETTINGS.jitterFraction).toBe(0.2);
+    expect(SETTINGS.jitterFraction).toBe(0.2);
     expect(jitterMultiplier(low)).toBeCloseTo(0.8, 10);
     expect(jitterMultiplier(centre)).toBeCloseTo(1, 10);
     expect(jitterMultiplier(high)).toBeCloseTo(1.2, 10);
@@ -244,7 +249,7 @@ describe('jitter', () => {
       counter += 1;
       return counter / 10;
     };
-    const ladder = new PollLadder(DEFAULT_POLL_SETTINGS, draw);
+    const ladder = new PollLadder(SETTINGS, draw);
     const idle = { anyActive: false, anyDialogOpen: false, revChanged: false };
     expect(ladder.next(idle)).not.toBe(ladder.next(idle));
     expect(counter).toBe(2);
@@ -294,6 +299,27 @@ describe('one ladder for both endpoints (TW-REST-011)', () => {
   });
 });
 
+describe("taskwire's cadence is its own (TW-REST-010)", () => {
+  it("holds the rule's numbers in TASKWIRE_POLL_SETTINGS and builds every ladder with it", () => {
+    // The ladder's algorithm is imported and its numbers are not: fastapi-viewsets' own default
+    // cadence never reaches taskwire's two loops.
+    expect(TASKWIRE_POLL_SETTINGS).toEqual({
+      baseIntervalMs: 400,
+      backoffFactor: 1.5,
+      ceilingMs: 5000,
+      jitterFraction: 0.2,
+    });
+    expect(Object.isFrozen(TASKWIRE_POLL_SETTINGS)).toBe(true);
+    const constructions = [...sources()].flatMap(([name, text]) =>
+      [...text.matchAll(/new PollLadder\(([^)]*)\)/g)].map((match) => `${name}: ${match[1]}`),
+    );
+    expect(constructions.sort()).toEqual([
+      'register.ts: TASKWIRE_POLL_SETTINGS',
+      'taskwire.ts: TASKWIRE_POLL_SETTINGS',
+    ]);
+  });
+});
+
 describe('nothing derives a duration from the poll interval (TW-THR-007)', () => {
   it('confines the ladder to the poller', () => {
     const importers = [...sources()]
@@ -304,6 +330,15 @@ describe('nothing derives a duration from the poll interval (TW-THR-007)', () =>
     // the single-token poll and the register poll, which share this one ladder rather than
     // forking it (TW-REST-011). Neither the package entry point nor anything else may import it.
     expect(importers).toEqual(['register.ts', 'taskwire.ts']);
+
+    // The ladder is fastapi-viewsets', and poll.ts is the one module that takes it from there.
+    const LADDER = /\b(PollLadder\w*|PollSettings|DEFAULT_POLL_SETTINGS|Draw|ladderInterval|nextDelay|jitter\w*)\b/;
+    const named = (text: string): string[] =>
+      [...text.matchAll(/\{([^}]*)\}\s*from '@dynamicforms\/fastapi-viewsets'/g)].map((match) => match[1]);
+    const direct = [...sources()]
+      .filter(([, text]) => named(text).some((names) => LADDER.test(names)))
+      .map(([name]) => name);
+    expect(direct).toEqual(['poll.ts']);
   });
 
   it('lets the delay reach setTimeout and nothing else', () => {

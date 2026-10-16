@@ -85,6 +85,11 @@ The cadence: 400 ms base while anything is `queued` or `running`; ×1.5 on no ch
 ceiling; back to base on any change; the ceiling while a dialog is open and as an idle heartbeat
 that never stops; ±20 % jitter so restored tabs do not synchronise.
 
+The ladder is fastapi-viewsets' `PollLadder`, the one its event client polls on, which is why the
+npm package requires `@dynamicforms/fastapi-viewsets`. The numbers above are taskwire's and do not
+follow fastapi-viewsets' own defaults. taskwire supplies what the ladder reads: whether anything is
+active, whether a dialog is open, whether a `rev` moved, and the server's `poll_after_ms`.
+
 The ladder is suspended while a transport is attached and healthy, and comes back on its base rung
 the moment one is lost or detached — so the two mechanisms alternate rather than run together, and
 the worst a dead socket costs is one 400 ms interval. What is suspended is the ladder and not the

@@ -22,9 +22,10 @@ npm install taskwire
 
 :::
 
-The Python core has **no runtime dependencies at all**; the npm package requires axios and nothing
-else. Every extra adds an adapter to something outside the process — never a capability the core
-lacks.
+The Python core has **no runtime dependencies at all**; the npm package requires axios and
+`@dynamicforms/fastapi-viewsets`, whose polling ladder the client runs on; npm 7+ and pnpm 8+ install
+both with it, and the [migration guide](./migration.md) lists the setups that do not. Every extra
+adds an adapter to something outside the process — never a capability the core lacks.
 
 ## Wire it up once
 

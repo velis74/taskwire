@@ -8,9 +8,10 @@ both directions. Module-level factories keep their Python names verbatim — `us
 `configure_taskwire`, `new_token` — and there is no `newToken` alias.
 
 Five entry points: `taskwire`, `taskwire/vue`, `taskwire/muxws`, `taskwire/vuetify` and
-`taskwire/conformance`. The main entry imports axios, the package's one required peer dependency; the
-`/vue`, `/muxws` and `/vuetify` subpaths each import the optional peer they are named for, and
-`/conformance` imports nothing at all.
+`taskwire/conformance`. The main entry imports the package's two required peer dependencies: axios,
+and `@dynamicforms/fastapi-viewsets` for the polling ladder. The `/vue`, `/muxws` and `/vuetify`
+subpaths each import the optional peer they are named for, and `/conformance` imports nothing at
+all.
 
 ## The client
 
@@ -276,6 +277,12 @@ in the synchronous part of a `run()` callback, as the axios interceptor writes t
 prefix the viewset is mounted under when it is not the client's own. The connection id needs no
 option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the socket puts
 every ladder back on its base rung. taskwire never dials a socket and never closes one.
+
+`attachMuxws` installs the peer's `onStream` handler. A stream whose headers carry `:event` goes to
+fastapi-viewsets' `handleEventStream`, and so to the event client `createEventClient({ peer })`
+registered for the peer; every other stream is parsed as a taskwire push, and dropped when it is not
+an envelope. `attachEvents(peer)` replaces the handler and is not called on a peer taskwire is
+attached to.
 
 ## Vue
 

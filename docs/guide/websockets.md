@@ -126,6 +126,39 @@ both, and taskwire never closes the socket — it did not dial it.
 The socket is the application's to open, which is why there is no URL anywhere in taskwire's
 configuration. One peer serves the whole application: taskwire's streams and your own share it.
 
+## One peer for taskwire and fastapi-viewsets events
+
+A muxws peer has one `onStream` handler, and in the browser `attachMuxws` installs it. The handler
+passes every stream the server opens to fastapi-viewsets' `handleEventStream` first: a stream whose
+headers carry `:event` goes to the event client registered for the peer, and every other stream is
+parsed as a taskwire push. A stream that is neither an event nor an envelope is dropped, so a stream
+your server opens to the browser for its own purposes does not reach your code on a peer taskwire is
+attached to. So the [fastapi-viewsets event client](https://docs.velis.si/) follows its topics
+over the same socket:
+
+```ts
+import axios from 'axios';
+import { createEventClient } from '@dynamicforms/fastapi-viewsets';
+
+const socket = attachMuxws(tw, peer);
+const events = createEventClient({ basePath: '/events', peer, axios });
+```
+
+Do not call `attachEvents(peer)` on a peer taskwire is attached to: it installs a handler of its own
+in the same slot, and taskwire's pushes stop arriving. The handler stays installed after
+`detachMuxws(tw)`, since muxws cannot remove one, and keeps passing events on.
+
+On the server, the events `subscribe` call reads the socket from the `peer` argument of
+`process_command`, which `dynamicforms-fastapi-viewsets` accepts from 0.9.1. The `viewsets` and
+`muxws` extras require 0.9.0, so install 0.9.1 or later for this. taskwire's handler composes behind
+it unchanged:
+
+```python
+if await process_command(payload, stream, connection=websocket, peer=peer):
+    return
+await taskwire_stream(payload, stream)
+```
+
 ## The headers on your own streams
 
 While attached, taskwire registers an open interceptor on the peer (`Peer.interceptOpen`), so every

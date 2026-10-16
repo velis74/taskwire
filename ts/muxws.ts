@@ -36,7 +36,7 @@
  * state the new socket already has.
  */
 
-import { type MuxwsPeerSource, MuxwsProxyImpl } from '@dynamicforms/fastapi-viewsets';
+import { handleEventStream, type MuxwsPeerSource, MuxwsProxyImpl } from '@dynamicforms/fastapi-viewsets';
 import type { Peer } from 'muxws';
 
 import type { TaskwireCalls } from './calls';
@@ -91,6 +91,15 @@ export interface MuxwsClientOptions {
  * `peer.request()` to call up, and `peer.interceptOpen()` to put taskwire's two headers on the
  * streams the application opens (TW-TS-020). Nothing touches the frame format, the stream id space
  * or codec selection (TW-WS-002), and stream ids are muxws's alone (TW-WS-005).
+ *
+ * **The peer's one `onStream` slot is shared with fastapi-viewsets' event client.** The constructor
+ * installs the handler, and it passes every stream to `handleEventStream(peer, payload, stream)`
+ * first: a stream whose headers carry a string `:event` is a fastapi-viewsets event and goes to the
+ * client `createEventClient({ peer })` registered for this peer, and every other stream is parsed as
+ * a taskwire envelope and dropped when it does not parse. An application that follows events on
+ * this peer builds its event client and does not call `attachEvents(peer)`, which installs a handler
+ * of its own in the same slot and so stops taskwire's pushes. muxws has no way to remove a handler,
+ * so this one stays installed after `detachMuxws` and keeps passing event streams on.
  */
 export class MuxwsClientTransport implements ClientTransport {
   private readonly peer: Peer;
@@ -126,9 +135,11 @@ export class MuxwsClientTransport implements ClientTransport {
     this.onConnection = options.onConnection ?? null;
     if (this.onEnvelope !== null) this.stamp();
 
-    // One handler for every incoming stream. The server opens and ends a stream per envelope
+    // One handler for every incoming stream: a fastapi-viewsets event goes to the peer's event
+    // client, anything else is an envelope. The server opens and ends a stream per envelope
     // (TW-WS-003), so there is no long-lived stream to manage and nothing to clean up.
-    this.peer.onStream((payload) => {
+    this.peer.onStream((payload, stream) => {
+      if (handleEventStream(this.peer, payload, stream)) return;
       this.deliver(payload);
     });
 

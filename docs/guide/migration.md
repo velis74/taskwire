@@ -18,8 +18,29 @@ makes carries such a key.
 
 ### Upgrade the two packages taskwire binds to
 
-fastapi-viewsets 0.9.0 (`dynamicforms-fastapi-viewsets` and `@dynamicforms/fastapi-viewsets`) and
-muxws 0.4.0 are required.
+`dynamicforms-fastapi-viewsets` 0.9.0, `@dynamicforms/fastapi-viewsets` 0.9.1 and muxws 0.4.1 are
+required. A server that serves fastapi-viewsets events and taskwire on one socket passes `peer=` to
+`process_command`, which needs `dynamicforms-fastapi-viewsets` 0.9.1 (see
+[One peer for taskwire and fastapi-viewsets events](./websockets.md#one-peer-for-taskwire-and-fastapi-viewsets-events)).
+
+On npm, `@dynamicforms/fastapi-viewsets` is a required peer of `taskwire` itself, not of
+`taskwire/muxws` alone: the client's polling ladder is fastapi-viewsets'. npm 7 and later and pnpm 8
+and later install it with `taskwire`. yarn, npm 6, npm with `legacy-peer-deps` (the flag or
+`.npmrc`) and pnpm with `auto-install-peers=false` do not, and the install still succeeds: add it
+beside `taskwire` and `axios`, or `taskwire`, `taskwire/vue` and `taskwire/vuetify` fail to load.
+
+The CommonJS build `require()`s it, and it is an ES module:
+
+- `require('taskwire')` needs a Node.js that can `require()` an ES module: 20.19, 22.12 or later.
+  `package.json` declares `"engines": { "node": "^20.19.0 || >=22.12.0" }`.
+- Jest in its default CommonJS mode loads that build and does not transform `node_modules`, so a
+  test that imports `taskwire` fails with `SyntaxError: Cannot use import statement outside a
+  module`. Exempt the package from `transformIgnorePatterns` and give it a transform that compiles
+  ES modules, for example `babel-jest` with `@babel/preset-env`:
+
+  ```js
+  transformIgnorePatterns: ['/node_modules/(?!@dynamicforms/fastapi-viewsets/)'],
+  ```
 
 ### Celery viewset actions
 

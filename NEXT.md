@@ -24,10 +24,11 @@ order of what they cost someone who hits them:
    interceptor on the instance is synchronous. An ordinary async one - an auth header, a tracing
    span - pushes taskwire's into a microtask, by which time `run()` has unbound the ambient token:
    `X-Taskwire-Token` is never written, the server mints a token of its own, and the handle the
-   caller holds polls an address nothing will ever write. Nothing reports it. The docstring at
-   `ts/taskwire.ts:603` describes the mechanism; there is no guard and no diagnostic.
+   caller holds polls an address nothing will ever write. Nothing reports it. The comment at
+   `ts/taskwire.ts:696` and the module docstring at `ts/taskwire.ts:25` describe the mechanism;
+   there is no guard and no diagnostic.
 2. **A dropped push in the browser leaves no trace, and nothing re-reads.** Bare `catch {}` at
-   `ts/muxws.ts:150` and `ts/register.ts:440`, and a silent return when no consumer is attached. The
+   `ts/muxws.ts:225` and `ts/register.ts:490`, and a silent return when no consumer is attached. The
    Python side logs every equivalent drop at debug (`contrib/muxws.py:86,125,127`). The consequence is
    larger than the silence: a socket that is attached and healthy holds every ladder (TW-TS-007), so
    a terminal envelope that is dropped rather than delivered is never asked for again - the operation
@@ -60,10 +61,22 @@ Whoever implements it needs a sweeper, and a sweeper is a timer over the keyspac
 shape TW-RET-001 keeps out of the retention rules. The alternative is to strike the third path from
 TW-RES-010 and say plainly that an uncollected result expires unreleased.
 
+## 4. fastapi-viewsets 0.9.1 is not published
+
+`package.json` (peer and dev dependency) and `demo/client/package.json` require
+`@dynamicforms/fastapi-viewsets ^0.9.1`; npm and PyPI stop at 0.9.0. CI runs `npm install` with no
+lockfile, so it fails with `ETARGET` until 0.9.1 is on npm, and so does every install of taskwire,
+whose main entry imports the package. The server snippet in `docs/guide/websockets.md`, "One peer for
+taskwire and fastapi-viewsets events", passes `peer=` to `process_command`, which
+`dynamicforms-fastapi-viewsets` 0.9.0 does not accept. fastapi-viewsets 0.9.1 is published on npm
+and PyPI before these floors reach `main` and before a taskwire release.
+
 ## Open questions for the author
 
 1. **The OPEN entries in `GAPS.md`**: the Node-only ambient proxy, the `operation()` callback form vs
    `await using`, the TS conformance import path, TW-STORE-014's one-round-trip requirement against
    the port's `-> int` signature, whether `Client` should enforce exactly one of peer/request, the
    `Text.params` vs `Result.params` empty-dict inconsistency, and what the conformance corpus is
-   actually for.
+   actually for; and the three fastapi-viewsets 0.9.1 entries, the npm core's required
+   `@dynamicforms/fastapi-viewsets` peer, the client half of TW-WS-010, and moving the push path onto
+   `fastapi_viewsets.events`.

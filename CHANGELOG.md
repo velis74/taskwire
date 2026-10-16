@@ -42,9 +42,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `taskwire_context_processor` puts `call_token()` of the request under `context["taskwire_token"]`.
 - `DISPATCH_FAILED` and `DIALOG_TIMEOUT` are defined in `taskwire.calls`; `taskwire.contrib.celery`
   re-exports them.
-- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets >= 0.9.0`. The npm
-  package's optional peer dependencies require `@dynamicforms/fastapi-viewsets ^0.9.0` and
-  `muxws ^0.4.0`.
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets >= 0.9.0`, and the
+  `muxws` extra requires `muxws >= 0.4.1`. The npm package's peer dependencies require
+  `@dynamicforms/fastapi-viewsets ^0.9.1` and `muxws ^0.4.1`.
+- The polling ladder is `@dynamicforms/fastapi-viewsets`' `PollLadder`; `ts/poll.ts` builds its
+  state from a snapshot and from a register, and holds the cadence, which is unchanged.
+  `@dynamicforms/fastapi-viewsets` is a required peer dependency of the npm package: yarn, npm 6, npm
+  with `legacy-peer-deps` and pnpm with `auto-install-peers=false` need it added explicitly.
+  `require('taskwire')` needs a Node.js that can `require()` an ES module (20.19, 22.12 or later),
+  which `engines` declares, and Jest needs the package exempted from `transformIgnorePatterns`.
+- `MuxwsClientTransport` passes a stream whose headers carry `:event` to fastapi-viewsets'
+  `handleEventStream`, so one peer carries taskwire's pushes and the fastapi-viewsets event client's
+  events.
 
 ### Removed
 
