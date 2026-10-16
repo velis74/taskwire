@@ -25,8 +25,9 @@ python demo.py                                            # both halves, Ctrl-C 
 python demo/e2e/run_e2e.py                                # the two halves against each other, ~3 min
 ```
 
-Python venv is at `/home/jure/.venv/taskwire/bin/python` — not `.venv` in the repo. It has the
-`celery` extra installed; without it `contrib/celery_test.py` skips whole and takes seven tests with it.
+Python venv is at `/home/jure/.venv/taskwire/bin/python` — not `.venv` in the repo.
+`pip install -e ".[dev]"` installs every extra the tests and the demo use; without the `celery`
+extra `contrib/celery_test.py` skips whole and takes seven tests with it.
 
 ## The architecture, in one paragraph
 

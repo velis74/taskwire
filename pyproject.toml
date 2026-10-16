@@ -39,7 +39,17 @@ viewsets = ["dynamicforms-fastapi-viewsets>=0.9.0"]
 # reaches the client.
 muxws = ["muxws>=0.4.1", "dynamicforms-fastapi-viewsets[muxws]>=0.9.0"]
 demo = ["uvicorn>=0.27"]
-dev = ["coverage", "pytest", "pytest-asyncio", "pytest-cov", "hypothesis", "httpx", "ruff"]
+# Everything the test suite, the linters and the demo need.
+dev = [
+    "taskwire[redis,celery,fastapi,viewsets,muxws,demo]",
+    "coverage",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "hypothesis",
+    "httpx",
+    "ruff",
+]
 
 [project.urls]
 Homepage = "https://github.com/velis74/taskwire"
