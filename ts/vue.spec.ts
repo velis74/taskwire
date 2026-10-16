@@ -222,9 +222,10 @@ describe('the vue composables (§5.5)', () => {
   it('the core entry reaches no optional peer, and the build keeps every one of them out', () => {
     // TW-CORE-006 / TW-TS-010: the core must not import Vue, Vuetify, the modal kit, muxws or the
     // viewset proxy outside a subpath export, and `ts/index.ts` is the core's entry point. Every
-    // one of the five is behind a subpath - `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws` -
-    // so the list is the whole of the policy and each entry is checked three ways: the core does
-    // not reach it, it is not a dependency, and the bundle does not inline it.
+    // one of the five is behind a subpath - `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws`,
+    // `taskwire/fastapi-viewsets` - so the list is the whole of the policy and each entry is checked
+    // three ways: the core does not reach it, it is not a dependency, and the bundle does not inline
+    // it.
     const PEERS = ['vue', 'vuetify', '@dynamicforms/vuetify-modal-form-kit', 'muxws', '@dynamicforms/fastapi-viewsets'];
     const forbidden = new RegExp(`^(${PEERS.map((name) => name.replace(/[^\w]/g, '\\$&')).join('|')})$`);
 
@@ -243,11 +244,12 @@ describe('the vue composables (§5.5)', () => {
     }
     expect(seen.has('taskwire.ts')).toBe(true);
     expect(seen.has('register.ts')).toBe(true);
-    // The three subpath entries, and the reason the walk above is not vacuous: each of them does
+    // The four subpath entries, and the reason the walk above is not vacuous: each of them does
     // import a peer, and none of them is reachable from the core.
     expect(seen.has('vue.ts')).toBe(false);
     expect(seen.has('vuetify.ts')).toBe(false);
     expect(seen.has('muxws.ts')).toBe(false);
+    expect(seen.has('fastapi-viewsets.ts')).toBe(false);
 
     // The dependency policy that makes the subpaths meaningful: not one of them is a dependency.
     const manifest = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf-8'));
@@ -258,6 +260,7 @@ describe('the vue composables (§5.5)', () => {
     });
     expect(manifest.exports['./vue']).toBeDefined();
     expect(manifest.exports['./muxws']).toBeDefined();
+    expect(manifest.exports['./fastapi-viewsets']).toBeDefined();
 
     // ...and the build keeps every one of them external. A peer that is bundled instead is a
     // second copy: an `instanceof` written against the installed package never matches the frozen

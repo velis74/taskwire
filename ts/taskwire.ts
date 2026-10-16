@@ -34,6 +34,7 @@
 
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
 
+import { BusyCalls, type BusyState, type CallSource } from './busy';
 import { RestCalls, type TaskwireCalls } from './calls';
 import { Operation, type OperationHost, type OperationInit } from './operation';
 import { new_token } from './operation-scope';
@@ -155,6 +156,8 @@ export interface TaskwireUiConfig {
   progressUi: { delay: number; failureLinger: number } | false;
   /** How long a question goes unadopted before another tab may present it (TW-TAB-005). */
   dialogAdoptDelay: number;
+  /** Unanswered attempts after which a call counts as unreachable in `tw.busy` (TW-TS-024). */
+  unreachableAfter: number;
 }
 
 /**
@@ -165,6 +168,7 @@ export interface TaskwireUiConfig {
 const DEFAULT_UI_CONFIG: TaskwireUiConfig = {
   progressUi: { delay: 250, failureLinger: 8000 },
   dialogAdoptDelay: 2000,
+  unreachableAfter: 5,
 };
 
 let uiConfig: TaskwireUiConfig = { ...DEFAULT_UI_CONFIG };
@@ -173,11 +177,13 @@ let uiConfig: TaskwireUiConfig = { ...DEFAULT_UI_CONFIG };
  * Module-level UI policy, kept under its Python name (TW-TS-011).
  *
  * `progressUi: false` turns the visible collection off wholesale; `{ delay }` moves the age at which
- * a `startedHere` operation becomes visible.
+ * a `startedHere` operation becomes visible and the age at which a call enters `tw.busy`.
+ * `unreachableAfter` is the number of unanswered attempts after which a call is unreachable.
  */
 export function configure_taskwire(options: {
   progressUi?: { delay?: number; failureLinger?: number } | false;
   dialogAdoptDelay?: number;
+  unreachableAfter?: number;
 }): void {
   if (options.progressUi === false) {
     uiConfig.progressUi = false;
@@ -190,6 +196,7 @@ export function configure_taskwire(options: {
     };
   }
   if (options.dialogAdoptDelay !== undefined) uiConfig.dialogAdoptDelay = options.dialogAdoptDelay;
+  if (options.unreachableAfter !== undefined) uiConfig.unreachableAfter = options.unreachableAfter;
 }
 
 /** What `configure_taskwire` last left behind: the visible collection's policy and the adopt delay. */
@@ -684,6 +691,9 @@ export class Taskwire implements OperationHost, RegisterClient {
 
   private interceptorId: number | null = null;
 
+  /** The calls of every attached `CallSource` (TW-TS-022). */
+  private readonly busyCalls: BusyCalls;
+
   disposed = false;
 
   constructor(basePath: string = DEFAULT_BASE_PATH, http: AxiosInstance = axios) {
@@ -692,6 +702,13 @@ export class Taskwire implements OperationHost, RegisterClient {
     // After the two fields they read: a field initialiser would run before them.
     this.rest = new RestCalls(this.basePath, this.http);
     this.registerState = new RegisterState(this);
+    this.busyCalls = new BusyCalls({
+      uiPolicy: () => taskwireConfig(),
+      followBusyCall: (call, onChange) => {
+        const stop = this.trackCall(call, onChange);
+        return { operation: this.handles.get(call.key as string) as Operation<unknown>, stop };
+      },
+    });
 
     // `synchronous: true` is load-bearing (TW-TS-003). Without it axios runs request interceptors in a
     // promise chain, so the interceptor would fire a microtask *after* `http.get(...)` returned - by
@@ -877,6 +894,44 @@ export class Taskwire implements OperationHost, RegisterClient {
     const subscription = new PollSubscription(poller);
     poller.addSubscription(subscription);
     return subscription;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Busy calls (TW-TS-022..TW-TS-024)
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Take the calls `source` reports into `tw.busy`. Returns the function that detaches it; the calls
+   * it reported and has not settled leave `tw.busy` on detach. Attaching one source twice returns
+   * the first detach function.
+   *
+   * A key started by several sources is one call, which leaves when every source has settled it,
+   * and is `background` when any source reported it so.
+   */
+  attachCalls(source: CallSource): () => void {
+    return this.busyCalls.attach(source);
+  }
+
+  /**
+   * The calls of every attached source, as a busy indicator renders them.
+   *
+   * A non-background call older than `progressUi.delay` is listed in `calls` and makes `visible`
+   * true. A listed call whose key is a UUID is followed as `trackCall()` follows it, and `percent`
+   * and `label` are those of the oldest listed call whose operation reports either. A call settling
+   * inside the delay is never listed and its token is never read.
+   */
+  get busy(): BusyState {
+    return this.busyCalls.state;
+  }
+
+  /** Calls `callback` with every new `tw.busy`; returns the function that removes it. */
+  onBusyChange(callback: (state: BusyState) => void): () => void {
+    return this.busyCalls.onChange(callback);
+  }
+
+  /** Calls `retryNow()` of every attached source that has one: each waiting repeat is sent now. */
+  retryNow(): void {
+    this.busyCalls.retryNow();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1227,6 +1282,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     // A vanished watcher changes nothing (TW-REG-008): this stops timers and drops local handles,
     // and issues no cancel, no dismiss and no request of any kind on the way out.
     this.registerState.stop();
+    this.busyCalls.dispose();
     [...this.pollers.values()].forEach((poller) => poller.stop());
     this.pollers.clear();
     this.handles.clear();

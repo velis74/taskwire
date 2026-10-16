@@ -22,18 +22,25 @@ declare module '@dynamicforms/vuetify-modal-form-kit' {
     size?: unknown;
     color?: string;
     icon?: string;
+    /** Components the dialog body resolves names against before the globally registered ones. */
+    components?: Record<string, unknown>;
+  }
+
+  /** A dialog's promise; `close(value)` settles it with `value` and takes the dialog off screen. */
+  export interface CloseablePromise<T> extends Promise<T> {
+    close(value: T): void;
   }
 
   /** Resolves with the id of the action the user chose; rejects when they dismissed it instead. */
   export const modal: {
-    message(title: string, message: string, options?: ModalOptions): Promise<string>;
+    message(title: string, message: string, options?: ModalOptions): CloseablePromise<string>;
     custom(
       title: string,
       componentName: string,
       componentProps: Record<string, unknown>,
       options?: ModalOptions,
-    ): Promise<string>;
-    yesNo(title: string, message: string, options?: ModalOptions): Promise<string>;
+    ): CloseablePromise<string>;
+    yesNo(title: string, message: string, options?: ModalOptions): CloseablePromise<string>;
     isInstalled(): boolean;
   };
 

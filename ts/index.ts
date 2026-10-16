@@ -3,9 +3,10 @@
  *
  * **Nothing reachable from here imports Vue, Vuetify or the modal kit** (TW-CORE-006, TW-TS-010).
  * The composables are `taskwire/vue`, the dialog adapter and the components are
- * `taskwire/vuetify`, and the muxws transport is `taskwire/muxws`; all three are subpath exports and
- * none of them is imported below. `vue.spec.ts::the vue subpath is the only file importing vue`
- * walks this file's transitive imports to keep it so.
+ * `taskwire/vuetify`, the muxws transport is `taskwire/muxws`, and the fastapi-viewsets call source
+ * is `taskwire/fastapi-viewsets`; all four are subpath exports and none of them is imported below.
+ * `vue.spec.ts::the vue subpath is the only file importing vue` walks this file's transitive imports
+ * to keep it so.
  *
  * The three module-level factories keep their Python names verbatim - `use_taskwire`,
  * `configure_taskwire`, `new_token` (TW-TS-011) - and there is no camelCase alias for any of them,
@@ -20,7 +21,7 @@
  * `WIRE_VERSION` is the protocol's and moves only on a breaking wire change (TW-CORE-011); this one
  * tracks the implementation and moves whenever the package is published.
  */
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 // §5.5 - the client
 export {
@@ -42,6 +43,10 @@ export {
   type TrackOptions,
   use_taskwire,
 } from './taskwire';
+
+// The busy model (TW-TS-022..TW-TS-024): what `tw.attachCalls()` takes and `tw.busy` holds.
+export { type BusyCall, type BusyState, type CallEvent, type CallSource } from './busy';
+export { axiosCallSource } from './call-sources';
 
 // The six calls of TW-REST-004 as one interface: what `useCalls()` takes, and what a transport that
 // is not `taskwire/muxws` would implement. `RestCalls` itself is not exported - a client builds its

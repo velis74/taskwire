@@ -24,6 +24,7 @@ export default defineConfig({
         vue: resolve(__dirname, 'ts/vue.ts'),
         muxws: resolve(__dirname, 'ts/muxws.ts'),
         vuetify: resolve(__dirname, 'ts/vuetify.ts'),
+        'fastapi-viewsets': resolve(__dirname, 'ts/fastapi-viewsets.ts'),
         // The store port's contract, runnable. Published for the same reason the Python package
         // ships `taskwire.conformance`: a store is an application's to write, and this is the only
         // thing that says whether what it wrote is one (TW-STORE-012).

@@ -32,7 +32,7 @@ describe('packaging', () => {
       .sort();
 
     const viteConfig = readFileSync(resolve(REPO_ROOT, 'vite.config.ts'), 'utf-8');
-    const entries = [...viteConfig.matchAll(/^\s+(\w+): resolve\(__dirname, 'ts\/[\w-]+\.ts'\),$/gm)]
+    const entries = [...viteConfig.matchAll(/^\s+'?([\w-]+)'?: resolve\(__dirname, 'ts\/[\w-]+\.ts'\),$/gm)]
       .map((match) => match[1])
       .sort();
 

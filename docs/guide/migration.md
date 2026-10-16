@@ -9,6 +9,32 @@ exists.
 
 <!-- New releases go directly below this comment, above the previous one, as `## Upgrading to vX.Y.Z (from vA.B.x)`. -->
 
+## Upgrading to v0.3.0 (from v0.2.x)
+
+### `TaskwireProgressDialog` is gone
+
+`taskwire/vuetify` no longer exports `TaskwireProgressDialog`. To show what this tab is waiting on,
+remove `<TaskwireProgressDialog />`, attach a call source and open the busy dialog once, high up:
+
+```ts
+import axios from 'axios';
+import { use_taskwire, axiosCallSource } from 'taskwire';
+import { useBusyDialog } from 'taskwire/vuetify';
+
+use_taskwire().attachCalls(axiosCallSource(axios));
+useBusyDialog();
+```
+
+With fastapi-viewsets, attach `viewsetCallSource()` from `taskwire/fastapi-viewsets` instead (see
+[Handling long-running requests](./long-running-requests.md)). A page that listed `tw.operations`
+renders it with `use_operations()` from `taskwire/vue`, or lists `tw.register` with
+`<TaskwireOperations />`.
+
+### fastapi-viewsets 0.9.2
+
+`taskwire/muxws` and `taskwire/fastapi-viewsets` require the optional npm peer
+`@dynamicforms/fastapi-viewsets` ^0.9.2.
+
 ## Upgrading to v0.2.0 (from v0.1.x)
 
 0.2.0 tracks calls. `register_taskwire_rest` now lists `TaskwireMiddleware`, so every viewset call

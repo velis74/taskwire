@@ -7,10 +7,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { Operation, type OperationHost } from './operation';
 import type { Taskwire } from './taskwire';
-import { TaskwireOperations, TaskwireProgressDialog } from './vuetify';
+import { TaskwireOperations } from './vuetify';
 import type { DialogRequest, Progress, Result } from './wire';
 
-// The two components below render plain markup and present no modal; the kit is not loaded.
+// The component below renders plain markup and presents no modal; the kit is not loaded.
 vi.mock('@dynamicforms/vuetify-modal-form-kit', () => ({ modal: {} }));
 
 /**
@@ -229,36 +229,22 @@ describe('the shipped UI deliverables', () => {
   });
 });
 
-/** A client reduced to what the two components read: the register, the visible set, the selection. */
+/** A client reduced to what `TaskwireOperations` reads: the register and the selection. */
 class FakeClient {
   register: Operation<unknown>[] = [];
-
-  operations: Operation<unknown>[] = [];
 
   selected: Operation<unknown> | null = null;
 
   registerListeners: ((operations: Operation<unknown>[]) => void)[] = [];
-
-  operationsListeners: ((operations: Operation<unknown>[]) => void)[] = [];
 
   onRegisterChange(callback: (operations: Operation<unknown>[]) => void): () => void {
     this.registerListeners.push(callback);
     return () => undefined;
   }
 
-  onOperationsChange(callback: (operations: Operation<unknown>[]) => void): () => void {
-    this.operationsListeners.push(callback);
-    return () => undefined;
-  }
-
   select(token: string | null): void {
     this.selected = this.register.find((operation) => operation.token === token) ?? null;
     this.registerListeners.forEach((listener) => listener([...this.register]));
-  }
-
-  setOperations(operations: Operation<unknown>[]): void {
-    this.operations = operations;
-    this.operationsListeners.forEach((listener) => listener([...operations]));
   }
 
   asClient(): Taskwire {
@@ -321,40 +307,5 @@ describe('TaskwireOperations', () => {
       undefined,
       'true',
     ]);
-  });
-});
-
-describe('TaskwireProgressDialog', () => {
-  it('shows the visible collection only, and only the rows that have a document', async () => {
-    const host = hostWith();
-    const hide = vi.spyOn(host, 'hide');
-    const client = new FakeClient();
-    const wrapper = mount(TaskwireProgressDialog, { props: { client: client.asClient() } });
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-
-    // An operation shorter than `progressUi.delay` never enters `tw.operations` (§4.3), so the
-    // dialog has nothing to show for it; one that has not been read yet has nothing to draw.
-    client.setOperations([new Operation({ token: 'unread', host })]);
-    await wrapper.vm.$nextTick();
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-
-    const failed = operationWith('failed', host, {
-      state: 'failed',
-      error: {
-        code: 'not_executed',
-        message: { key: 'taskwire.not_executed', text: 'Not executed' },
-        retryable: false,
-      },
-    });
-    client.setOperations([operationWith('running', host, { percent: 70 }), failed]);
-    await wrapper.vm.$nextTick();
-    const rows = wrapper.findAll('.taskwire-progress-dialog__row');
-    expect(rows.map((row) => row.attributes('data-state'))).toEqual(['running', 'failed']);
-    expect(rows[1].find('.taskwire-progress-dialog__label').text()).toBe('Not executed');
-    expect(rows[0].findAll('button').map((button) => button.text())).toEqual(['Cancel', 'Hide']);
-    expect(rows[1].findAll('button').map((button) => button.text())).toEqual(['Hide']);
-
-    await rows[1].find('.taskwire-progress-dialog__hide').trigger('click');
-    expect(hide).toHaveBeenCalledWith('failed');
   });
 });

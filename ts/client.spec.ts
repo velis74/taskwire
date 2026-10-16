@@ -838,11 +838,13 @@ describe('the module surface', () => {
     expect(taskwireModule.taskwireConfig()).toEqual({
       progressUi: { delay: 250, failureLinger: 8000 },
       dialogAdoptDelay: 2000,
+      unreachableAfter: 5,
     });
-    taskwireModule.configure_taskwire({ progressUi: { delay: 50 }, dialogAdoptDelay: 100 });
+    taskwireModule.configure_taskwire({ progressUi: { delay: 50 }, dialogAdoptDelay: 100, unreachableAfter: 3 });
     expect(taskwireModule.taskwireConfig()).toEqual({
       progressUi: { delay: 50, failureLinger: 8000 },
       dialogAdoptDelay: 100,
+      unreachableAfter: 3,
     });
     taskwireModule.configure_taskwire({ progressUi: false });
     expect(taskwireModule.taskwireConfig().progressUi).toBe(false);
@@ -859,16 +861,18 @@ describe('the module surface', () => {
   it('imports no vue, no vuetify and no modal kit (TW-CORE-006)', () => {
     // A subpath export is the only place an optional dependency may be imported, and each gets
     // exactly its own: `vue.ts` and `vuetify.ts` the UI stack, `muxws.ts` the socket and the viewset
-    // proxy that addresses its streams. The UI half of that is stricter (TW-TS-010) - `muxws.ts` is
-    // as forbidden to import Vue as any other file, because a browser-only program that speaks the
-    // socket must not be made to install a framework.
+    // proxy that addresses its streams, `fastapi-viewsets.ts` the viewset proxy's call activity. The
+    // UI half of that is stricter (TW-TS-010) - `muxws.ts` is as forbidden to import Vue as any other
+    // file, because a browser-only program that speaks the socket must not be made to install a
+    // framework.
     const ui = [...sources()]
       .filter(([name]) => !['vue.ts', 'vuetify.ts'].includes(name))
       .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/vuetify-[^']+)'/.test(text));
     expect(ui.map(([name]) => name)).toEqual([]);
 
+    const SUBPATHS = ['vue.ts', 'vuetify.ts', 'muxws.ts', 'fastapi-viewsets.ts'];
     const offenders = [...sources()]
-      .filter(([name]) => !['vue.ts', 'vuetify.ts', 'muxws.ts'].includes(name))
+      .filter(([name]) => !SUBPATHS.includes(name))
       .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/[^']+)'/.test(text));
     expect(offenders.map(([name]) => name)).toEqual([]);
   });

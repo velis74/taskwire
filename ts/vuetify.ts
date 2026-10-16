@@ -5,8 +5,8 @@
  * TW-TS-010). `ts/index.ts` must not reach either, and a test walks its transitive imports to keep
  * it so: taskwire has to stay usable from React, from Svelte, or from a plain script tag.
  *
- * The dialog adapter and three components ship here. The first two below exist because getting
- * them wrong is easy and the consequence is quiet:
+ * The dialog adapter, the busy dialog, and three components ship here. The first two below exist
+ * because getting them wrong is easy and the consequence is quiet:
  *
  * ## The dialog adapter
  *
@@ -31,20 +31,24 @@
  * The selection is FIFO by default: the oldest entry that is `queued` or `running`, advancing on its
  * own when that one leaves the register.
  *
- * ## `TaskwireOperations` and `TaskwireProgressDialog`
+ * ## `TaskwireOperations`
  *
  * `TaskwireOperations` lists `tw.register` - the namespace's operations and this tab's private ones -
  * one row per token, each with its own percentage, and selects, cancels, collects and dismisses.
- * `TaskwireProgressDialog` shows `tw.operations`, this tab's visible collection, which an operation
- * started here enters only after `progressUi.delay` (§4.3), so an operation that ends inside the
- * delay is never shown.
+ *
+ * ## `useBusyDialog` and `TaskwireBusy`
+ *
+ * `useBusyDialog()` opens one modal while `tw.busy.visible` holds, with `TaskwireBusy` as its body
+ * (TW-PKG-006). Nothing opens it unless the application calls it.
  */
 
 /* eslint-disable vue/one-component-per-file -- `taskwire/vuetify` is one module, one entry point */
 import { modal } from '@dynamicforms/vuetify-modal-form-kit';
 import {
+  type Component,
   computed,
   defineComponent,
+  getCurrentScope,
   h,
   onScopeDispose,
   type PropType,
@@ -54,6 +58,7 @@ import {
   watchEffect,
 } from 'vue';
 
+import type { BusyCall, BusyState } from './busy';
 import type { Operation } from './operation';
 import { DialogAdoption, type Timers } from './tab-hints';
 import { type Taskwire, taskwireConfig, use_taskwire } from './taskwire';
@@ -272,7 +277,9 @@ const CAPTIONS = {
   cancel: { key: 'taskwire.cancel', text: 'Cancel' },
   collect: { key: 'taskwire.collect', text: 'Collect' },
   dismiss: { key: 'taskwire.dismiss', text: 'Dismiss' },
-  hide: { key: 'taskwire.hide', text: 'Hide' },
+  tryNow: { key: 'taskwire.try_now', text: 'Try now' },
+  busy: { key: 'taskwire.busy', text: 'Performing operation' },
+  unreachable: { key: 'taskwire.unreachable', text: 'No connection to the server.' },
 } satisfies Record<string, Text>;
 
 /** Whether a cancel can still reach the operation: it has not ended and holds no result. */
@@ -407,71 +414,141 @@ export const TaskwireOperations = defineComponent({
 });
 
 /**
- * The progress of what this tab started, in one dialog: `tw.operations`, the visible collection.
+ * The body of the busy dialog: `tw.busy` as a label, a bar, an optional list of the listed calls,
+ * and a notice with **Try now** while a call is unreachable.
  *
  * ```vue
- * <TaskwireProgressDialog />
+ * <TaskwireBusy :client="tw" show-calls />
  * ```
  *
- * Mount it once, high up. An operation started here enters `tw.operations` once `progressUi.delay`
- * has elapsed and it is not `done` (§4.3), so an operation shorter than the delay never shows; one
- * that has not been read yet shows from its first document. A `failed` or `cancelled` operation
- * stays for `progressUi.failureLinger` with its error message. Each row carries its own bar,
- * **Cancel** while the operation can still be cancelled, and **Hide**, which takes the row out of
- * this tab's visible collection only (`operation.hide()`). A cancel that rejects is emitted as
- * `error` with the error and the operation. The dialog is not rendered while it has no row, nor at
- * all under `progressUi: false`.
+ * The bar is `busy.percent`, indeterminate when it is `null`; the label is `busy.label`. With
+ * `showCalls` each listed call whose operation has a document is a row with the operation's title,
+ * label and own bar. While `busy.unreachable` holds a notice is shown, and **Try now** calls
+ * `tw.retryNow()`. Unstyled markup with `taskwire-busy*` classes; renders nothing while
+ * `busy.visible` and `busy.unreachable` are both false.
  */
-export const TaskwireProgressDialog = defineComponent({
-  name: 'TaskwireProgressDialog',
+export const TaskwireBusy = defineComponent({
+  name: 'TaskwireBusy',
   props: {
     client: { type: Object as PropType<Taskwire>, default: undefined },
     translate: { type: Function as PropType<Translate>, default: undefined },
+    showCalls: { type: Boolean, default: false },
   },
-  emits: {
-    error: (error: unknown, operation: Operation<unknown>) => operation !== undefined,
-  },
-  setup(props, { emit }) {
-    // The handles keep their state in private fields, which a reactive proxy of the client would
-    // hand out as proxies that cannot read them.
+  setup(props) {
     const client = toRaw(props.client) ?? use_taskwire();
     const translate = props.translate ?? defaultTranslate;
 
-    const operations = shallowRef(client.operations);
+    const busy = shallowRef<BusyState>(client.busy);
     onScopeDispose(
-      client.onOperationsChange((visible) => {
-        operations.value = visible;
+      client.onBusyChange((state) => {
+        busy.value = state;
       }),
     );
-    const shown = computed(() => operations.value.filter((operation) => operation.progress !== null));
 
-    const row = (operation: Operation<unknown>): VNode => {
-      const progress = operation.progress;
-      const error = progress?.error ?? null;
-      return h('li', { key: operation.token, class: 'taskwire-progress-dialog__row', 'data-state': progress?.state }, [
-        h('div', { class: 'taskwire-progress-dialog__title' }, translate(operation.title, '')),
-        h(
-          'div',
-          { class: 'taskwire-progress-dialog__label' },
-          translate(error?.message ?? progress?.label ?? null, ''),
-        ),
-        ownBar('taskwire-progress-dialog__bar', progress?.percent ?? null),
-        h('div', { class: 'taskwire-progress-dialog__actions' }, [
-          cancellable(operation)
-            ? actionButton('taskwire-progress-dialog__cancel', translate(CAPTIONS.cancel), () => {
-                operation.cancel().catch((failure: unknown) => emit('error', failure, operation));
-              })
-            : null,
-          actionButton('taskwire-progress-dialog__hide', translate(CAPTIONS.hide), () => operation.hide()),
-        ]),
+    const callRow = (call: BusyCall): VNode | null => {
+      const operation = call.operation;
+      const progress = operation?.progress ?? null;
+      if (operation === null || progress === null) return null;
+      return h('li', { key: call.key, class: 'taskwire-busy__call', 'data-state': progress.state }, [
+        h('div', { class: 'taskwire-busy__call-title' }, translate(operation.title, '')),
+        h('div', { class: 'taskwire-busy__call-label' }, translate(progress.label ?? null, '')),
+        ownBar('taskwire-busy__call-bar', progress.percent),
       ]);
     };
 
     return () => {
-      if (shown.value.length === 0) return null;
-      return h('div', { class: 'taskwire-progress-dialog', role: 'dialog', 'aria-modal': 'true' }, [
-        h('ul', { class: 'taskwire-progress-dialog__list' }, shown.value.map(row)),
+      const state = busy.value;
+      if (!state.visible && !state.unreachable) return null;
+      return h('div', { class: 'taskwire-busy', 'data-unreachable': state.unreachable ? 'true' : 'false' }, [
+        h('div', { class: 'taskwire-busy__label' }, translate(state.label, '')),
+        ownBar('taskwire-busy__bar', state.percent),
+        props.showCalls ? h('ul', { class: 'taskwire-busy__calls' }, state.calls.map(callRow)) : null,
+        state.unreachable
+          ? h('div', { class: 'taskwire-busy__unreachable', role: 'alert' }, [
+              h('span', { class: 'taskwire-busy__unreachable-text' }, translate(CAPTIONS.unreachable)),
+              actionButton('taskwire-busy__try-now', translate(CAPTIONS.tryNow), () => client.retryNow()),
+            ])
+          : null,
       ]);
     };
   },
 });
+
+/** What `useBusyDialog` is configured with. Every field has a default. */
+export interface BusyDialogOptions {
+  client?: Taskwire;
+  translate?: Translate;
+  /**
+   * The dialog body: a component, or the name of one the modal kit resolves. It receives the props
+   * `client`, `translate` and `showCalls`. `TaskwireBusy` when absent.
+   */
+  component?: string | Component;
+  /** The dialog title; `{ key: 'taskwire.busy', text: 'Performing operation' }` when absent. */
+  title?: Text;
+  /** Passed to the body as `showCalls`: list the calls one row each. `false` when absent. */
+  showCalls?: boolean;
+}
+
+/**
+ * Show `tw.busy` in one modal, for as long as the caller keeps it (TW-PKG-006).
+ *
+ * ```ts
+ * import { useBusyDialog } from 'taskwire/vuetify';
+ * useBusyDialog();
+ * ```
+ *
+ * Opens `modal.custom(title, body, { client, translate, showCalls })` when `tw.busy.visible`
+ * becomes true and closes it, with `close('idle')`, when it becomes false. The body follows
+ * `tw.busy` itself. A component given as an object, `TaskwireBusy` included, is passed under its
+ * `name` in the modal's `components` option; a modal kit that resolves a `custom()` body among
+ * globally registered components only needs it registered under that name. A dialog the user
+ * closes stays closed until `visible` has been false once. `stop()` closes an open dialog and
+ * stops following; the surrounding effect scope calls it when it ends.
+ */
+export function useBusyDialog(options: BusyDialogOptions = {}): { stop: () => void } {
+  const client = options.client ?? use_taskwire();
+  const translate = options.translate ?? defaultTranslate;
+  const body = options.component ?? TaskwireBusy;
+  const name = typeof body === 'string' ? body : ((body as { name?: string }).name ?? 'TaskwireBusyBody');
+  const components = typeof body === 'string' ? undefined : { [name]: body };
+
+  let open: ReturnType<typeof modal.custom> | null = null;
+  let dismissed = false;
+
+  const sync = (state: BusyState): void => {
+    if (!state.visible) {
+      dismissed = false;
+      const closing = open;
+      open = null;
+      closing?.close('idle');
+      return;
+    }
+    if (open !== null || dismissed) return;
+    const dialog = modal.custom(
+      translate(options.title ?? CAPTIONS.busy),
+      name,
+      { client, translate, showCalls: options.showCalls ?? false },
+      components === undefined ? {} : { components },
+    );
+    open = dialog;
+    const ended = (): void => {
+      if (open !== dialog) return;
+      // Closed by the user while still busy.
+      open = null;
+      dismissed = true;
+    };
+    dialog.then(ended, ended);
+  };
+
+  const stopListening = client.onBusyChange(sync);
+  sync(client.busy);
+
+  const stop = (): void => {
+    stopListening();
+    const closing = open;
+    open = null;
+    closing?.close('idle');
+  };
+  if (getCurrentScope() !== undefined) onScopeDispose(stop);
+  return { stop };
+}

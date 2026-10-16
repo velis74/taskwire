@@ -14,6 +14,7 @@
  * the request shape of every server runtime that has one.
  */
 
+import { isUuid } from './busy';
 import { markFailed, markQueued, type OperationOptions, operationScope } from './operation-scope';
 import { type Reporter, type ReporterStore } from './reporter';
 import { key as storeKey, type TaskwireStore } from './store';
@@ -69,8 +70,6 @@ function sfString(raw: string): string | null {
   return escaped ? null : content;
 }
 
-const UUID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
-
 /**
  * The token a call is tracked under, or `null` for an untracked call (TW-CALL-001, TW-CALL-002).
  *
@@ -93,7 +92,26 @@ export function callToken(headers: HeadersLike, method?: string | null): string 
     return null;
   }
   const key = sfString(keys[0]);
-  return key !== null && UUID.test(key) ? key : null;
+  return key !== null && isUuid(key) ? key : null;
+}
+
+/**
+ * @internal The key a client reports a request under in `tw.busy`: the content of a single
+ * `Idempotency-Key` header whatever the method, else `X-Taskwire-Token`, else `null`. The
+ * `Idempotency-Key` comes first, so a fastapi-viewsets proxy call carries the key its proxy reports.
+ */
+export function requestKey(headers: HeadersLike): string | null {
+  const tokenName = TOKEN_HEADER.toLowerCase();
+  const keyName = IDEMPOTENCY_KEY_HEADER.toLowerCase();
+  const keys: string[] = [];
+  let token: string | null = null;
+  for (const [name, value] of headerPairs(headers)) {
+    const lowered = name.toLowerCase();
+    if (lowered === tokenName && value !== '') token = value;
+    if (lowered === keyName) keys.push(value);
+  }
+  const key = keys.length === 1 ? sfString(keys[0]) : null;
+  return key !== null && key !== '' ? key : token;
 }
 
 /** A tracked call: its token, its namespace, and the two fields the `queued` write fixes. */

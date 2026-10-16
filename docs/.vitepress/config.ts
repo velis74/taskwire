@@ -25,6 +25,7 @@ export default defineConfig({
             { text: 'Cancellation', link: '/guide/cancellation' },
             { text: 'Collectable results', link: '/guide/results' },
             { text: 'Several operations', link: '/guide/several-operations' },
+            { text: 'Long-running requests', link: '/guide/long-running-requests' },
             { text: 'Transports', link: '/guide/transports' },
             { text: 'Tracking calls', link: '/guide/tracking-calls' },
             { text: 'The WebSocket transport', link: '/guide/websockets' },

@@ -1,7 +1,7 @@
 {
   "name": "taskwire",
   "private": false,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Progress reporting and awaitable dialogs for long-running server-side operations.",
   "author": "Jure Erznožnik",
@@ -28,6 +28,10 @@
     "./vuetify": {
       "require": "./dist/vuetify.cjs",
       "import": "./dist/vuetify.js"
+    },
+    "./fastapi-viewsets": {
+      "require": "./dist/fastapi-viewsets.cjs",
+      "import": "./dist/fastapi-viewsets.js"
     },
     "./conformance": {
       "require": "./dist/conformance.cjs",
@@ -58,7 +62,7 @@
     "url": "git@github.com:velis74/taskwire.git"
   },
   "peerDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.9.1",
+    "@dynamicforms/fastapi-viewsets": "^0.9.2",
     "@dynamicforms/vuetify-modal-form-kit": "^0.7.0",
     "axios": "^1.13.6",
     "muxws": "^0.4.1",
@@ -83,7 +87,7 @@
     }
   },
   "devDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.9.1",
+    "@dynamicforms/fastapi-viewsets": "^0.9.2",
     "@dynamicforms/vuetify-modal-form-kit": "^0.7.3",
     "@types/node": "^24",
     "@vitejs/plugin-vue": "^6",

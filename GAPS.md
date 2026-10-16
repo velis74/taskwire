@@ -420,17 +420,16 @@ one listed before it rejects the call before any write.
 
 ## taskwire-spec.md §5.5 / §5.6 — TW-TS-019, TW-PKG-005 — the frontend half of tracked calls
 
-**What I needed:** the shape of the per-call handler API, and the look of the two new components.
+**What I needed:** the shape of the per-call handler API, and the look of `TaskwireOperations`.
 
 **What I assumed:** `tw.trackCall(call, handler, options?)` returns the function that removes the
 handler, and `tw.awaitCall(call, handler, options?)` resolves with the call; the handler receives the
 `Operation` handle, not a `Snapshot`, so it reads the derived `waiting_input` and the open dialog the
-same way a template does. `TaskwireOperations` and `TaskwireProgressDialog` render unstyled markup
-with `taskwire-*` classes, as `TaskwireFooter` does, rather than Vuetify components, and the dialog
-leaves out a visible operation that has no document yet.
+same way a template does. `TaskwireOperations` renders unstyled markup with `taskwire-*` classes, as
+`TaskwireFooter` does, rather than Vuetify components.
 
-**Still needs deciding:** the two names, and whether the components should render Vuetify's own
-`VList` / `VDialog` / `VProgressLinear` instead.
+**Still needs deciding:** the name, and whether the component should render Vuetify's own `VList` /
+`VProgressLinear` instead.
 
 ---
 
@@ -556,3 +555,39 @@ the move contradicts several rules as they stand:
 
 **Still needs deciding:** whether the push path moves at all, as a specification change of its own.
 Nothing of it is implemented.
+
+---
+
+## taskwire-spec.md §5.5 — TW-TS-022, TW-TS-023 — the key of a call reported by two sources
+
+**What I needed:** what `tw.busy` does when `axiosCallSource` and `viewsetCallSource` both report one
+request: a fastapi-viewsets REST proxy sends its calls through axios.
+
+**What I assumed:** one key is one call. `axiosCallSource` reports a request under its
+`Idempotency-Key` before its `X-Taskwire-Token`, so a proxy call carries the key its proxy reports;
+the call leaves when both sources have settled it, and is background when either reported it so,
+because axios knows nothing of `RequestOptions.background`. A proxy call made inside `run()` is
+therefore followed under its `Idempotency-Key`, which the server does not track it under (TW-CALL-001),
+and shows no progress in `tw.busy`; `run()`'s own handle still does.
+
+**Still needs deciding:** whether `axiosCallSource` should leave out requests that carry an
+`Idempotency-Key`, so that the two sources never overlap.
+
+---
+
+## taskwire-spec.md §5.6 — TW-PKG-006 — the modal kit `useBusyDialog` runs on
+
+**What I needed:** which modal kit API `useBusyDialog` may use. The peer range is
+`@dynamicforms/vuetify-modal-form-kit ^0.7.0`, which excludes 0.8 and later; the reactive
+`CloseablePromise.props`, a component object in `custom()` and `CustomOptions.model` exist from 0.10.
+
+**What I assumed:** `useBusyDialog` uses what 0.7 has: `custom(title, name, props, { components })`
+and `close(value)`. The body follows `tw.busy` itself, so it needs neither `props` nor `model`, and
+**Try now** is a button of the body rather than a dialog action, which would take a
+`@dynamicforms/vue-forms` `Action`. The body component is passed under its name in `components`,
+which 0.10 resolves a `custom()` body against; 0.7 resolves it among globally registered components
+only. The kit adds its default **Close** action to a dialog with no actions of its own, and a dialog
+closed with it stays closed until `tw.busy.visible` has been false once.
+
+**Still needs deciding:** whether the peer range moves to `^0.10.0`. `useTaskwireDialogs`' fallback
+passes plain `{ name, label }` objects as `actions`, where 0.7.4 and later declare `Form.Action`.

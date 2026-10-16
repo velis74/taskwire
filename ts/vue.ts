@@ -21,8 +21,9 @@
 
 import { computed, type ComputedRef, getCurrentScope, onScopeDispose, type Ref, shallowRef } from 'vue';
 
+import type { BusyState } from './busy';
 import type { Operation } from './operation';
-import { type Taskwire, type TaskwireOptions, use_taskwire } from './taskwire';
+import { Taskwire, type TaskwireOptions, use_taskwire } from './taskwire';
 import { ACTIVE_STATES, type Aggregate, type DialogRequest, type Progress, type Result } from './wire';
 
 /** What `use_operation` needs: a token, and optionally which client to read it through. */
@@ -166,4 +167,21 @@ export function use_register(options?: TaskwireOptions): RegisterBinding {
     dismiss: (operation: Operation<unknown>) => operation.dismiss(),
     mute: (operation: Operation<unknown>) => operation.mute(),
   };
+}
+
+/**
+ * `tw.busy`, reactively (TW-TS-022): a ref holding the current `BusyState`, replaced on every change
+ * and released with the surrounding effect scope.
+ *
+ * Takes a client, or the `TaskwireOptions` that name one; `use_taskwire()`'s client when absent.
+ */
+export function useBusy(client?: Taskwire | TaskwireOptions): Readonly<Ref<BusyState>> {
+  const tw = client instanceof Taskwire ? client : clientFor(client);
+  const state = shallowRef<BusyState>(tw.busy);
+  untilScopeEnds(
+    tw.onBusyChange((next) => {
+      state.value = next;
+    }),
+  );
+  return state;
 }
