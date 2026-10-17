@@ -60,13 +60,13 @@ Documentation = "https://docs.velis.si/taskwire/"
 [tool.hatch.version]
 path = "taskwire/__init__.py"
 
-# The release tool stamps the two manifests by itself. `ts/index.ts` is the third place the version
+# The release tool stamps the two manifests by itself. `vue/index.ts` is the third place the version
 # is written down - the npm half exports it as `VERSION` - and nothing about a Python manifest points
 # at it, so it is named here. `packaging_test.py::test_python_and_npm_versions_match` and
-# `ts/packaging.spec.ts` both compare against `package.json`, transitively pinning all three, but only
+# `vue/packaging.spec.ts` both compare against `package.json`, transitively pinning all three, but only
 # once a release has actually bumped this file too.
 [tool.publish]
-additional_files = ["ts/index.ts"]
+additional_files = ["vue/index.ts"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["taskwire"]

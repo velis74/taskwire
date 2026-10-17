@@ -46,9 +46,9 @@ Rule ids are stable. Cross-references use ids only.
 | **collectable result** | A written `Result` that has not been released. Holds the operation in `waiting_input` without holding a worker. |
 
 Packaging: Python package root `taskwire`, extras `[redis]`, `[muxws]`, `[fastapi]`, `[celery]`;
-npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`. Both roots carry the whole
-operating half (TW-SYM-001) with no optional dependency: the store port with `MemoryStore`, the
-`Reporter`, `operation()`, `LocalTransport` and `NullTransport`. The subpaths and the extras add
+npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`, `/fastapi-viewsets`. Both
+roots carry the whole operating half (TW-SYM-001) with no optional dependency: the store port with
+`MemoryStore`, the `Reporter`, `operation()`, `LocalTransport` and `NullTransport`. The subpaths and the extras add
 adapters to things outside the process, never a capability the core lacks.
 
 ---
@@ -1062,10 +1062,10 @@ adapters to things outside the process, never a capability the core lacks.
   | Python only | TypeScript only |
   |---|---|
   | `RedisStore` and the `twx:{ns}` backplane (TW-STORE-011) | the polling client and its ladder (TW-REST-010) |
-  | the Celery worker entry (`TW-CELERY-*`) | the `/vue` and `/vuetify` subpaths |
+  | the Celery worker entry (`TW-CELERY-*`) | the `/vue`, `/vuetify` and `/fastapi-viewsets` subpaths |
   | the FastAPI / ASGI adapters (TW-REST-001) | `tw.register`, `tw.aggregate`, `tw.selected`, `tw.operations` |
   | `MuxwsTransport`'s server side (`TW-WS-*`) | the tab-hint rules (`TW-TAB-*`) |
-  | the ambient reporter proxy (`TW-AMB-*`, see TW-SYM-004) | — |
+  | the ambient reporter proxy (`TW-AMB-*`, see TW-SYM-004) | `tw.busy` and the call sources (TW-TS-022..TW-TS-025) |
   | tracked viewset calls (`TW-CALL-*`) | — |
 
   Anything not in this table MUST exist in both. A capability MUST NOT be added to one language alone
@@ -1083,7 +1083,7 @@ adapters to things outside the process, never a capability the core lacks.
 
 A call — an HTTP request, a command on a muxws stream, work handed to another process — is an
 operation of its own when the caller names one. TW-CALL-001..007 bind `taskwire.calls` and
-`ts/call-tracking.ts` and name no framework; TW-CALL-101..104 bind the adapters.
+`vue/call-tracking/call-tracking.ts` and name no framework; TW-CALL-101..104 bind the adapters.
 
 - **TW-CALL-001** **The token of a call MUST be its `X-Taskwire-Token` header when present, and
   otherwise the key of its `Idempotency-Key` header** (`draft-ietf-httpapi-idempotency-key-header-07`,
@@ -1537,6 +1537,7 @@ function use_taskwire(options?: { basePath?: string; axiosInstance?: AxiosInstan
 function configure_taskwire(options: {
   progressUi?: { delay?: number; failureLinger?: number } | false;
   dialogAdoptDelay?: number;
+  unreachableAfter?: number;
 }): void;
 
 function run<T>(fn: (token: string) => Promise<T>,
@@ -1559,12 +1560,32 @@ interface Taskwire {
   awaitCall<R>(call: KeyedCall<R>, handler: (op: Operation<R>) => void,
                o?: RunOptions): Promise<R>;     // the same, resolving with the call's outcome
   attachTransport(t: ClientTransport): void;    // additive; polling is unchanged without it
+  attachCalls(source: CallSource): () => void;  // calls into tw.busy; returns the detach function
+  readonly busy: BusyState;                     // the calls a busy indicator renders
+  onBusyChange(cb: (s: BusyState) => void): () => void;
+  retryNow(): void;                             // retryNow() of every attached source
   mute(token: string): void;                    // declare false for this connection
   unmute(token: string): void;                  // declare true - revives a backend-suppressed op
   clearOverride(token: string): void;           // remove the key; defer to push_filter
 }
 
 type KeyedCall<R> = PromiseLike<R> & { readonly key?: string };   // e.g. fastapi-viewsets' ViewSetCall
+
+type CallEvent =                                // the shape of fastapi-viewsets' CallEvent
+  | { type: 'start'; key: string; background: boolean }
+  | { type: 'retry'; key: string; failure: 'timeout' | 'lost'; attempt: number; delayMs: number }
+  | { type: 'settle'; key: string; ok: boolean };
+interface CallSource { subscribe(l: (e: CallEvent) => void): () => void; retryNow?(): void }
+interface BusyState {
+  visible: boolean;                             // a non-background call is older than progressUi.delay
+  unreachable: boolean;                         // a non-background call has attempts >= unreachableAfter
+  calls: readonly BusyCall[];                   // the non-background calls older than the delay, oldest first
+  percent: number | null;                       // of the oldest listed call whose operation reports progress
+  label: Text | null;
+}
+interface BusyCall { key: string; startedAt: number; attempts: number; unreachable: boolean;
+                     operation: Operation<unknown> | null }
+function axiosCallSource(http: AxiosInstance): CallSource;
 
 class Operation<T> implements PromiseLike<T> {
   readonly token: string;
@@ -1742,9 +1763,9 @@ function use_register(options?: TaskwireOptions):
   documented default.
 - **TW-TS-009** A pending dialog on **any** `tw.register` entry MUST be surfaced by the application
   even when that entry is not in `tw.operations`; the guide MUST state this as a requirement.
-- **TW-TS-010** `taskwire` MUST NOT declare Vue, Vuetify or
-  `@dynamicforms/vuetify-modal-form-kit` as dependencies. The dialog adapter, `TaskwireFooter`,
-  `TaskwireOperations` and `TaskwireProgressDialog` ship in the `/vuetify` subpath only.
+- **TW-TS-010** `taskwire` MUST NOT declare Vue, Vuetify, `@dynamicforms/vuetify-modal-form-kit` or
+  `@dynamicforms/vuetify-inputs` as dependencies. The dialog adapter, `useBusyDialog`,
+  `TaskwireFooter`, `TaskwireOperations` and `TaskwireBusy` ship in the `/vuetify` subpath only.
 - **TW-TS-019** **`tw.trackCall(call, handler, options?)` MUST follow the operation whose token is
   `call.key`** — the token the server tracks the call under: the `Idempotency-Key` a
   fastapi-viewsets proxy sent, or any token the caller put on the request (TW-CALL-001) — and MUST call
@@ -1773,6 +1794,34 @@ function use_register(options?: TaskwireOptions):
   made at that moment — `X-Taskwire-Token` while `run()` has a token bound, `X-Taskwire-Connection`
   once a socket declared an id — so that any other HTTP client can carry them. The axios interceptor
   MUST write exactly these. Test: `call-tracking.spec.ts::Taskwire.headers`.
+- **TW-TS-022** **`tw.busy` MUST hold the calls of every source attached with `tw.attachCalls()`**,
+  so that an application renders one busy indicator for every call its page waits on. A call
+  enters on its first `start` and leaves when every source that started it has settled it; a key
+  started by several sources is one call, which is background when any of them reported it so.
+  `visible` MUST be true while at least one non-background call is older than `progressUi.delay`,
+  and false under `progressUi: false`; `calls` lists those calls oldest first. A listed call whose
+  key is a UUID MUST be followed as `trackCall()` follows a call (TW-TS-019), so an operation the
+  server tracks the call under supplies `percent` and `label` — those of the oldest listed call
+  whose operation reports a percent or a label; any other listed call has `operation: null`. A
+  call that settles inside the delay MUST NOT cause any read of its token. Detaching a source
+  removes the calls it has not settled. taskwire MUST NOT render anything from `tw.busy` on its
+  own. Tests: `busy.spec.ts::tw.busy`.
+- **TW-TS-023** **`axiosCallSource(http)` MUST report every request of `http` as `start` and
+  `settle`, and nothing else.** The key is the content of the request's `Idempotency-Key`, else
+  its `X-Taskwire-Token`, else the token `run()` has bound, else an id that is not a UUID; a
+  request whose config carries `background: true` is a background call. The interceptors are
+  installed on the first subscription and ejected after the last. The core MUST NOT import
+  `@dynamicforms/fastapi-viewsets` for any of this: `CallEvent` and `CallSource` are declared
+  structurally (TW-CORE-006). Tests: `busy.spec.ts::axiosCallSource`.
+- **TW-TS-024** **A call MUST count as unreachable once it has `unreachableAfter` unanswered
+  attempts** (§8.3), each `retry` event being one; `BusyState.unreachable` is true while any
+  non-background call is unreachable, whatever its age, and a call stops being unreachable only by
+  leaving. `tw.retryNow()` MUST call `retryNow()` of every attached source that has one. Tests:
+  `busy.spec.ts::unreachable calls`.
+- **TW-TS-025** `taskwire/fastapi-viewsets` MUST export `viewsetCallSource()`, a `CallSource` over
+  fastapi-viewsets' `onCallActivity` whose `retryNow()` is fastapi-viewsets' own. It is the only
+  module besides `taskwire/muxws` that imports `@dynamicforms/fastapi-viewsets`. Test:
+  `busy.spec.ts::viewsetCallSource`.
 
 ### 5.6 Shipped deliverables
 
@@ -1791,10 +1840,16 @@ function use_register(options?: TaskwireOptions):
   aggregate, because the aggregate has no percentage to draw.
 - **TW-PKG-005** `taskwire/vuetify` MUST ship `TaskwireOperations`, which lists `tw.register` with
   each entry's own percentage, selects an entry (`tw.select`), and offers cancel on an entry that
-  has not ended and holds no result, and collect and dismiss on one that holds a result; and
-  `TaskwireProgressDialog`, which shows `tw.operations` and therefore no operation that ended inside
-  `progressUi.delay` (§4.3), with each operation's own bar, a cancel and a `hide()`. Neither MAY draw
-  a percentage derived across operations (TW-REG-011).
+  has not ended and holds no result, and collect and dismiss on one that holds a result. It MUST NOT
+  draw a percentage derived across operations (TW-REG-011).
+- **TW-PKG-006** `taskwire/vuetify` MUST ship `useBusyDialog(options?)`, which opens one modal
+  through the modal kit's `custom()`, with the body passed as a component, when `tw.busy.visible`
+  becomes true and closes it when it becomes false, and is called by the application or not at all
+  (TW-TS-022). Its default body,
+  `TaskwireBusy`, MUST draw `busy.percent` (indeterminate when `null`) and `busy.label`, and while
+  `busy.unreachable` holds a notice with an action that calls `tw.retryNow()`. A dialog the user
+  closes MUST stay closed until `visible` has been false once. Tests:
+  `busy-dialog.spec.ts::useBusyDialog`.
 
 ---
 
@@ -1944,9 +1999,10 @@ producer), `push_filter` (optional, default `lambda client, operation: True`) an
 
 | Option | Unit | Default | Range | Meaning |
 |---|---|---|---|---|
-| `progressUi.delay` | ms | 250 | > 0 | age at which a `startedHere` operation enters `tw.operations`; independent of `progress_interval` |
+| `progressUi.delay` | ms | 250 | > 0 | age at which a `startedHere` operation enters `tw.operations`, and a call enters `tw.busy.calls`; independent of `progress_interval` |
 | `progressUi.failureLinger` | ms | 8000 | > 0, never 0 | how long a `failed`/`cancelled` row the register has already dropped stays on this client's screen |
 | `dialogAdoptDelay` | ms | 2000 | > 0, never 0 | how long a non-originating tab waits before presenting a still-open dialog |
+| `unreachableAfter` | attempts | 5 | ≥ 1 | unanswered attempts (`retry` events) after which a call is unreachable in `tw.busy` (TW-TS-024) |
 | `run(fn, { progressUi: false })` | – | – | – | per-call opt-out of the visible collection only |
 
 ---

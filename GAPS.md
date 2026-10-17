@@ -49,7 +49,7 @@ normalises empty params to absent, and no fixture or rule distinguishes the two 
 
 **What the brief/spec said:** §5.5 declared `readonly progress: ProgressState | null` and imported
 `type ProgressState` from `'taskwire'`, so there `ProgressState` was the *progress document*.
-`ts/wire.ts` uses `ProgressState` for the closed state vocabulary (`queued | running | …`) and calls
+`vue/wire/wire.ts` uses `ProgressState` for the closed state vocabulary (`queued | running | …`) and calls
 the document `Progress`, matching Python's `models.py`.
 
 **What I assumed:** `wire.ts` wins, because TW-SYM-002 makes the two languages one protocol and
@@ -249,16 +249,16 @@ claim as written is false and should not survive into the user documentation.
 
 **Three loose ends found alongside it**:
 
-- `toCamel`, `toSnake`, `convertKeys` and `OPAQUE_KEYS` (`ts/wire.ts`) have **no caller**
+- `toCamel`, `toSnake`, `convertKeys` and `OPAQUE_KEYS` (`vue/wire/wire.ts`) have **no caller**
   outside the export list in `index.ts` and their own tests. The `snake_case` → `camelCase` mapping
   is done explicitly and per field inside each `parseX`, fused with the validation that has to
   happen anyway (`resultKind: optionalString(wire.result_kind, …)`), so the generic converter is
   never on a code path. This is the "which public symbol does nothing but a test call?" question
   answering yes.
-- `conformance/sequences/` is empty but for `.gitkeep`, and `ts/packaging.spec.ts` asserts that the
+- `conformance/sequences/` is empty but for `.gitkeep`, and `vue/packaging.spec.ts` asserts that the
   empty directory exists. `taskwire-spec.md` §2.2 and three briefs reference
   `conformance/sequences/out-of-order-dialog.json`, which was never written. The behaviour it was to
-  cover (TW-REV-006) is implemented at `ts/operation.ts` and tested in `client.spec.ts` and
+  cover (TW-REV-006) is implemented at `vue/operation/operation.ts` and tested in `client.spec.ts` and
   `vuetify.spec.ts`, so nothing is uncovered — only promised.
 - A wire mismatch is not always loud. Required fields throw with the field path, but
   `optionalString` reads absent and `null` alike (TW-CORE-010), and for `result_kind` `null` *means*
@@ -420,17 +420,16 @@ one listed before it rejects the call before any write.
 
 ## taskwire-spec.md §5.5 / §5.6 — TW-TS-019, TW-PKG-005 — the frontend half of tracked calls
 
-**What I needed:** the shape of the per-call handler API, and the look of the two new components.
+**What I needed:** the shape of the per-call handler API, and the look of `TaskwireOperations`.
 
 **What I assumed:** `tw.trackCall(call, handler, options?)` returns the function that removes the
 handler, and `tw.awaitCall(call, handler, options?)` resolves with the call; the handler receives the
 `Operation` handle, not a `Snapshot`, so it reads the derived `waiting_input` and the open dialog the
-same way a template does. `TaskwireOperations` and `TaskwireProgressDialog` render unstyled markup
-with `taskwire-*` classes, as `TaskwireFooter` does, rather than Vuetify components, and the dialog
-leaves out a visible operation that has no document yet.
+same way a template does. `TaskwireOperations` renders unstyled markup with `taskwire-*` classes, as
+`TaskwireFooter` does, rather than Vuetify components.
 
-**Still needs deciding:** the two names, and whether the components should render Vuetify's own
-`VList` / `VDialog` / `VProgressLinear` instead.
+**Still needs deciding:** the name, and whether the component should render Vuetify's own `VList` /
+`VProgressLinear` instead.
 
 ---
 
@@ -455,7 +454,7 @@ constructor calls `peer.onStream()`. Its handler passes every stream to
 `handleEventStream(peer, payload, stream)`, which takes a stream whose headers carry a string
 `:event` for the event client `createEventClient({ peer })` registered for the peer; every other
 stream is parsed as an envelope, and one that does not parse is dropped with no trace
-(`ts/muxws.ts`, `deliver`). The handler stays installed after `detachMuxws`.
+(`vue/muxws/muxws.ts`, `deliver`). The handler stays installed after `detachMuxws`.
 
 **What it costs:** the lock-out the rule guards against exists in the browser. A stream the
 application's server opens to the browser for its own purposes, on a peer taskwire is attached to,
@@ -556,3 +555,20 @@ the move contradicts several rules as they stand:
 
 **Still needs deciding:** whether the push path moves at all, as a specification change of its own.
 Nothing of it is implemented.
+
+---
+
+## taskwire-spec.md §5.5 — TW-TS-022, TW-TS-023 — the key of a call reported by two sources
+
+**What I needed:** what `tw.busy` does when `axiosCallSource` and `viewsetCallSource` both report one
+request: a fastapi-viewsets REST proxy sends its calls through axios.
+
+**What I assumed:** one key is one call. `axiosCallSource` reports a request under its
+`Idempotency-Key` before its `X-Taskwire-Token`, so a proxy call carries the key its proxy reports;
+the call leaves when both sources have settled it, and is background when either reported it so,
+because axios knows nothing of `RequestOptions.background`. A proxy call made inside `run()` is
+therefore followed under its `Idempotency-Key`, which the server does not track it under (TW-CALL-001),
+and shows no progress in `tw.busy`; `run()`'s own handle still does.
+
+**Still open:** a proxy call made inside `run()` shows no progress in `tw.busy`. The guide states
+it (`docs/guide/long-running-requests.md`).

@@ -11,10 +11,10 @@ export default defineConfig({
       // into `node_modules` - so the bare specifier every consumer outside this repository writes
       // has nothing to resolve to here. A consumer deletes these two lines and changes nothing
       // else: every import in `src/` is the published one, spelled the published way.
-      'taskwire/muxws': fileURLToPath(new URL('../../ts/muxws.ts', import.meta.url)),
-      'taskwire/vue': fileURLToPath(new URL('../../ts/vue.ts', import.meta.url)),
-      'taskwire/vuetify': fileURLToPath(new URL('../../ts/vuetify.ts', import.meta.url)),
-      taskwire: fileURLToPath(new URL('../../ts/index.ts', import.meta.url)),
+      'taskwire/muxws': fileURLToPath(new URL('../../vue/muxws.ts', import.meta.url)),
+      'taskwire/vue': fileURLToPath(new URL('../../vue/vue.ts', import.meta.url)),
+      'taskwire/vuetify': fileURLToPath(new URL('../../vue/vuetify.ts', import.meta.url)),
+      taskwire: fileURLToPath(new URL('../../vue/index.ts', import.meta.url)),
     },
   },
   server: {

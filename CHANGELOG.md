@@ -6,6 +6,42 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `tw.busy`, `tw.onBusyChange()`, `tw.attachCalls(source)` and `tw.retryNow()`: the calls a page
+  waits on, from every attached `CallSource`, as one `BusyState` — whether a non-background call is
+  older than `progressUi.delay`, the progress of the oldest such call whose operation reports it,
+  and whether a call has gone unanswered `unreachableAfter` times. A listed call whose key is a UUID
+  is followed as `tw.trackCall()` follows one. taskwire renders nothing from it on its own.
+- `axiosCallSource(http)`: the requests of an axios instance as a `CallSource`; a request config
+  with `background: true` is a background call.
+- `configure_taskwire({ unreachableAfter })`, 5 by default.
+- `taskwire/fastapi-viewsets`: `viewsetCallSource()`, every fastapi-viewsets proxy call as a
+  `CallSource`, with fastapi-viewsets' `retryNow()`.
+- `taskwire/vue`: `useBusy(client?)`, `tw.busy` as a ref.
+- `taskwire/vuetify`: `useBusyDialog(options?)`, one modal through the modal kit while `tw.busy`
+  is visible, and `TaskwireBusy`, its default body, with **Try now** while a call is unreachable.
+
+### Changed
+
+- The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.10.0, and
+  `@dynamicforms/vuetify-modal-form-kit` requires ^0.10.0. `taskwire/vuetify` imports
+  `@dynamicforms/vuetify-inputs` ^0.14.2, a new optional peer dependency that the modal kit requires
+  as well.
+
+### Fixed
+
+- `useTaskwireDialogs` states the buttons of a dialog without a mapped component as `Action`s, as
+  the modal kit's `actions` option takes them, and answers nothing when the modal settles with the
+  kit's own **Close** action.
+
+### Removed
+
+- `TaskwireProgressDialog`. `useBusyDialog()` presents slow calls; `TaskwireOperations` lists
+  operations.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

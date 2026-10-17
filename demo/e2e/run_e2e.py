@@ -127,7 +127,7 @@ def run_half(label: str, command: list[str]) -> tuple[int, int, dict]:
 
 
 def build_client() -> None:
-    """`npx vite build`, because the half under test is `dist/` and not `ts/`.
+    """`npx vite build`, because the half under test is `dist/` and not `vue/`.
 
     A stale bundle would let this check pass against a client nobody ships, which is the one failure
     mode a check that exists to run the real thing cannot afford.

@@ -8,10 +8,10 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
-    "paths": { "@/*": ["./ts/*"], "~/*": ["./node_modules/*"] },
+    "paths": { "@/*": ["./vue/*"], "~/*": ["./node_modules/*"] },
     "types": ["vitest/globals", "node"],
     "skipLibCheck": true
   },
-  "include": ["ts/**/*"],
+  "include": ["vue/**/*"],
   "exclude": ["dist", "coverage", "node_modules", "docs", "examples", "taskwire"]
 }

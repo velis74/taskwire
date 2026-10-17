@@ -7,10 +7,11 @@ Wire field names are `snake_case`; the TypeScript surface exposes them as `camel
 both directions. Module-level factories keep their Python names verbatim — `use_taskwire`,
 `configure_taskwire`, `new_token` — and there is no `newToken` alias.
 
-Five entry points: `taskwire`, `taskwire/vue`, `taskwire/muxws`, `taskwire/vuetify` and
-`taskwire/conformance`. The main entry imports axios, the package's one required peer dependency; the
-`/vue`, `/muxws` and `/vuetify` subpaths each import the optional peer they are named for, and
-`/conformance` imports nothing at all.
+Six entry points: `taskwire`, `taskwire/vue`, `taskwire/muxws`, `taskwire/vuetify`,
+`taskwire/fastapi-viewsets` and `taskwire/conformance`. The main entry imports axios, the package's
+one required peer dependency; the `/vue`, `/muxws`, `/vuetify` and `/fastapi-viewsets` subpaths each
+import the optional peer they are named for (`/muxws` also fastapi-viewsets), and `/conformance`
+imports nothing at all.
 
 ## The client
 
@@ -40,6 +41,9 @@ tw.select(token | null);  tw.show(token);  tw.hide(token);
 tw.attachTransport(transport);  tw.detachTransport();
 tw.setConnection(id | null);    tw.connection;
 tw.headers();                       // the two headers a request made now carries
+tw.attachCalls(source);             // report a CallSource's calls into tw.busy; returns detach
+tw.busy;  tw.onBusyChange(cb);      // the calls a busy indicator renders
+tw.retryNow();                      // retryNow() of every attached source
 ```
 
 `run()` mints the token and binds it for the **synchronous** part of `fn`, so the request `fn` issues
@@ -144,10 +148,53 @@ Not the register, not the token list, not a delivery preference. Three things su
 memory: the tokens this page minted, the override map this client holds, and the connection id its
 `watch` reply carried. The tab id (`TAB_ID`) is in memory too and is never sent to a server.
 
+### Busy calls
+
+```ts
+import { axiosCallSource, type BusyState, type CallSource } from 'taskwire';
+import { viewsetCallSource } from 'taskwire/fastapi-viewsets';
+
+const detach = tw.attachCalls(viewsetCallSource());   // or axiosCallSource(axiosInstance)
+tw.busy;      // { visible, unreachable, calls, percent, label }
+```
+
+| `BusyState` | |
+|---|---|
+| `visible` | at least one non-background call is older than `progressUi.delay`; `false` under `progressUi: false` |
+| `unreachable` | at least one non-background call has `unreachableAfter` unanswered attempts, whatever its age |
+| `calls` | the non-background calls older than `progressUi.delay`, oldest first, as `BusyCall`s |
+| `percent`, `label` | of the oldest listed call whose operation reports a percent or a label; else `null` |
+
+| `BusyCall` | |
+|---|---|
+| `key` | the key its source reports it under |
+| `startedAt` | `Date.now()` at its first `start` |
+| `attempts` | unanswered attempts: the number of its `retry` events |
+| `unreachable` | `attempts >= unreachableAfter` |
+| `operation` | the handle `trackCall()` would follow it with when `key` is a UUID, else `null` |
+
+A `CallSource` is `{ subscribe(listener): () => void; retryNow?(): void }`, and `listener` receives
+`CallEvent`s: `{ type: 'start', key, background }`, `{ type: 'retry', key, failure, attempt,
+delayMs }`, `{ type: 'settle', key, ok }` — the shape of fastapi-viewsets' `CallEvent`, declared in
+the core. A key started by several sources is one call; it leaves when every source has settled it
+and is background when any of them reported it so. Detaching a source removes the calls it has not
+settled. A state is a new frozen object on every change.
+
+`axiosCallSource(http)` reports `start` and `settle` for every request of `http`, under its
+`Idempotency-Key`, else its `X-Taskwire-Token`, else the token `run()` has bound, else an `axios-<n>`
+id that is never followed; a request config with `background: true` is a background call.
+`viewsetCallSource()` (`taskwire/fastapi-viewsets`) wraps fastapi-viewsets' `onCallActivity` and
+`retryNow`. Wiring, the dialog and worked examples: [Handling long-running
+requests](../guide/long-running-requests.md).
+
 ## Settings
 
 ```ts
-configure_taskwire({ progressUi: { delay: 250, failureLinger: 8000 }, dialogAdoptDelay: 2000 });
+configure_taskwire({
+  progressUi: { delay: 250, failureLinger: 8000 },
+  dialogAdoptDelay: 2000,
+  unreachableAfter: 5,
+});
 taskwireConfig();        // what the last call left behind
 resetTaskwireConfig();   // back to the defaults above
 ```
@@ -157,6 +204,8 @@ most operations finish inside it and never appear at all. `failureLinger` is how
 client saw fail is held afterwards. `progressUi: false` turns the visible collection off wholesale
 without affecting `tw.register`. `dialogAdoptDelay` is how long a tab that did **not** start an
 operation waits before presenting its question (TW-TAB-005); it is clamped, and zero is not allowed.
+`progressUi.delay` is also the age at which a call enters `tw.busy.calls`, and `unreachableAfter` is
+the number of unanswered attempts after which a call is unreachable there.
 
 **None of these is derived from the poll interval, and none may be.** A frontend must never assume an
 update frequency: no animation, timeout or stall heuristic may be built on how often a poll happens.
@@ -247,10 +296,11 @@ The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `fl
 | Python only | TypeScript only |
 |---|---|
 | `RedisStore` and the pub/sub backplane | the polling client and its ladder |
-| the Celery worker entry | the `/vue` and `/vuetify` subpaths |
+| the Celery worker entry | the `/vue`, `/vuetify` and `/fastapi-viewsets` subpaths |
 | the FastAPI / ASGI / WSGI adapters, and the muxws server half | `tw.register`, `tw.aggregate`, `tw.selected` |
 | `timeout_errors` and `dialog_timeout` on an executor's limit | `trackFetch` |
 | the ambient `progress` proxy | the tab-hint rules |
+| — | `tw.busy` and the call sources |
 
 The ambient proxy is the one worth knowing about: `contextvars` has no browser equivalent, and an
 unbound proxy is a *silent* no-op — so one that worked under Node and no-opped in a browser would
@@ -286,16 +336,18 @@ attached to.
 ## Vue
 
 ```ts
-import { use_operation, use_operations, use_register } from 'taskwire/vue';
+import { use_operation, use_operations, use_register, useBusy } from 'taskwire/vue';
 
 const { operation, progress, dialog, isRunning, isDone, answer, cancel } = use_operation(token);
 const visible = use_operations();
 const { entries, aggregate, selected, show, collect, dismiss, mute } = use_register();
+const busy = useBusy();   // tw.busy as a ref
 ```
 
 `use_operation` takes a token or `{ token, basePath, axiosInstance }`. `use_register` is what starts
 the register loop; `use_operations` deliberately does not, because the visible collection is local
-policy over handles this tab already has.
+policy over handles this tab already has. `useBusy` takes a client or `TaskwireOptions` and returns
+a ref holding the current `BusyState`; it stops following with the surrounding effect scope.
 
 `taskwire/vue` is the only module in the package that imports Vue; the core never does, so taskwire
 is usable from React, from Svelte or from a plain script tag.
@@ -304,10 +356,11 @@ is usable from React, from Svelte or from a plain script tag.
 
 ```ts
 import {
-  TaskwireFooter, TaskwireOperations, TaskwireProgressDialog, useTaskwireDialogs,
+  TaskwireBusy, TaskwireFooter, TaskwireOperations, useBusyDialog, useTaskwireDialogs,
 } from 'taskwire/vuetify';
 
 useTaskwireDialogs({ components: { 'acme.overwrite': 'AcmeOverwriteDialog' } });
+const { stop } = useBusyDialog({ showCalls: true });
 ```
 
 `useTaskwireDialogs` presents every open question of the namespace through the modal kit, applying
@@ -315,7 +368,9 @@ the tab rules: the tab that started the operation presents at once, every other 
 `dialogAdoptDelay` and presents only if the question is still open. **Mount it once, high up** —
 mounting it twice presents each question twice. `dialogId` maps to a component exactly as a
 `Result.kind` does, and anything unmapped falls back to a plain message dialog carrying the declared
-buttons, which is a worse dialog but never a missing one.
+buttons as `Action`s of `@dynamicforms/vuetify-inputs`, which is a worse dialog but never a missing
+one. A modal that settles with anything but one of the declared buttons — the kit's own **Close** —
+answers nothing and leaves the question open.
 
 `<TaskwireFooter />` draws the aggregate and the selected operation's own percentage, and renders
 nothing when the aggregate is null.
@@ -327,17 +382,23 @@ result, and **Collect** and **Dismiss** while it holds one. It emits `collected`
 `Result` and the operation, and `error` with the error and the operation when a write rejects. It
 renders nothing while the register is empty.
 
-`<TaskwireProgressDialog />` shows `tw.operations`, this tab's visible collection: an operation
-started here appears once `progressUi.delay` has passed and it is not `done`, and once its first
-document has been read. A `failed` or `cancelled` row stays for `progressUi.failureLinger`, showing
-its error message. Each row has its own bar, **Cancel** while the operation can be cancelled, and
-**Hide** (`operation.hide()`, this tab only). It emits `error` when a cancel rejects, and renders
-nothing while it has no row. Mount it once.
+`taskwire/vuetify` imports `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and
+`@dynamicforms/vuetify-inputs` ^0.14.2, both optional peers.
 
-All four take an optional `client` and `translate`. The three components render unstyled markup
-with `taskwire-footer*`, `taskwire-operations*` and `taskwire-progress-dialog*` classes, and
-`data-state` on each row. Button captions are `Text`s with the keys `taskwire.cancel`,
-`taskwire.collect`, `taskwire.dismiss` and `taskwire.hide`, which `translate` receives.
+`useBusyDialog({ client?, translate?, title?, component?, showCalls? })` opens one modal through
+the modal kit's `custom()`, with the body passed as a component, while `tw.busy.visible` holds and
+closes it when it does not; a dialog the user closes stays closed until `visible` has been false
+once. `<TaskwireBusy />` is its default
+body: `busy.label`, a bar for `busy.percent` (indeterminate when `null`), with `show-calls` one row
+per listed call, and while `busy.unreachable` holds a notice with **Try now**, which calls
+`tw.retryNow()`. Options and wiring: [Handling long-running
+requests](../guide/long-running-requests.md#the-frontend-with-fastapi-viewsets).
+
+All five take an optional `client` and `translate`. The three components render unstyled markup
+with `taskwire-footer*`, `taskwire-operations*` and `taskwire-busy*` classes, and `data-state` on
+each row. Captions are `Text`s with the keys `taskwire.cancel`, `taskwire.collect`,
+`taskwire.dismiss`, `taskwire.busy`, `taskwire.unreachable` and `taskwire.try_now`, which
+`translate` receives.
 
 ## The tab rules
 
@@ -358,7 +419,7 @@ import { runConformance } from 'taskwire/conformance';
 await runConformance((options) => new MyStore(options));
 ```
 
-A fifth entry point, published for the same reason `taskwire.conformance` is importable in Python: a
+An entry point published for the same reason `taskwire.conformance` is importable in Python: a
 store is an application's to write — over IndexedDB in a browser, over whatever a service already
 runs — and this is what says whether the thing it wrote is one. It asserts the same behaviours as the
 Python suite, check for check, so a store is judged by the same standard in either language.

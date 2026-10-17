@@ -129,15 +129,31 @@ See [The Celery worker entry](../api/python.md#the-celery-worker-entry) for `tas
 
 ## The npm package
 
-`@dynamicforms/fastapi-viewsets` is an optional peer dependency of the npm package, imported by
-`taskwire/muxws` alone. It sends the six calls through its `MuxwsProxyImpl`, and hands the event
-streams on the peer to its `handleEventStream`, so one socket carries taskwire's pushes and the event
-client's events (see
+`@dynamicforms/fastapi-viewsets` ^0.10.0 is an optional peer dependency of the npm package, imported
+by `taskwire/muxws` and `taskwire/fastapi-viewsets`. `taskwire/muxws` sends the six calls through
+its `MuxwsProxyImpl`, and hands the event streams on the peer to its `handleEventStream`, so one
+socket carries taskwire's pushes and the event client's events (see
 [The WebSocket transport](./websockets.md#one-peer-for-taskwire-and-fastapi-viewsets-events)).
+
+`taskwire/fastapi-viewsets` exports `viewsetCallSource()`, which reports every proxy call into
+`tw.busy`. One busy dialog for every slow proxy call, with the server's progress and a "no
+connection" notice:
+
+```ts
+import { use_taskwire } from 'taskwire';
+import { viewsetCallSource } from 'taskwire/fastapi-viewsets';
+import { useBusyDialog } from 'taskwire/vuetify';
+
+use_taskwire().attachCalls(viewsetCallSource());
+useBusyDialog();
+```
+
+See [Handling long-running requests](./long-running-requests.md).
 
 ## What to read next
 
 - [Getting started](./getting-started.md) — the REST path end to end.
 - [Tracking calls](./tracking-calls.md) — the same tracking for any ASGI, WSGI or `fetch` application.
+- [Handling long-running requests](./long-running-requests.md) — the busy dialog over proxy calls.
 - [The WebSocket transport](./websockets.md) — `register_taskwire_muxws`, connection ids, and what
   stops polling.

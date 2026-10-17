@@ -9,7 +9,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 |---|---|
 | `taskwire/` | the Python package. Core has **zero** runtime dependencies |
 | `taskwire/contrib/` | everything that imports an optional dependency (TW-CORE-006) |
-| `ts/` | the TypeScript package. Ships the *whole* operating half, not just a client |
+| `vue/` | the TypeScript package. Ships the *whole* operating half, not just a client. One directory per feature; the top-level `*.ts` are the package's entry points and only re-export |
 | `design/` | the normative spec + 16 milestone briefs. **Not published** — VitePress never sees it |
 | `docs/` | the user-facing VitePress site, and only that |
 | `demo/` + `demo.py` | the one demo. A consumer of taskwire, not part of it |
@@ -18,7 +18,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 
 ```bash
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 324 pass, 13 skip
-npx vitest run                                            # 427 pass
+npx vitest run                                            # 444 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
 python demo.py                                            # both halves, Ctrl-C stops the pair
@@ -33,7 +33,7 @@ extra `contrib/celery_test.py` skips whole and takes seven tests with it.
 
 One protocol, three implementations. A **local** transport (in-process, both languages), a **REST**
 one, and a **WebSocket** one over muxws. Python is the server side, TypeScript the client side — but
-TypeScript also ships the operating half (`ts/store.ts`, `ts/reporter.ts`, `ts/operation-scope.ts`),
+TypeScript also ships the operating half (`vue/store/`, `vue/reporter/`),
 so a browser-only program is a first-class deployment. `taskwire/rest.py` holds every REST decision
 and imports no framework; the adapters do nothing but translate. That is what let the REST transport
 move onto fastapi-viewsets without touching a decision.
@@ -41,7 +41,7 @@ move onto fastapi-viewsets without touching a decision.
 **The two transports share one surface.** `register_taskwire_rest(router)` publishes the six calls of
 TW-REST-004 over REST *and* over muxws — one `route_viewset`, one validation chain, no second
 implementation. What `taskwire/contrib/muxws.py` owns is the push direction plus `watch`, the one
-call with no `{token}` to hang off. On the client, `ts/calls.ts` is the interface those six speak
+call with no `{token}` to hang off. On the client, `vue/calls/calls.ts` is the interface those six speak
 through, and `attachMuxws` swaps the implementation under it.
 
 **The workflow**: the front end mints a token and sends it with its own command
@@ -64,15 +64,17 @@ known token with a reason — `409 already_terminal`, `410` on a withdrawn dialo
 it, never the reverse (`design/taskwire-spec.md` §2.1).
 
 It is also one of four adapters for **tracked calls** (TW-CALL-*). The tracking itself is
-`taskwire/calls.py` and `ts/call-tracking.ts` and names no framework; `TaskwireMiddleware` binds it to
+`taskwire/calls.py` and `vue/call-tracking/` and names no framework; `TaskwireMiddleware` binds it to
 fastapi-viewsets 0.9.0's `Middleware` (`__call__` receives a call, `execute()` runs where the action
 executes, a Celery worker included), beside `contrib/asgi.py`, `contrib/wsgi.py` and `trackFetch`.
 A feature that reaches tracked calls through one adapter only is incomplete.
 
-On npm it is an **optional** peer that `taskwire/muxws` alone imports: `MuxwsProxyImpl`, and
+On npm it is an **optional** peer that two subpaths import. `taskwire/muxws`: `MuxwsProxyImpl`, and
 `handleEventStream`, which `MuxwsClientTransport`'s `onStream` handler calls first so that one peer
-carries taskwire's pushes and fastapi-viewsets' events. The core imports nothing from it. The
-polling ladder in `ts/poll.ts` is taskwire's own; fastapi-viewsets' `vue/events/poll.ts` holds the same
+carries taskwire's pushes and fastapi-viewsets' events. `taskwire/fastapi-viewsets`
+(`vue/busy/viewset-call-source.ts`): `onCallActivity` and `retryNow`, behind `viewsetCallSource()` for
+`tw.busy` (`vue/busy/`). The core imports nothing from it; `CallEvent` is declared structurally. The
+polling ladder in `vue/poll/poll.ts` is taskwire's own; fastapi-viewsets' `vue/events/poll.ts` holds the same
 algorithm for its event client, and a change to one is made in both.
 
 Two traps found in it, worth remembering:
