@@ -1083,7 +1083,7 @@ adapters to things outside the process, never a capability the core lacks.
 
 A call — an HTTP request, a command on a muxws stream, work handed to another process — is an
 operation of its own when the caller names one. TW-CALL-001..007 bind `taskwire.calls` and
-`ts/call-tracking.ts` and name no framework; TW-CALL-101..104 bind the adapters.
+`vue/call-tracking/call-tracking.ts` and name no framework; TW-CALL-101..104 bind the adapters.
 
 - **TW-CALL-001** **The token of a call MUST be its `X-Taskwire-Token` header when present, and
   otherwise the key of its `Idempotency-Key` header** (`draft-ietf-httpapi-idempotency-key-header-07`,

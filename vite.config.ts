@@ -12,7 +12,7 @@ export default defineConfig({
     visualizer({ open: false, filename: 'coverage/stats.html', gzipSize: true, brotliSize: true }),
   ],
   resolve: {
-    alias: { '@': resolve(__dirname, './ts') },
+    alias: { '@': resolve(__dirname, './vue') },
     extensions: ['.js', '.mjs', '.ts'],
   },
   build: {
@@ -20,15 +20,15 @@ export default defineConfig({
     sourcemap: true,
     lib: {
       entry: {
-        index: resolve(__dirname, 'ts/index.ts'),
-        vue: resolve(__dirname, 'ts/vue.ts'),
-        muxws: resolve(__dirname, 'ts/muxws.ts'),
-        vuetify: resolve(__dirname, 'ts/vuetify.ts'),
-        'fastapi-viewsets': resolve(__dirname, 'ts/fastapi-viewsets.ts'),
+        index: resolve(__dirname, 'vue/index.ts'),
+        vue: resolve(__dirname, 'vue/vue.ts'),
+        muxws: resolve(__dirname, 'vue/muxws.ts'),
+        vuetify: resolve(__dirname, 'vue/vuetify.ts'),
+        'fastapi-viewsets': resolve(__dirname, 'vue/fastapi-viewsets.ts'),
         // The store port's contract, runnable. Published for the same reason the Python package
         // ships `taskwire.conformance`: a store is an application's to write, and this is the only
         // thing that says whether what it wrote is one (TW-STORE-012).
-        conformance: resolve(__dirname, 'ts/conformance.ts'),
+        conformance: resolve(__dirname, 'vue/conformance.ts'),
       },
       formats: ['es', 'cjs'],
     },
@@ -50,7 +50,7 @@ export default defineConfig({
     },
   },
   test: {
-    coverage: { provider: 'v8', include: ['ts/**/*'], exclude: ['**/index.ts'] },
+    coverage: { provider: 'v8', include: ['vue/**/*'], exclude: ['vue/*.ts', 'vue/test-helpers/**'] },
     globals: true,
     environment: 'jsdom',
     // `@dynamicforms/vuetify-inputs` imports Vuetify's components, whose CSS Node cannot load.

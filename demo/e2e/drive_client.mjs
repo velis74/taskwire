@@ -12,7 +12,7 @@
  * ## What it reads, and why that matters
  *
  * The page renders **`tw.register`** - `use_register()` in `demo/client/src/App.vue` seeds `entries`
- * from `client.register` and re-seeds it from `onRegisterChange` (`ts/vue.ts`), and the template's
+ * from `client.register` and re-seeds it from `onRegisterChange` (`vue/vue.ts`), and the template's
  * `v-for` is over `entries`. It does **not** render `tw.operations`, which is the UI-policy-filtered
  * visible set and is empty in an ordinary run. So every assertion below reads a register row, by
  * token, exactly as the markup does.

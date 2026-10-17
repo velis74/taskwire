@@ -13,7 +13,7 @@ const fix = process.argv.includes('--fix') || process.env.npm_config_fix === 'tr
 const fixArg = fix ? ['--fix'] : [];
 
 const steps = [
-  ['eslint', ...fixArg, 'ts'],
+  ['eslint', ...fixArg, 'vue'],
   ['markdownlint-cli2', ...fixArg, '**/*.md'],
   ['vue-tsc', '--noEmit'],
 ];

@@ -3,10 +3,10 @@
   "compilerOptions": {
     "types": ["vite/client"],
     "paths": {
-      "taskwire": ["../../ts/index.ts"],
-      "taskwire/muxws": ["../../ts/muxws.ts"],
-      "taskwire/vue": ["../../ts/vue.ts"],
-      "taskwire/vuetify": ["../../ts/vuetify.ts"]
+      "taskwire": ["../../vue/index.ts"],
+      "taskwire/muxws": ["../../vue/muxws.ts"],
+      "taskwire/vue": ["../../vue/vue.ts"],
+      "taskwire/vuetify": ["../../vue/vuetify.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "vite.config.ts", "../../ts/*.d.ts"]

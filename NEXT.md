@@ -25,11 +25,11 @@ order of what they cost someone who hits them:
    span - pushes taskwire's into a microtask, by which time `run()` has unbound the ambient token:
    `X-Taskwire-Token` is never written, the server mints a token of its own, and the handle the
    caller holds polls an address nothing will ever write. Nothing reports it. The comment at
-   `ts/taskwire.ts:696` and the module docstring at `ts/taskwire.ts:25` describe the mechanism;
-   there is no guard and no diagnostic.
+   `vue/client/taskwire.ts:132` and the module docstring at `vue/client/taskwire.ts:25` describe the
+   mechanism; there is no guard and no diagnostic.
 2. **A dropped push in the browser leaves no trace, and nothing re-reads.** Bare `catch {}` at
-   `ts/muxws.ts:225` and `ts/register.ts:490`, and a silent return when no consumer is attached. The
-   Python side logs every equivalent drop at debug (`contrib/muxws.py:86,125,127`). The consequence is
+   `vue/muxws/muxws.ts:220` and `vue/register/register.ts:491`, and a silent return when no consumer is
+   attached. The Python side logs every equivalent drop at debug (`contrib/muxws.py:86,125,127`). The consequence is
    larger than the silence: a socket that is attached and healthy holds every ladder (TW-TS-007), so
    a terminal envelope that is dropped rather than delivered is never asked for again - the operation
    stays `running` on screen with an open question behind it until the socket is lost. The store is
@@ -42,7 +42,7 @@ order of what they cost someone who hits them:
 Two client-side symbols still have no caller outside the specs: `Taskwire.overrides` is pruned only
 by an explicit `clearOverride()`, never when the operation it names ends - unlike
 `MuxwsClientTransport.overrides`, which TW-DEL-023 does prune on its own copy - and
-`Operation.setStreamId` (`ts/operation.ts:552`) is written nowhere.
+`Operation.setStreamId` (`vue/operation/operation.ts:552`) is written nowhere.
 
 One more, which is a question rather than a defect: a client that renders only `tw.operations` never
 starts the register loop (TW-REG-021), so `readOnce()` returns immediately and a push naming an
