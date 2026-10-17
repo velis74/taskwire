@@ -1,9 +1,12 @@
 /**
  * `taskwire/vuetify` - the shipped UI deliverables.
  *
- * **Only the modules this entry and `taskwire/vue` reach may import a UI library** (TW-CORE-006,
- * TW-TS-010). `index.ts` must not reach any of them, and a test walks its transitive imports to
- * keep it so: taskwire has to stay usable from React, from Svelte, or from a plain script tag.
+ * **Only the modules in a `ui/` directory may import Vuetify, `@dynamicforms/vuetify-inputs` or the
+ * modal kit** (TW-CORE-006, TW-TS-010): a feature's UI half lives in `<feature>/ui/`, its UI-agnostic
+ * half in `<feature>/base/`, and helpers shared by UI features in `vue/ui/`. `index.ts` reaches no
+ * `ui/` module, so taskwire stays usable from React, from Svelte, or from a plain script tag;
+ * `packaging.spec.ts::the core entry reaches no ui/ directory` and
+ * `packaging.spec.ts::only ui/ modules import a UI library` keep it so.
  *
  * The dialog adapter, the busy dialog, and three components ship here. The first two below exist
  * because getting them wrong is easy and the consequence is quiet:
@@ -11,7 +14,8 @@
  * ## The dialog adapter
  *
  * A question belongs to the **namespace** (TW-REG-001), so every tab of it can see the question and
- * any of them may answer. The adapter runs the tab rule from `tab-hints.ts` - the tab that started
+ * any of them may answer. The adapter is `DialogPresenter` (`tab-hints/base/`) with the modal kit as
+ * its `present` callback, and runs the tab rule from `tab-hints.ts` - the tab that started
  * the operation presents immediately, every other waits `dialogAdoptDelay` and then presents only if
  * the question is *still* open (TW-TAB-003) - so five open tabs produce one modal, in the tab the
  * user is looking at, and the question survives that tab being closed.
@@ -39,11 +43,11 @@
  * ## `useBusyDialog` and `TaskwireBusy`
  *
  * `useBusyDialog()` opens one modal while `tw.busy.visible` holds, with `TaskwireBusy` as its body
- * (TW-PKG-006). Nothing opens it unless the application calls it. Both live in `busy/`.
+ * (TW-PKG-006). Nothing opens it unless the application calls it. Both live in `busy/ui/`.
  */
 
-export { type BusyDialogOptions, TaskwireBusy, useBusyDialog } from './busy/busy-dialog';
-export { type DialogAdapterOptions, useTaskwireDialogs } from './vuetify/dialogs';
-export { TaskwireFooter } from './vuetify/footer';
-export { TaskwireOperations } from './vuetify/operations';
-export { defaultTranslate, type Translate } from './vuetify/translate';
+export { type BusyDialogOptions, TaskwireBusy, useBusyDialog } from './busy/ui/busy-dialog';
+export { type DialogAdapterOptions, useTaskwireDialogs } from './tab-hints/ui/dialogs';
+export { TaskwireFooter } from './register/ui/footer';
+export { TaskwireOperations } from './register/ui/operations';
+export { defaultTranslate, type Translate } from './ui/translate';

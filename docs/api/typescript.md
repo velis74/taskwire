@@ -425,12 +425,20 @@ each row. Captions are `Text`s with the keys `taskwire.cancel`, `taskwire.collec
 ## The tab rules
 
 ```ts
-import { DialogAdoption, VisibilityDelay, TAB_ID } from 'taskwire';
+import { DialogAdoption, DialogPresenter, VisibilityDelay, TAB_ID } from 'taskwire';
 ```
 
 `DialogAdoption` decides who presents a question and when; `VisibilityDelay` decides when a
 `startedHere` operation joins the visible collection. Both are framework-free, both take injectable
 timers, and both are what `taskwire/vuetify` and the demo run rather than re-deriving the rules.
+
+`new DialogPresenter({ client, present, dialogAdoptDelay?, timers? })` applies `DialogAdoption` to
+every open question of `client.register` and answers through `operation.answer()`.
+`present(operation, dialog)` puts one question on screen and resolves with the chosen button id;
+any value that is not a declared button id, `null` or a rejection included, answers nothing and
+leaves the question open. A question already on screen is not presented again.
+`dialogAdoptDelay` defaults to `taskwireConfig().dialogAdoptDelay`. `dispose()` stops it.
+`useTaskwireDialogs` is a `DialogPresenter` whose `present` is the modal kit.
 There is no cross-tab synchronisation anywhere: no `BroadcastChannel`, no leader election.
 
 ## Writing your own store

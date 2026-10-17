@@ -1,12 +1,11 @@
 import { defineComponent, h, onScopeDispose, type PropType, shallowRef, toRaw, type VNode } from 'vue';
 
-import type { Taskwire } from '../client/taskwire';
-import { use_taskwire } from '../client/use-taskwire';
-import type { Operation } from '../operation/operation';
-import { isTerminal, type Result, type Text } from '../wire/wire';
-
-import { defaultTranslate, type Translate } from './translate';
-import { actionButton, ownBar } from './widgets';
+import type { Taskwire } from '../../client/taskwire';
+import { use_taskwire } from '../../client/use-taskwire';
+import type { Operation } from '../../operation/base/operation';
+import { defaultTranslate, type Translate } from '../../ui/translate';
+import { actionButton, ownBar } from '../../ui/widgets';
+import { isTerminal, type Result, type Text } from '../../wire/wire';
 
 /** The button captions of `TaskwireOperations`; `text` is what `defaultTranslate` shows. */
 const CAPTIONS = {

@@ -11,13 +11,12 @@ import {
   type VNode,
 } from 'vue';
 
-import type { Taskwire } from '../client/taskwire';
-import { use_taskwire } from '../client/use-taskwire';
-import { defaultTranslate, type Translate } from '../vuetify/translate';
-import { actionButton, ownBar } from '../vuetify/widgets';
-import type { Text } from '../wire/wire';
-
-import type { BusyCall, BusyState } from './busy';
+import type { Taskwire } from '../../client/taskwire';
+import { use_taskwire } from '../../client/use-taskwire';
+import { defaultTranslate, type Translate } from '../../ui/translate';
+import { actionButton, ownBar } from '../../ui/widgets';
+import type { Text } from '../../wire/wire';
+import type { BusyCall, BusyState } from '../base/busy';
 
 /** The captions of the busy dialog; `text` is what `defaultTranslate` shows. */
 const CAPTIONS = {

@@ -1,9 +1,8 @@
 import { type Ref, shallowRef } from 'vue';
 
-import type { TaskwireOptions } from '../client/types';
-import type { Operation } from '../operation/operation';
-
-import { clientFor, untilScopeEnds } from './scope';
+import type { TaskwireOptions } from '../../client/types';
+import type { Operation } from '../../operation/base/operation';
+import { clientFor, untilScopeEnds } from '../../ui/scope';
 
 /**
  * This tab's visible subset (§4.3), reactively.

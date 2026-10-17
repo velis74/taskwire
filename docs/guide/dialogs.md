@@ -96,7 +96,8 @@ presents only if the question is still open. `dialogId` maps to a component exac
 `Result.kind` does, and an unmapped question falls back to a plain message dialog carrying the
 declared buttons — a worse dialog, but never a missing one, and a missing one holds a worker.
 
-Without Vuetify, `DialogAdoption` from the core package is the same rule with no rendering attached.
+Without Vuetify, `DialogPresenter` from the core package runs the same rules and takes the rendering
+as a `present(operation, dialog)` callback that resolves with the chosen button id.
 
 ## Buttons and inputs
 

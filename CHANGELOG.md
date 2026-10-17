@@ -18,6 +18,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `axiosCallSource(http)`: the requests of an axios instance as a `CallSource`; a request config
   with `background: true` is a background call.
 - `configure_taskwire({ unreachableAfter })`, 5 by default.
+- `DialogPresenter`: the framework-free half of a dialog adapter - which open question to present,
+  in which tab and when (TW-TAB-003), and whether a returned button is an answer. An adapter supplies
+  only `present(operation, dialog)`; `useTaskwireDialogs` is `DialogPresenter` with the modal kit.
 - `taskwire/fastapi-viewsets`: `viewsetCallSource()`, every fastapi-viewsets proxy call as a
   `CallSource`, with fastapi-viewsets' `retryNow()`.
 - Pushes over fastapi-viewsets events: `taskwire.contrib.viewsets_events.register_taskwire_events()`
@@ -48,6 +51,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `@dynamicforms/vuetify-modal-form-kit` requires ^0.10.0. `taskwire/vuetify` imports
   `@dynamicforms/vuetify-inputs` ^0.14.2, a new optional peer dependency that the modal kit requires
   as well.
+- `package.json` declares `"sideEffects": false`, so a bundler drops every module of the package
+  the application does not import.
+- The declaration files under `dist/` follow the source layout: a feature with UI code has its
+  declarations under `dist/<feature>/base/` and `dist/<feature>/ui/`, and shared UI declarations
+  under `dist/ui/`. `dist/composables/` and `dist/vuetify/` are gone. The entry declarations
+  (`dist/index.d.ts`, `dist/vue.d.ts`, `dist/vuetify.d.ts`, `dist/muxws.d.ts`,
+  `dist/fastapi-viewsets.d.ts`, `dist/conformance.d.ts`) and every published subpath are unchanged.
 
 ### Fixed
 

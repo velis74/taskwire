@@ -2,7 +2,7 @@ import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as taskwireModule from '../index';
-import { Operation } from '../operation/operation';
+import { Operation } from '../operation/base/operation';
 import { DEFAULT_POLL_SETTINGS } from '../poll/poll';
 import { new_token } from '../reporter/operation-scope';
 import { sourceFiles } from '../test-helpers/sources';
@@ -213,11 +213,11 @@ function script(token: string, replies: Reply[]): (url: string) => Reply {
   };
 }
 
-/** The modules `taskwire/vue` and `taskwire/vuetify` reach, which may import the UI stack. */
-const UI_MODULES = ['composables/', 'vuetify/', 'busy/use-busy.ts', 'busy/busy-dialog.ts'];
+/** A module in a `ui/` directory, which `taskwire/vue` and `taskwire/vuetify` reach; it may import the UI stack. */
+const UI_MODULE = /(^|\/)ui\//;
 
 /** The modules `taskwire/muxws` and `taskwire/fastapi-viewsets` reach, which may import their peers. */
-const PEER_MODULES = ['muxws/', 'socket/', 'viewset-events/', 'busy/viewset-call-source.ts'];
+const PEER_MODULES = ['muxws/', 'socket/', 'viewset-events/', 'busy/base/viewset-call-source.ts'];
 
 /**
  * Every `.ts` under `vue/` that is not a test and not an ambient type declaration, **with its
@@ -795,7 +795,7 @@ describe('Operation is a thenable, not a Promise (TW-TS-001, TW-TS-002)', () => 
     expect(typeof op.then).toBe('function');
     await op;
 
-    const client = sources().get('operation/operation.ts') ?? '';
+    const client = sources().get('operation/base/operation.ts') ?? '';
     expect(client).not.toMatch(/extends Promise/);
     expect(client).toMatch(/implements PromiseLike<T>/);
   });
@@ -847,18 +847,18 @@ describe('the module surface', () => {
 
   it('imports no vue, no vuetify and no modal kit (TW-CORE-006)', () => {
     // Only the modules a subpath export reaches may import an optional dependency, and each gets
-    // exactly its own: the modules of `taskwire/vue` and `taskwire/vuetify` the UI stack; `muxws/`,
-    // `socket/` and `viewset-events/` the socket and the viewset proxy that addresses its streams and
-    // events; `busy/viewset-call-source.ts` the viewset proxy's call activity. The UI half of that is
+    // exactly its own: the modules in a `ui/` directory the UI stack; `muxws/`, `socket/` and
+    // `viewset-events/` the socket and the viewset proxy that addresses its streams and events;
+    // `busy/base/viewset-call-source.ts` the viewset proxy's call activity. The UI half of that is
     // stricter (TW-TS-010) - the socket modules are as forbidden to import Vue as any other module,
     // because a browser-only program that speaks the socket must not be made to install a framework.
     const ui = [...sources()]
-      .filter(([name]) => !UI_MODULES.some((module) => name.startsWith(module)))
+      .filter(([name]) => !UI_MODULE.test(name))
       .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/vuetify-[^']+)'/.test(text));
     expect(ui.map(([name]) => name)).toEqual([]);
 
     const offenders = [...sources()]
-      .filter(([name]) => ![...UI_MODULES, ...PEER_MODULES].some((module) => name.startsWith(module)))
+      .filter(([name]) => !UI_MODULE.test(name) && !PEER_MODULES.some((module) => name.startsWith(module)))
       .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/[^']+)'/.test(text));
     expect(offenders.map(([name]) => name)).toEqual([]);
   });
@@ -895,8 +895,8 @@ describe('identity is the token (TW-TS-005)', () => {
 
   it('keys nothing off streamId', () => {
     const mentions = [...sources()].filter(([, text]) => /streamId/.test(text));
-    expect(mentions.map(([name]) => name)).toEqual(['operation/operation.ts']);
-    const operation = sources().get('operation/operation.ts') ?? '';
+    expect(mentions.map(([name]) => name)).toEqual(['operation/base/operation.ts']);
+    const operation = sources().get('operation/base/operation.ts') ?? '';
     // Declared, settable and never read by a lookup: no `Map`, `Set`, `find` or `filter` touches it.
     expect(operation).not.toMatch(/(get|set|has|delete|find|filter|indexOf)\([^)]*streamId/);
   });

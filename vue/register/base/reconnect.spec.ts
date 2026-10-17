@@ -13,12 +13,12 @@
 import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { REGISTER_PATH } from '../calls/calls';
-import { Taskwire } from '../client/taskwire';
-import { type ClientTransport, DEFAULT_BASE_PATH } from '../client/types';
-import { new_token } from '../reporter/operation-scope';
-import { sourceFiles } from '../test-helpers/sources';
-import type { Envelope, WireObject } from '../wire/wire';
+import { REGISTER_PATH } from '../../calls/calls';
+import { Taskwire } from '../../client/taskwire';
+import { type ClientTransport, DEFAULT_BASE_PATH } from '../../client/types';
+import { new_token } from '../../reporter/operation-scope';
+import { sourceFiles } from '../../test-helpers/sources';
+import type { Envelope, WireObject } from '../../wire/wire';
 
 // The register is the collection, so it lives at the collection URL and carries no extra
 // segment. Derived from the constant rather than spelled out, so a move cannot pass here.

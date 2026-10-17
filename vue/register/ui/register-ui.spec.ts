@@ -1,18 +1,15 @@
 import { mount } from '@vue/test-utils';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Taskwire } from '../client/taskwire';
-import { Operation, type OperationHost } from '../operation/operation';
-import { reachableFrom, readSource, withoutComments } from '../test-helpers/sources';
-import type { DialogRequest, Progress, Result } from '../wire/wire';
+import type { Taskwire } from '../../client/taskwire';
+import { Operation, type OperationHost } from '../../operation/base/operation';
+import { readSource, withoutComments } from '../../test-helpers/sources';
+import type { Progress, Result } from '../../wire/wire';
 
 import { TaskwireOperations } from './operations';
 
-// The component below renders plain markup and presents no modal; the kit is not loaded.
-vi.mock('@dynamicforms/vuetify-modal-form-kit', () => ({ modal: {} }));
-
 /**
- * The shipped UI deliverables and the client half of dialogs.
+ * The shipped register UI: `TaskwireFooter` and `TaskwireOperations`.
  *
  * The rule this file exists to protect is TW-REG-013: **the footer draws one selected operation's
  * own percentage and never an aggregate one.** There is no unit in which two operations'
@@ -39,141 +36,28 @@ function progress(overrides: Partial<Progress> = {}): Progress {
   };
 }
 
-function dialog(overrides: Partial<DialogRequest> = {}): DialogRequest {
+/** `TaskwireOperations` issues its cancel, collect and dismiss writes through this host. */
+function hostWith(): OperationHost {
   return {
-    id: 'd1',
-    dialogId: 'acme.overwrite',
-    buttons: [{ id: 'overwrite' }, { id: 'skip' }],
-    inputs: [],
-    state: 'open',
-    createdAt: '2026-01-01T00:00:01.000Z',
-    ...overrides,
-  };
-}
-
-function hostWith(replies: unknown[] = []): OperationHost & { calls: unknown[] } {
-  const calls: unknown[] = [];
-  return {
-    calls,
     release: () => undefined,
     show: () => undefined,
     hide: () => undefined,
     mute: () => undefined,
     unmute: () => undefined,
     clearOverride: () => undefined,
-    replyToDialog: async (token, did, button, values) => {
-      calls.push({ token, did, button, values });
-      const next = replies.shift();
-      if (next !== undefined) throw next;
-    },
-    // The dialog components issue none of the three; a modal answers, it does not collect.
+    replyToDialog: async () => undefined,
     cancel: async () => undefined,
     collect: async () => undefined,
     dismiss: async () => undefined,
   };
 }
 
-describe('Operation.dialog (M3b, TW-TS-006)', () => {
-  it('hangs on its own entry and is the oldest OPEN question', () => {
-    // There is no `tw.dialog`, no queue and no policy for a second question. The pending dialog
-    // belongs to the entry it was asked on.
-    const operation = new Operation({ token: 'tok', host: hostWith() });
-    operation.applySnapshot({
-      rev: 1,
-      progress: progress(),
-      dialogs: [
-        dialog({ id: 'newer', createdAt: '2026-01-01T00:00:09.000Z' }),
-        dialog({ id: 'older', createdAt: '2026-01-01T00:00:02.000Z' }),
-        dialog({ id: 'answered', createdAt: '2026-01-01T00:00:00.500Z', state: 'answered' }),
-      ],
-    });
-
-    expect(operation.dialog?.id).toBe('older');
-    expect(operation.dialogs).toHaveLength(3);
-  });
-
-  it('keeps answered dialogs in the document (TW-DLG-013)', () => {
-    // Re-delivery is idempotent by construction: an unanswered dialog is part of the snapshot, so
-    // there is no replay mechanism and none is needed.
-    const operation = new Operation({ token: 'tok', host: hostWith() });
-    operation.applySnapshot({ rev: 1, progress: progress(), dialogs: [dialog({ state: 'answered' })] });
-
-    expect(operation.dialog).toBeNull();
-    expect(operation.dialogs).toHaveLength(1);
-  });
-
-  it('applies a dialog regardless of rev, and never reopens a settled one (TW-REV-006, TW-REV-007)', () => {
-    // A stale rev on a dialog envelope means only "do not touch progress". A dialog.open overtaken
-    // by a later progress commit must still be applied, or the question never appears.
-    const operation = new Operation({ token: 'tok', host: hostWith() });
-    operation.applySnapshot({ rev: 100, progress: progress(), dialogs: [] });
-
-    operation.applyDialog(dialog({ id: 'late' }));
-    expect(operation.dialog?.id).toBe('late');
-
-    operation.applyDialog(dialog({ id: 'late', state: 'answered' }));
-    expect(operation.dialog).toBeNull();
-
-    // Monotonic: a late-arriving `open` for a settled question does not reopen it.
-    operation.applyDialog(dialog({ id: 'late', state: 'open' }));
-    expect(operation.dialog).toBeNull();
-  });
-});
-
-describe('answer() (TW-DLG-011)', () => {
-  it('posts the reply and settles the dialog locally', async () => {
-    const host = hostWith();
-    const operation = new Operation({ token: 'tok', host });
-    operation.applySnapshot({ rev: 1, progress: progress(), dialogs: [dialog()] });
-
-    await operation.answer('overwrite', { reason: 'newer' });
-
-    expect(host.calls).toEqual([{ token: 'tok', did: 'd1', button: 'overwrite', values: { reason: 'newer' } }]);
-    expect(operation.dialog).toBeNull();
-  });
-
-  it.each([409, 404, 410])('resolves quietly on %i and logs nothing', async (status) => {
-    // A second tab answering first is a NORMAL outcome of a namespace-wide question, not a fault.
-    // No application error handler ever sees it.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    const operation = new Operation({ token: 'tok', host: hostWith([{ response: { status } }]) });
-    operation.applySnapshot({ rev: 1, progress: progress(), dialogs: [dialog()] });
-
-    await expect(operation.answer('overwrite')).resolves.toBeUndefined();
-    expect(operation.dialog).toBeNull();
-    expect(warn).not.toHaveBeenCalled();
-    expect(error).not.toHaveBeenCalled();
-
-    warn.mockRestore();
-    error.mockRestore();
-  });
-
-  it('still rejects on 422', async () => {
-    // A malformed reply is a programming error and worth seeing.
-    const operation = new Operation({ token: 'tok', host: hostWith([{ response: { status: 422 } }]) });
-    operation.applySnapshot({ rev: 1, progress: progress(), dialogs: [dialog()] });
-
-    await expect(operation.answer('not-a-button')).rejects.toBeDefined();
-  });
-
-  it('does nothing when there is no open question', async () => {
-    const host = hostWith();
-    const operation = new Operation({ token: 'tok', host });
-    operation.applySnapshot({ rev: 1, progress: progress(), dialogs: [] });
-
-    await operation.answer('overwrite');
-    expect(host.calls).toEqual([]);
-  });
-});
-
 describe('the shipped UI deliverables', () => {
   it('draws one selected operation percentage and never an aggregate one (TW-REG-013)', () => {
     // The single most natural thing for somebody to add later is a bar over the aggregate. There is
     // no honest number to put in it: one operation is 40% through a row count, the other 40%
     // through a byte count.
-    const code = withoutComments(readSource('vuetify/footer.ts') + readSource('vuetify/operations.ts'));
+    const code = withoutComments(readSource('register/ui/footer.ts') + readSource('register/ui/operations.ts'));
 
     // Precisely, rather than by proximity: a "these two words appear near each other" regex finds
     // the footer reading `aggregate.label` beside its own `percent` variable and calls that a
@@ -192,25 +76,8 @@ describe('the shipped UI deliverables', () => {
 
   it('renders nothing at rest (TW-REG-017)', () => {
     // A resting widget that still occupies space is a widget users learn to ignore.
-    const source = readSource('vuetify/footer.ts');
+    const source = readSource('register/ui/footer.ts');
     expect(source).toMatch(/aggregate\.value === null.*return null/s);
-  });
-
-  it('is a subpath the package entry point never reaches (TW-CORE-006, TW-TS-010)', () => {
-    // A core that imports a UI library is a core that cannot be used from React, from Svelte, or
-    // from a plain script tag.
-    const { modules, packages } = reachableFrom('index.ts');
-    for (const forbidden of [
-      'vue',
-      'vuetify',
-      '@dynamicforms/vuetify-inputs',
-      '@dynamicforms/vuetify-modal-form-kit',
-    ]) {
-      expect(packages, `the core reaches ${forbidden}`).not.toContain(forbidden);
-    }
-    expect(modules).not.toContain('vuetify.ts');
-    expect(modules).not.toContain('vue.ts');
-    expect(modules.size).toBeGreaterThan(3);
   });
 });
 

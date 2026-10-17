@@ -9,7 +9,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 |---|---|
 | `taskwire/` | the Python package. Core has **zero** runtime dependencies |
 | `taskwire/contrib/` | everything that imports an optional dependency (TW-CORE-006) |
-| `vue/` | the TypeScript package. Ships the *whole* operating half, not just a client. One directory per feature; the top-level `*.ts` are the package's entry points and only re-export |
+| `vue/` | the TypeScript package. Ships the *whole* operating half, not just a client. One directory per feature; the top-level `*.ts` are the package's entry points and only re-export. A feature with UI code splits into `<feature>/base/` (UI-agnostic) and `<feature>/ui/` (imports `vue`, `vuetify`, `@dynamicforms/vuetify-inputs` or the modal kit); UI helpers shared across features live in `vue/ui/`; a feature without UI code stays flat. Nothing reachable from `vue/index.ts` lives under a `ui/` directory (`packaging.spec.ts`) |
 | `design/` | the normative spec + 16 milestone briefs. **Not published** — VitePress never sees it |
 | `docs/` | the user-facing VitePress site, and only that |
 | `demo/` + `demo.py` | the one demo. A consumer of taskwire, not part of it |
@@ -18,7 +18,7 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 
 ```bash
 /home/jure/.venv/taskwire/bin/python -m pytest -q     # 340 pass, 13 skip
-npx vitest run                                            # 456 pass
+npx vitest run                                            # 457 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
 python demo.py                                            # both halves, Ctrl-C stops the pair
@@ -73,7 +73,7 @@ On npm it is an **optional** peer that two subpaths import. `taskwire/muxws`: `M
 `vue/socket/muxws-calls.ts`), and `handleEventStream`, which `MuxwsClientTransport`'s `onStream`
 handler calls first so that one peer carries taskwire's pushes and fastapi-viewsets' events.
 `taskwire/fastapi-viewsets`: `onCallActivity` and `retryNow`, behind `viewsetCallSource()` for
-`tw.busy` (`vue/busy/`), and the event client, behind `attachViewsetEvents()` (`vue/viewset-events/`).
+`tw.busy` (`vue/busy/base/`), and the event client, behind `attachViewsetEvents()` (`vue/viewset-events/`).
 Both socket transports extend `vue/socket/socket-transport.ts`. The core imports nothing from it;
 `CallEvent` is declared structurally. The polling ladder in `vue/poll/poll.ts` is taskwire's own;
 fastapi-viewsets' `vue/events/poll.ts` holds the same algorithm for its event client, and a change to

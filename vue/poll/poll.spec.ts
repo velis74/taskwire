@@ -287,13 +287,13 @@ describe('one ladder for both endpoints (TW-REST-011)', () => {
 describe('nothing derives a duration from the poll interval (TW-THR-007)', () => {
   it('confines the ladder to the poller', () => {
     const importers = [...sourceFiles()]
-      .filter(([, text]) => /from '\.\.\/poll\/poll'/.test(text))
+      .filter(([, text]) => /from '(?:\.\.?\/)+poll\/poll'/.test(text))
       .map(([name]) => name)
       .sort();
     // The frontend must never assume any update frequency. Two consumers, and both are schedulers:
     // the single-token poll and the register poll, which share this one ladder rather than
     // forking it (TW-REST-011). Neither the package entry point nor anything else may import it.
-    expect(importers).toEqual(['client/token-poller.ts', 'register/register.ts']);
+    expect(importers).toEqual(['client/token-poller.ts', 'register/base/register.ts']);
   });
 
   it('lets the delay reach setTimeout and nothing else', () => {

@@ -3,9 +3,9 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { TaskwireCalls } from '../calls/calls';
-import { Operation } from '../operation/operation';
-import { REPO_ROOT, sourceFiles } from '../test-helpers/sources';
+import type { TaskwireCalls } from '../../calls/calls';
+import { Operation } from '../../operation/base/operation';
+import { REPO_ROOT, sourceFiles } from '../../test-helpers/sources';
 import {
   type DialogRequest,
   needsAttention,
@@ -17,7 +17,7 @@ import {
   type Result,
   serializeRegister,
   type Snapshot,
-} from '../wire/wire';
+} from '../../wire/wire';
 
 import { aggregate, AGGREGATE_TITLE_KEY, entryState, isActiveEntry, selectFifo } from './aggregate';
 import { RegisterState, type RegisterClient, type UiPolicy } from './register';
@@ -343,7 +343,7 @@ describe('the aggregate (TW-REG-009..017)', () => {
     expect(aggregate).toHaveLength(1);
     expect(selectFifo).toHaveLength(1);
 
-    const text = sources().get('register/aggregate.ts') ?? '';
+    const text = sources().get('register/base/aggregate.ts') ?? '';
     expect(text).not.toMatch(/weight/i);
     expect(text).not.toMatch(/reduce\([^)]*\+/);
     expect(text).not.toContain('percent');

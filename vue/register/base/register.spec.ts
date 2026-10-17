@@ -1,14 +1,14 @@
 import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { REGISTER_PATH } from '../calls/calls';
-import { configure_taskwire, resetTaskwireConfig } from '../client/config';
-import { Taskwire } from '../client/taskwire';
-import { type ClientTransport, DEFAULT_BASE_PATH } from '../client/types';
-import { use_taskwire } from '../client/use-taskwire';
-import type { Operation } from '../operation/operation';
-import { new_token } from '../reporter/operation-scope';
-import { sourceFiles } from '../test-helpers/sources';
+import { REGISTER_PATH } from '../../calls/calls';
+import { configure_taskwire, resetTaskwireConfig } from '../../client/config';
+import { Taskwire } from '../../client/taskwire';
+import { type ClientTransport, DEFAULT_BASE_PATH } from '../../client/types';
+import { use_taskwire } from '../../client/use-taskwire';
+import type { Operation } from '../../operation/base/operation';
+import { new_token } from '../../reporter/operation-scope';
+import { sourceFiles } from '../../test-helpers/sources';
 import {
   type Envelope,
   type EnvelopeKind,
@@ -20,7 +20,7 @@ import {
   serializeProgress,
   WIRE_VERSION,
   type WireObject,
-} from '../wire/wire';
+} from '../../wire/wire';
 
 import { aggregate } from './aggregate';
 import { mergePrivate, sortEntries } from './register';

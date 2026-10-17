@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { readSource, withoutComments } from '../test-helpers/sources';
+import { readSource, withoutComments } from '../../test-helpers/sources';
 
 import {
   clampAdoptDelay,
@@ -263,11 +263,11 @@ describe('the tab id (TW-TAB-001, TW-PROG-007)', () => {
     // in order to explain the rule - a scan that counted prose would be a test failing for being
     // right about the wrong thing.
     const sources = [
-      'tab-hints/tab-hints.ts',
+      'tab-hints/base/tab-hints.ts',
       'client/taskwire.ts',
       'client/token-poller.ts',
-      'operation/operation.ts',
-      'register/register.ts',
+      'operation/base/operation.ts',
+      'register/base/register.ts',
       'muxws/muxws.ts',
       'socket/socket-transport.ts',
       'viewset-events/viewset-events.ts',

@@ -1,9 +1,8 @@
 import { computed, defineComponent, h, onScopeDispose, type PropType, shallowRef, watchEffect } from 'vue';
 
-import type { Taskwire } from '../client/taskwire';
-import { use_taskwire } from '../client/use-taskwire';
-
-import { defaultTranslate, type Translate } from './translate';
+import type { Taskwire } from '../../client/taskwire';
+import { use_taskwire } from '../../client/use-taskwire';
+import { defaultTranslate, type Translate } from '../../ui/translate';
 
 /**
  * The shipped footer: one bar, one label, and the counts beside them.

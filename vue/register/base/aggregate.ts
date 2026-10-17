@@ -20,7 +20,7 @@
  * frozen percentage while the aggregate beside it reports `waiting_input`.
  */
 
-import { ACTIVE_STATES, type Aggregate, needsAttention, nowIso, type Snapshot, type Text } from '../wire/wire';
+import { ACTIVE_STATES, type Aggregate, needsAttention, nowIso, type Snapshot, type Text } from '../../wire/wire';
 
 /** The three states an aggregate may ever report. `done` and `failed` are not among them (TW-REG-015). */
 export type AggregateState = 'queued' | 'running' | 'waiting_input';
