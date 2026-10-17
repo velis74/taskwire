@@ -17,8 +17,8 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 324 pass, 13 skip
-npx vitest run                                            # 444 pass
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 340 pass, 13 skip
+npx vitest run                                            # 456 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
 python demo.py                                            # both halves, Ctrl-C stops the pair
@@ -69,13 +69,15 @@ fastapi-viewsets 0.9.0's `Middleware` (`__call__` receives a call, `execute()` r
 executes, a Celery worker included), beside `contrib/asgi.py`, `contrib/wsgi.py` and `trackFetch`.
 A feature that reaches tracked calls through one adapter only is incomplete.
 
-On npm it is an **optional** peer that two subpaths import. `taskwire/muxws`: `MuxwsProxyImpl`, and
-`handleEventStream`, which `MuxwsClientTransport`'s `onStream` handler calls first so that one peer
-carries taskwire's pushes and fastapi-viewsets' events. `taskwire/fastapi-viewsets`
-(`vue/busy/viewset-call-source.ts`): `onCallActivity` and `retryNow`, behind `viewsetCallSource()` for
-`tw.busy` (`vue/busy/`). The core imports nothing from it; `CallEvent` is declared structurally. The
-polling ladder in `vue/poll/poll.ts` is taskwire's own; fastapi-viewsets' `vue/events/poll.ts` holds the same
-algorithm for its event client, and a change to one is made in both.
+On npm it is an **optional** peer that two subpaths import. `taskwire/muxws`: `MuxwsProxyImpl` (through
+`vue/socket/muxws-calls.ts`), and `handleEventStream`, which `MuxwsClientTransport`'s `onStream`
+handler calls first so that one peer carries taskwire's pushes and fastapi-viewsets' events.
+`taskwire/fastapi-viewsets`: `onCallActivity` and `retryNow`, behind `viewsetCallSource()` for
+`tw.busy` (`vue/busy/`), and the event client, behind `attachViewsetEvents()` (`vue/viewset-events/`).
+Both socket transports extend `vue/socket/socket-transport.ts`. The core imports nothing from it;
+`CallEvent` is declared structurally. The polling ladder in `vue/poll/poll.ts` is taskwire's own;
+fastapi-viewsets' `vue/events/poll.ts` holds the same algorithm for its event client, and a change to
+one is made in both.
 
 Two traps found in it, worth remembering:
 
@@ -86,6 +88,12 @@ Two traps found in it, worth remembering:
 - `RestProxyImpl` validates itself against `/schema` and warns about every FE method with no BE
   endpoint. taskwire's four custom actions live under `{token}/…`, which the validator classifies as
   a pk path and ignores — but a *top-level* custom path would warn.
+
+**Two push paths.** Standalone: `MuxwsTransport`, `RedisReader` and `twx:{ns}`. Over fastapi-viewsets
+events (TW-EVT-*): `register_taskwire_events()` (`contrib/viewsets_events.py`) publishes every envelope
+to a namespace topic or, for a private operation's progress, to the origin socket's connection topic;
+an authorizer, not a delivery filter, decides who receives which topic. The event store is the
+backplane there, so a `RedisStore` dispatches in process (`TaskwireTransport.crosses_processes`).
 
 ## House rules
 

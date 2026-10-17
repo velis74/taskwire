@@ -54,6 +54,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import PlainTextResponse
 from fastapi_viewsets.decorators.route_viewset import route_viewset
+from fastapi_viewsets.events import register_events
 from fastapi_viewsets.mux_ws import process_command
 from muxws import accept, PeerRegistry, Stream
 
@@ -61,6 +62,7 @@ import taskwire
 
 from taskwire.contrib.muxws import MuxwsTransport, register_taskwire_muxws, release_peer
 from taskwire.contrib.viewsets import register_taskwire_rest
+from taskwire.contrib.viewsets_events import register_taskwire_events
 
 from .jobs import JOBS
 from .market import blotter_rows, build_book, SECTORS, SYMBOLS
@@ -70,6 +72,10 @@ logger = logging.getLogger("demo")
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TASKWIRE_DEMO_PORT", "8030"))
+
+PUSH = os.environ.get("TASKWIRE_DEMO_PUSH", "muxws")
+"""Which push path the server runs: `muxws`, taskwire's own envelopes over `MuxwsTransport`, or
+`events`, taskwire's envelopes as fastapi-viewsets events (TW-EVT-*)."""
 
 SESSION_COOKIE = "taskwire_demo_session"
 
@@ -110,14 +116,16 @@ registry = PeerRegistry()
 
 def create_app() -> FastAPI:
     """Configure taskwire, mount its two transports, and return the app with the demo's own routes."""
-    taskwire.configure(
-        store=store,
+    taskwire.configure(store=store, session_resolver=resolve_session)
+    if PUSH == "events":
+        # The envelopes travel as fastapi-viewsets events; `register_events` below mounts the viewset
+        # the browser subscribes through.
+        register_taskwire_events()
+    else:
         # The push half. With no socket open this fans out to nobody and the browser learns from its
         # own polling; with one open the same envelopes arrive the instant they are written. Nothing
         # in `jobs.py` reads differently either way (TW-TR-001).
-        transport=MuxwsTransport(registry),
-        session_resolver=resolve_session,
-    )
+        taskwire.configure(transport=MuxwsTransport(registry))
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -137,6 +145,8 @@ def create_app() -> FastAPI:
 
     router = APIRouter()
     register_taskwire_rest(router)  # <- the six calls, on REST and on the socket both
+    if PUSH == "events":
+        register_events(router)
     # The application's own viewset. Its calls are tracked because `register_taskwire_rest` listed
     # `TaskwireMiddleware`; nothing here mentions taskwire.
     route_viewset(router, "/demo/positions")(PositionsViewSet)
@@ -173,7 +183,7 @@ def create_app() -> FastAPI:
         registry.register(peer)
 
         async def on_stream(payload: Any, stream: Stream) -> None:
-            if await process_command(payload, stream, connection=websocket):
+            if await process_command(payload, stream, connection=websocket, peer=peer):
                 return
             await taskwire_stream(payload, stream)
 

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -121,3 +123,27 @@ def may_be_suppressed(kind: Any, progress: Progress) -> bool:
     if EnvelopeKind(kind) is not EnvelopeKind.PROGRESS:
         return False
     return not progress.is_terminal
+
+
+CONNECTION_TAG = "taskwire_connection"
+"""The opaque, server-issued id naming one live socket (TW-DEL-016).
+
+It is minted here and handed back only in the `watch` reply, over a socket the caller already
+established. It is NOT stable across a reconnect and decides exactly two things: the
+`progress_delivery` display flag, and which socket a private operation's progress is written to. It
+reaches one store field, `origin_connection`, which is inert data recorded at start and never used
+for authorization (TW-SEC-003).
+"""
+
+
+def connection_id(peer: Any) -> str | None:
+    """This socket's id, minting one on first use."""
+    tags = getattr(peer, "tags", None)
+    if not isinstance(tags, dict):
+        return None
+    existing = tags.get(CONNECTION_TAG)
+    if isinstance(existing, str):
+        return existing
+    minted = str(uuid.uuid4())
+    tags[CONNECTION_TAG] = minted
+    return minted

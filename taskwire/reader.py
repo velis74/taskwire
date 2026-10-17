@@ -40,6 +40,11 @@ async def dispatch(ns: str, envelope: Envelope) -> None:
         logger.debug("taskwire: dropped a push for %s", ns, exc_info=True)
 
 
+def _transport_crosses_processes() -> bool:
+    """Whether the configured transport carries envelopes to the other processes itself."""
+    return bool(getattr(configured.transport, "crosses_processes", False))
+
+
 _running: list[Any] = []
 """The readers started in this process. A list rather than a flag, because a process may hold more
 than one store - a test suite certainly does."""
@@ -55,7 +60,7 @@ async def start_taskwire_reader() -> None:
     """
     store = configured.store
     reader = getattr(store, "make_reader", None)
-    if reader is None:
+    if reader is None or _transport_crosses_processes():
         return None
     instance = reader()
     await instance.start()
@@ -109,6 +114,8 @@ def check_taskwire_readers() -> None:
         return None
     if getattr(store, "make_reader", None) is None:
         return None  # a single-process store publishes directly; there is no reader to miss
+    if _transport_crosses_processes():
+        return None  # the store dispatches in process and the transport is the backplane
     if not _running:
         logger.warning(
             "taskwire: a transport and a cross-process store are configured but no reader is "

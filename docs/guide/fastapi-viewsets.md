@@ -53,7 +53,8 @@ register_taskwire_rest(router, base_path=None, *, register_muxws=None, track_cal
 
 Publishing the socket half here does not open a connection — see
 [The WebSocket transport](./websockets.md) for `register_taskwire_muxws(peer, ns)`, the call that
-attaches a specific `Peer` and subscribes its namespace to the store's backplane. The two are
+attaches a specific `Peer`, answers its `watch` and, without `register_taskwire_events`, subscribes
+its namespace to the store's backplane. The two are
 independent: this one decides whether taskwire's routes exist on muxws at all; that one decides
 whether *this* socket carries them.
 
@@ -127,16 +128,38 @@ reaches the socket that made the call.
 See [The Celery worker entry](../api/python.md#the-celery-worker-entry) for `taskwire_task` and
 `dispatch`, the pair for a Celery task that is not a viewset action.
 
+## Pushes over fastapi-viewsets events
+
+An application that follows fastapi-viewsets events carries taskwire's pushes on them:
+
+```python
+from fastapi_viewsets.events import register_events
+from taskwire.contrib.viewsets_events import register_taskwire_events
+
+register_events(router)
+register_taskwire_events()
+```
+
+`register_taskwire_events()` declares the event source `taskwire` with its authorizer, placed first
+in `viewsets_event_authorizers`, appends its delivery filter and configures a
+`ViewsetEventsTransport`, which publishes each envelope with `fastapi_viewsets.events.publish`. The
+event store (`viewsets_event_store`, a `RedisEventStore` across processes) is then taskwire's
+backplane, and `start_taskwire_reader()` starts nothing. A Celery worker calls it too and passes the
+transport to `configure_worker(store, transport)`. The browser attaches with `attachViewsetEvents`
+from `taskwire/fastapi-viewsets`. [Over fastapi-viewsets events](./websockets.md#over-fastapi-viewsets-events)
+has the topics, who is admitted to each, and the whole setup.
+
 ## The npm package
 
 `@dynamicforms/fastapi-viewsets` ^0.10.0 is an optional peer dependency of the npm package, imported
-by `taskwire/muxws` and `taskwire/fastapi-viewsets`. `taskwire/muxws` sends the six calls through
-its `MuxwsProxyImpl`, and hands the event streams on the peer to its `handleEventStream`, so one
-socket carries taskwire's pushes and the event client's events (see
+by `taskwire/muxws` and `taskwire/fastapi-viewsets`. Both send the six calls through its
+`MuxwsProxyImpl`. `taskwire/muxws` hands the event streams on the peer to its `handleEventStream`, so
+one socket carries taskwire's pushes and the event client's events (see
 [The WebSocket transport](./websockets.md#one-peer-for-taskwire-and-fastapi-viewsets-events)).
 
-`taskwire/fastapi-viewsets` exports `viewsetCallSource()`, which reports every proxy call into
-`tw.busy`. One busy dialog for every slow proxy call, with the server's progress and a "no
+`taskwire/fastapi-viewsets` exports `attachViewsetEvents(tw, peer)`, which takes taskwire's pushes
+from the peer's event client and does not import `taskwire/muxws`, and `viewsetCallSource()`, which
+reports every proxy call into `tw.busy`. One busy dialog for every slow proxy call, with the server's progress and a "no
 connection" notice:
 
 ```ts
@@ -155,5 +178,5 @@ See [Handling long-running requests](./long-running-requests.md).
 - [Getting started](./getting-started.md) — the REST path end to end.
 - [Tracking calls](./tracking-calls.md) — the same tracking for any ASGI, WSGI or `fetch` application.
 - [Handling long-running requests](./long-running-requests.md) — the busy dialog over proxy calls.
-- [The WebSocket transport](./websockets.md) — `register_taskwire_muxws`, connection ids, and what
-  stops polling.
+- [The WebSocket transport](./websockets.md) — `register_taskwire_muxws`, connection ids, pushes
+  over events, and what stops polling.

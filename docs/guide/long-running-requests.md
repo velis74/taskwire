@@ -100,7 +100,11 @@ Call `useBusyDialog()` once, in the setup of a component that lives as long as t
 imports `@dynamicforms/vuetify-inputs`, which the modal kit requires as well. `viewsetCallSource()` reports
 every proxy call, over REST and muxws, with its repeats; `tw.retryNow()` calls fastapi-viewsets'
 `retryNow()`. A request listed in `tw.busy` is followed under its key as `tw.trackCall()` follows
-it, so a server-tracked call brings its operation's progress and an untracked one shows none.
+it, so a server-tracked call brings its operation's progress and an untracked one shows none. That
+progress arrives over the socket when one is attached, with `attachMuxws` or, when the server carries
+taskwire's pushes over fastapi-viewsets events, with `attachViewsetEvents` from
+`taskwire/fastapi-viewsets` (see [Over fastapi-viewsets events](./websockets.md#over-fastapi-viewsets-events)),
+and by polling otherwise.
 
 `useBusyDialog` options:
 

@@ -440,6 +440,15 @@ export class Taskwire implements OperationHost, RegisterClient {
     this.suspendPolling(true);
     const stop = transport.onHealth?.((healthy) => this.noteTransportHealth(healthy));
     if (stop !== undefined) this.transportListeners.push(stop);
+    const stopResync = transport.onResync?.(() => this.resync());
+    if (stopResync !== undefined) this.transportListeners.push(stopResync);
+  }
+
+  /** One read of the register and of every polled token, ladders held or not. */
+  private resync(): void {
+    if (this.disposed) return;
+    this.registerState.resync();
+    this.pollers.forEach((poller) => poller.readNow(true));
   }
 
   /**

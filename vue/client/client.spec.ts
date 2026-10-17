@@ -217,7 +217,7 @@ function script(token: string, replies: Reply[]): (url: string) => Reply {
 const UI_MODULES = ['composables/', 'vuetify/', 'busy/use-busy.ts', 'busy/busy-dialog.ts'];
 
 /** The modules `taskwire/muxws` and `taskwire/fastapi-viewsets` reach, which may import their peers. */
-const PEER_MODULES = ['muxws/', 'busy/viewset-call-source.ts'];
+const PEER_MODULES = ['muxws/', 'socket/', 'viewset-events/', 'busy/viewset-call-source.ts'];
 
 /**
  * Every `.ts` under `vue/` that is not a test and not an ambient type declaration, **with its
@@ -847,11 +847,11 @@ describe('the module surface', () => {
 
   it('imports no vue, no vuetify and no modal kit (TW-CORE-006)', () => {
     // Only the modules a subpath export reaches may import an optional dependency, and each gets
-    // exactly its own: the modules of `taskwire/vue` and `taskwire/vuetify` the UI stack, `muxws/` the
-    // socket and the viewset proxy that addresses its streams, `busy/viewset-call-source.ts` the
-    // viewset proxy's call activity. The UI half of that is stricter (TW-TS-010) - `muxws/` is as
-    // forbidden to import Vue as any other module, because a browser-only program that speaks the
-    // socket must not be made to install a framework.
+    // exactly its own: the modules of `taskwire/vue` and `taskwire/vuetify` the UI stack; `muxws/`,
+    // `socket/` and `viewset-events/` the socket and the viewset proxy that addresses its streams and
+    // events; `busy/viewset-call-source.ts` the viewset proxy's call activity. The UI half of that is
+    // stricter (TW-TS-010) - the socket modules are as forbidden to import Vue as any other module,
+    // because a browser-only program that speaks the socket must not be made to install a framework.
     const ui = [...sources()]
       .filter(([name]) => !UI_MODULES.some((module) => name.startsWith(module)))
       .filter(([, text]) => /from '(vue|vuetify|@dynamicforms\/vuetify-[^']+)'/.test(text));

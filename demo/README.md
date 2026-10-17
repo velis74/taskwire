@@ -22,6 +22,11 @@ the server when its code changes.
 
 `python demo/live_socket_check.py` drives a running server over the socket and asserts the envelopes.
 
+`TASKWIRE_DEMO_PUSH=events` starts the server with taskwire's pushes carried as fastapi-viewsets
+events (`register_taskwire_events()`, `register_events(router)`) instead of `MuxwsTransport`. The page
+attaches with `attachMuxws`, which receives no push from such a server, so the mode is for
+`live_socket_check.py`, which subscribes the topics its `watch` reply names.
+
 ## Checking that the demo works
 
 ```bash
@@ -30,7 +35,7 @@ python demo/e2e/run_e2e.py          # ~3 minutes; --no-build trusts dist/ as it 
 
 It builds the client bundle, starts a server of its own on a free port, runs both halves against it
 and stops the server on every path out. The halves are the protocol (`live_socket_check.py`, over a
-real socket) and the **shipped `dist/`** (`e2e/drive_client.mjs`, over HTTP and over the socket,
+real socket, once per push path) and the **shipped `dist/`** (`e2e/drive_client.mjs`, over HTTP and over the socket,
 doing what `App.vue` does). Both wires run the same phases and the last thing printed is whether they
 agreed.
 

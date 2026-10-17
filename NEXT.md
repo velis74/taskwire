@@ -67,5 +67,5 @@ TW-RES-010 and say plainly that an uncollected result expires unreleased.
    `await using`, the TS conformance import path, TW-STORE-014's one-round-trip requirement against
    the port's `-> int` signature, whether `Client` should enforce exactly one of peer/request, the
    `Text.params` vs `Result.params` empty-dict inconsistency, and what the conformance corpus is
-   actually for; and the two fastapi-viewsets 0.9.1 entries, the client half of TW-WS-010 and moving
-   the push path onto `fastapi_viewsets.events`.
+   actually for; and the TW-EVT-* entry, an expiry for the rev of an event topic without
+   subscriptions.

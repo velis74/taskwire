@@ -170,16 +170,23 @@ async def dispatch(
         raise broker_failure
 
 
-def configure_worker(store: Any) -> None:
-    """A worker configures its own store and `NullTransport`, and **never pushes** (TW-CELERY-002).
+def configure_worker(store: Any, transport: Any = None) -> None:
+    """A worker configures its own store and a transport that pushes to no socket (TW-CELERY-002).
+
+    `transport` None configures `NullTransport`: the worker writes, and the web process's reader
+    pushes. A transport whose `crosses_processes` is True, `ViewsetEventsTransport`, publishes each
+    envelope to the cross-process event store, from which every web process delivers it
+    (TW-EVT-002). Any other transport raises `ValueError`: a worker that pushed would duplicate every
+    envelope the reader is already delivering (TW-INV-002).
 
     Store and transport configuration must not travel in a serialized context: they are objects with
-    connections, the serialized form would be a copy nobody owns, and a worker that pushed would
-    duplicate every envelope the reader is already delivering (TW-INV-002).
-
-    The worker writes; the web process's reader pushes. That is the whole division.
+    connections, and the serialized form would be a copy nobody owns.
     """
     from ..transport import NullTransport
 
+    if transport is not None and not getattr(transport, "crosses_processes", False):
+        raise ValueError(
+            "taskwire: a worker takes NullTransport or a transport whose crosses_processes is True (TW-CELERY-002)"
+        )
     configured.store = store
-    configured.transport = NullTransport()
+    configured.transport = transport if transport is not None else NullTransport()

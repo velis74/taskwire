@@ -20,12 +20,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `configure_taskwire({ unreachableAfter })`, 5 by default.
 - `taskwire/fastapi-viewsets`: `viewsetCallSource()`, every fastapi-viewsets proxy call as a
   `CallSource`, with fastapi-viewsets' `retryNow()`.
+- Pushes over fastapi-viewsets events: `taskwire.contrib.viewsets_events.register_taskwire_events()`
+  publishes every envelope as a fastapi-viewsets event, to a namespace topic or, for a private
+  operation's progress, to the topic of the socket that started it. Its authorizer admits a
+  namespace topic to callers of that namespace and a connection topic to that socket only, on
+  `subscribe` and on `poll`; its delivery filter applies `push_filter` and the socket's overrides.
+  The fastapi-viewsets event store replaces `RedisReader` and `twx:{ns}`, and a Celery worker
+  publishes through it with `configure_worker(store, transport)`.
+- `taskwire/fastapi-viewsets`: `attachViewsetEvents(tw, peer)`, `detachViewsetEvents(tw)` and
+  `ViewsetEventsTransport`, which receive taskwire's pushes through the peer's fastapi-viewsets event
+  client without importing `taskwire/muxws` or installing a stream handler.
+- The `watch` reply carries `topics` while the server carries taskwire over fastapi-viewsets events.
+- `TaskwireTransport.crosses_processes`; with a transport that sets it, `RedisStore.publish`
+  dispatches in process and `start_taskwire_reader()` starts no reader.
+- `configure_worker(store, transport=None)` accepts a transport whose `crosses_processes` is True.
+- `ClientTransport.onResync`, on which the client reads the register and every polled token once.
 - `taskwire/vue`: `useBusy(client?)`, `tw.busy` as a ref.
 - `taskwire/vuetify`: `useBusyDialog(options?)`, one modal through the modal kit while `tw.busy`
   is visible, and `TaskwireBusy`, its default body, with **Try now** while a call is unreachable.
 
 ### Changed
 
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets>=0.10.0`.
+- `connection_id` and `CONNECTION_TAG` are defined in `taskwire.delivery`;
+  `taskwire.contrib.muxws` re-exports both.
 - The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.10.0, and
   `@dynamicforms/vuetify-modal-form-kit` requires ^0.10.0. `taskwire/vuetify` imports
   `@dynamicforms/vuetify-inputs` ^0.14.2, a new optional peer dependency that the modal kit requires

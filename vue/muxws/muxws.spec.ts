@@ -246,9 +246,11 @@ describe('the muxws client transport', () => {
     expect(setItem).not.toHaveBeenCalled();
     setItem.mockRestore();
 
-    const source = readSource('muxws/muxws.ts');
-    for (const api of ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie']) {
-      expect(source).not.toContain(api);
+    for (const name of ['muxws/muxws.ts', 'socket/socket-transport.ts', 'viewset-events/viewset-events.ts']) {
+      const source = readSource(name);
+      for (const api of ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie']) {
+        expect(source).not.toContain(api);
+      }
     }
   });
 

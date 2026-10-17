@@ -433,128 +433,40 @@ same way a template does. `TaskwireOperations` renders unstyled markup with `tas
 
 ---
 
-## taskwire-spec.md §2.14 — TW-WS-010 — the client half installs the peer's stream handler
+## taskwire-spec.md §2.14a — TW-EVT-* — rules read for the push path on fastapi-viewsets events
 
-**What I needed:** whether TW-WS-010 binds the browser half, where `MuxwsClientTransport` installs
-the peer's `onStream` handler and shares it with fastapi-viewsets' event client.
+**What I needed:** the topic scheme for taskwire's pushes over fastapi-viewsets events, and how the
+rules written for the standalone push path read on it.
 
-**What the spec says:** TW-WS-010 reads:
+**What I assumed:**
 
-> taskwire MUST NOT install the peer's stream handler. A `Peer` has exactly one `on_stream` slot;
-> `register_taskwire_muxws(peer, session)` **returns** its handler and the application composes it
-> behind `fastapi_viewsets.mux_ws.process_command`, which returns `False` having sent nothing when
-> the stream is not a viewset command. A library that took the slot would lock the application out
-> of its own socket.
+- **The private topic is per connection, not per operation.** TW-PRIV-003 names the connection as
+  the fan-out unit of a private operation's progress, and the browser holds one connection id per
+  socket, so it subscribes two topics for the life of a socket. A per-operation topic would be a
+  per-token subscription (TW-BP-002), cost a `subscribe` round trip before every command that may
+  start a private operation, and count against `viewsets_event_max_subscriptions` per socket.
+- **TW-CORE-005 binds taskwire's protocol, not its carrier.** The event store keeps the last
+  `viewsets_event_log_size` events of each taskwire topic for `viewsets_event_log_ttl` seconds and
+  answers `poll` from them; the settings are global, so taskwire's topics keep a log whenever the
+  application's do. The browser applies an envelope by its own `rev` and answers a resync with a
+  read, so no taskwire state depends on the log.
+- **TW-TR-004** forbids a list of interested connections in taskwire; the subscription table is
+  fastapi-viewsets'.
+- **TW-CELERY-002**'s "a worker MUST NOT push" reads as "writes to no socket": under TW-EVT-* the
+  worker's transport publishes to the event store, as `RedisStore` publishes to `twx:{ns}` without
+  it.
+- **TW-DEL-023** under TW-EVT-* prunes the maps of the sockets the terminal envelope is delivered
+  to. A private operation's terminal progress reaches its origin socket only, so another socket of
+  the namespace that declared an override for it, possible while TW-PRIV-004 lists it, keeps that
+  entry until it re-declares.
 
-The first sentence names no half; the rest describes the server half only (`register_taskwire_muxws`,
-`on_stream`, `process_command`).
+**What it costs:** fastapi-viewsets keeps a topic's rev until `Source.drop`. A connection topic is
+dropped when its socket closes (TW-EVT-006), but an envelope published to it afterwards, by a
+private operation still reporting after its origin socket closed, creates the rev again and nothing
+drops it: one `{prefix}rev:taskwire:c.…` key per such socket, without expiry.
 
-**What the code does:** the client half contradicts the first sentence. The `MuxwsClientTransport`
-constructor calls `peer.onStream()`. Its handler passes every stream to
-`handleEventStream(peer, payload, stream)`, which takes a stream whose headers carry a string
-`:event` for the event client `createEventClient({ peer })` registered for the peer; every other
-stream is parsed as an envelope, and one that does not parse is dropped with no trace
-(`vue/muxws/muxws.ts`, `deliver`). The handler stays installed after `detachMuxws`.
-
-**What it costs:** the lock-out the rule guards against exists in the browser. A stream the
-application's server opens to the browser for its own purposes, on a peer taskwire is attached to,
-reaches taskwire's `deliver()` and is dropped. fastapi-viewsets' `attachEvents(peer, fallback)`
-composes the other way: it passes a non-event stream to `fallback`, or resets it with `REFUSED`, and
-installs its own handler in place of taskwire's.
-
-**Still needs deciding:** whether TW-WS-010 binds the client half; if it does, whether the client
-half takes an application handler for the streams that are neither events nor envelopes (an option
-of `attachMuxws`, or a handler taskwire returns for the application to install, as the server half
-does), and whether such a stream is reset rather than dropped.
-
----
-
-## fastapi-viewsets 0.9.1 — taskwire's push path on `fastapi_viewsets.events`
-
-**What I needed:** whether taskwire's envelopes should travel as fastapi-viewsets events: the store
-publishes `publish("taskwire:" + ns, envelope)`, `MuxwsTransport` and `RedisReader` give way to the
-events store, its reader and `deliver()`, and a delivery filter carries the per-connection decisions
-(TW-DEL-010, TW-PRIV-003). The client half already shares the peer: `MuxwsClientTransport` hands a
-stream carrying `:event` to `handleEventStream` and treats every other one as an envelope.
-
-**What the spec says:** the push path is written against its own channel, reader and fan-out, and
-the move contradicts several rules as they stand:
-
-- **TW-TR-004** — no list of interested connections anywhere. The events subscription table is one,
-  keyed by topic and socket.
-- **TW-TR-007** — the shipped implementations are `NullTransport`, `LocalTransport` and
-  `MuxwsTransport`. `MuxwsTransport` gives way to the events store's `deliver()`, so the third entry
-  becomes a transport whose `notify()` calls `publish("taskwire:" + ns, envelope)`, or goes, if the
-  store publishes itself.
-- **TW-KEY-001** — the Redis keyspace is exactly its table, whose last row is the `twx:{ns}`
-  channel. `RedisEventStore` keys `{prefix}rev:taskwire:{ns}`, `{prefix}log:taskwire:{ns}` and the
-  channel `{prefix}ch:taskwire:{ns}` in its place. TW-KEY-002 holds: the subscription table lives in
-  each web process's memory, not in the keyspace.
-- **TW-BP-001** — the channel is `twx:{ns}`. It becomes `{prefix}ch:taskwire:{ns}` of
-  `RedisEventStore`. TW-BP-004's per-process subscription holds, as `store.watch()` on a topic's
-  first subscription.
-- **TW-BP-003** — every envelope published on `twx:{ns}` reaches every socket of the namespace,
-  subject only to TW-DEL-010 and TW-PRIV-003. `deliver()` reaches the sockets subscribed to
-  `taskwire:{ns}`, which are the namespace's sockets only while `register_taskwire_muxws` subscribes
-  every one of them.
-- **TW-BP-002** — no per-token subscription mechanism. The topic stays per namespace, so the rule
-  holds only while nothing subscribes a socket to a topic of its own: a topic is a string any
-  connected client can name, and the events viewset subscribes a socket to whatever its authorizers
-  admit.
-- **TW-CORE-005** — no event log, no sequence numbers, no replay endpoint, no gap detection. The
-  events store assigns every event a `rev` and a `prev`, keeps the last `viewsets_event_log_size`
-  events of a topic, and `poll` replays them. The setting is global, so taskwire's topics would keep
-  a log whenever the application's do.
-- **TW-CORE-003 / TW-CORE-004** — the reader is the only caller of `transport.notify()`. With a
-  `RedisStore` the worker's `store.publish()` calls `publish()` and no reader of taskwire's runs in
-  the web process; `deliver()` is the only entry into a socket. `test_only_reader_calls_notify`
-  asserts the present arrangement.
-- **TW-BP-005 / TW-BP-006** — `start_taskwire_reader()`, `stop_taskwire_reader()` and
-  `check_taskwire_readers()` give way to `start_events()`, `stop_events()` and `check_events()`, and
-  `RedisEventStore` is configured in the web process and in the worker.
-- **TW-WS-001** — muxws is used through `peer.notify(payload)` and `PeerRegistry.peers_for` and
-  nothing else. `deliver()` calls `peer.notify(payload, headers=...)` and `peer.on_close`, and fan-out
-  no longer reads the session tag (TW-WS-007, TW-WS-011); `goaway_if_stale` still does.
-- **TW-WS-011** — `register_taskwire_muxws` subscribes the process to `twx:{ns}`, and `release_peer`
-  unsubscribes once the process holds no socket of the namespace. Under the move it subscribes the
-  socket with `fastapi_viewsets.events.subscribe`, the events module watches the topic on its first
-  subscription in the process and unwatches it on the last, and `release_peer` unsubscribes nothing.
-- **TW-TR-003** — `settings.push_timeout` bounds a push. `viewsets_event_push_timeout` bounds it
-  instead, a second setting with the same default.
-- **TW-DEL-003 / TW-PRIV-003** — a raising `push_filter` counts as `True`, and so does a raising
-  delivery filter. For TW-DEL-010 that is the rule; for TW-PRIV-003 it pushes a private operation's
-  progress to every socket of the namespace. The privacy half of the filter has to catch its own
-  exceptions and answer `False`.
-- **TW-DEL-023** — overrides are pruned at the last hop that fans a terminal envelope out. The
-  delivery filter is that hop, so it prunes as a side effect of answering.
-- **TW-SYM-003** — the asymmetry table names the `twx:{ns}` backplane, and TW-STORE-011 places it
-  with `RedisStore`.
-
-**What would have to change:**
-
-- In fastapi-viewsets: a source whose topics no client may subscribe to or poll, whatever the
-  application's authorizer list says, since the first `True` decides and an `allow_all` listed
-  before `DeclaredSources()` would otherwise open `taskwire:{ns}` of any namespace to any caller;
-  and a log size per source, 0 for taskwire's, so that no envelope is kept for `poll`.
-- In taskwire's server half: `register_taskwire_muxws` subscribes the socket itself with
-  `fastapi_viewsets.events.subscribe(peer, context, "taskwire:" + ns)`, since the client does not know
-  its namespace and is not told it (TW-WS-007); a namespace is encoded into the key, which may hold no
-  whitespace or control character; an `Event` subclass carries the envelope's fields unchanged, in
-  `contrib`, since it is a pydantic model (TW-CORE-006); the `[muxws]` extra requires
-  `dynamicforms-fastapi-viewsets >= 0.9.1`.
-- In taskwire's client half: `MuxwsClientTransport` delivers a stream whose `:topic` starts with
-  `taskwire:` as an envelope before `handleEventStream` sees it, and ignores its `:rev` and `:prev`.
-  The envelope's own `rev` is the only one the client compares (TW-REV-*), so TW-CORE-005 holds on the
-  client.
-- In the specification: TW-TR-003, TW-TR-004, TW-TR-007, TW-KEY-001, TW-BP-001, TW-BP-002,
-  TW-BP-003, TW-BP-005, TW-BP-006, TW-CORE-003, TW-CORE-004, TW-CORE-005, TW-WS-001, TW-WS-011 and
-  TW-SYM-003 rewritten for the events store, and the tests that assert them. TW-DEL-003 and
-  TW-PRIV-003 keep their text and gain the delivery filter as the hop they bind, with the rule that
-  the privacy check answers `False` on an exception; TW-DEL-023 keeps its text, with the delivery
-  filter as its last hop. TW-BP-004 and TW-KEY-002 hold unchanged.
-
-**Still needs deciding:** whether the push path moves at all, as a specification change of its own.
-Nothing of it is implemented.
+**Still needs deciding:** whether fastapi-viewsets gains an expiry for the rev of a topic that has
+no subscriptions.
 
 ---
 

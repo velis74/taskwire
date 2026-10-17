@@ -35,6 +35,11 @@ class TaskwireTransport(ABC):
     leaks (TW-BP-002).
     """
 
+    crosses_processes: bool = False
+    """True for a transport whose `notify()` carries an envelope to the other processes itself. A
+    store whose `publish()` would cross processes then hands each envelope to the reader of its own
+    process, and no backplane reader runs (TW-CORE-004, TW-EVT-002)."""
+
     @abstractmethod
     async def notify(self, session: str, envelope: Envelope) -> None:
         """Best-effort delivery. Never raises, never blocks past `settings.push_timeout`."""

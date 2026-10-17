@@ -152,15 +152,117 @@ A stream that is neither an event nor an envelope is dropped, so a stream your s
 browser for its own purposes does not reach your code on a peer taskwire is attached to.
 
 On the server, the events `subscribe` call reads the socket from the `peer` argument of
-`process_command`, which `dynamicforms-fastapi-viewsets` accepts from 0.9.1. The `viewsets` and
-`muxws` extras require 0.9.0, so install 0.9.1 or later for this. taskwire's handler composes behind
-it unchanged:
+`process_command`. taskwire's handler composes behind it unchanged:
 
 ```python
 if await process_command(payload, stream, connection=websocket, peer=peer):
     return
 await taskwire_stream(payload, stream)
 ```
+
+An application that follows fastapi-viewsets events can instead carry taskwire's pushes on them, as
+the next section describes. Then `attachEvents(peer)` holds the handler and taskwire installs none.
+
+## Over fastapi-viewsets events
+
+With `register_taskwire_events()` the server publishes every envelope as a fastapi-viewsets event,
+and the browser receives it through the application's event client. One stream handler on each side
+of the socket, one push path and one Redis channel family serve both libraries: `MuxwsTransport`,
+`RedisReader`, the `twx:{ns}` channel and `taskwire/muxws` are not used.
+
+### The server
+
+```python
+from contextlib import asynccontextmanager
+
+import taskwire
+
+from fastapi_viewsets.conf import settings as viewset_settings
+from fastapi_viewsets.events import register_events, start_events, stop_events
+from fastapi_viewsets.events.redis import RedisEventStore
+from fastapi_viewsets.mux_ws import process_command
+from muxws import accept
+from taskwire.contrib.muxws import register_taskwire_muxws
+from taskwire.contrib.redis_store import RedisStore
+from taskwire.contrib.viewsets import register_taskwire_rest
+from taskwire.contrib.viewsets_events import register_taskwire_events
+
+taskwire.configure(store=RedisStore(), session_resolver=session_resolver)
+viewset_settings.viewsets_event_store = RedisEventStore(redis_client)   # omit for one process
+register_taskwire_rest(router)
+register_events(router)              # the events viewset: subscribe, unsubscribe, poll
+register_taskwire_events()           # taskwire's topics, their authorizer, the transport
+
+@asynccontextmanager
+async def lifespan(app):
+    await start_events()             # no start_taskwire_reader(): the event store is the backplane
+    yield
+    await stop_events()
+
+@app.websocket("/ws")
+async def socket(websocket):
+    peer = await accept(websocket)
+    taskwire_stream = await register_taskwire_muxws(peer, session_resolver(websocket))
+
+    async def on_stream(payload, stream):
+        if await process_command(payload, stream, connection=websocket, peer=peer):
+            return
+        await taskwire_stream(payload, stream)
+
+    peer.on_stream(on_stream)
+    await peer.serve()
+```
+
+`register_taskwire_events()` declares the event source `taskwire`, puts its authorizer first in
+`viewsets_event_authorizers`, appends its delivery filter to `viewsets_event_delivery_filters` and
+configures a `ViewsetEventsTransport`. `register_taskwire_muxws` still answers `watch`, and its reply
+now names the socket's topics. No `PeerRegistry` and no `release_peer` are needed: fastapi-viewsets
+keeps the subscriptions and drops them when the socket closes.
+
+A Celery worker publishes too. It calls `register_taskwire_events()`, sets the same
+`RedisEventStore`, and passes the transport to `configure_worker(store, transport)`.
+
+### Who receives what
+
+Each envelope goes to one of two topics:
+
+| Topic | Carries | Admitted to |
+|---|---|---|
+| `taskwire:ns.{digest}` | every envelope of the namespace except a private operation's progress | a caller whose `session_resolver` answers that namespace |
+| `taskwire:c.{digest}` | the progress of the private operations started from one socket | that socket, in that namespace; never a poll over REST |
+
+The digests are SHA-256 of the namespace, and of the namespace and the connection id, so a topic name
+reveals neither. Admission is decided by taskwire's authorizer on every `subscribe` and every
+`poll`, and no authorizer the application lists can open a taskwire topic. The delivery filter
+applies `push_filter` and the socket's overrides, a display decision only. The connection topic's
+rev and log are dropped from the event store when its socket closes.
+
+### The client
+
+```ts
+import axios from 'axios';
+import { attachEvents, createEventClient } from '@dynamicforms/fastapi-viewsets';
+import { connect } from 'muxws';
+import { use_taskwire } from 'taskwire';
+import { attachViewsetEvents, detachViewsetEvents } from 'taskwire/fastapi-viewsets';
+
+const peer = await connect('wss://example.test/ws');
+attachEvents(peer);
+createEventClient({ basePath: '/events', peer, axios });
+const transport = attachViewsetEvents(use_taskwire(), peer);
+```
+
+`attachViewsetEvents` takes the event client `createEventClient({ peer })` registered (or
+`{ events }`), moves the six calls onto the socket unless `{ routeCalls: false }`, and installs no
+stream handler. On every open socket it sends one `watch`, subscribes the two topics the reply names
+and, once both are followed, takes the connection id, reports itself healthy and reads the register
+and every tracked token once. When the socket closes it unsubscribes both, so the event client polls
+none of taskwire's topics and taskwire's own ladder carries the client until the socket returns. A
+topic the event client resyncs triggers the same read. `{ onError }` receives a refused topic or a
+server without `register_taskwire_events`; the ladder runs meanwhile. `detachViewsetEvents(tw)`
+undoes the attachment. A client attached with `attachMuxws` to a server that calls
+`register_taskwire_events()` receives no push while its ladder is suspended, so the two halves are
+chosen together.
 
 ## The headers on your own streams
 
@@ -219,9 +321,10 @@ restores nothing; it asserts exactly the state the new socket already has.
 Every state change is written to the store **before** anything is pushed anywhere. A push is a
 notification that state changed, never the only copy of it.
 
-So a dropped, coalesced or suppressed push cannot change what the next read returns. There is no
-event log, no sequence numbers, no replay endpoint and no gap detection, because a client is
-entitled to current state and asking for it is always enough. A socket that dies mid-import costs
+So a dropped, coalesced or suppressed push cannot change what the next read returns. taskwire keeps
+no event log, no sequence numbers, no replay endpoint and no gap detection, because a client is
+entitled to current state and asking for it is always enough. Over fastapi-viewsets events the event
+store keeps a log of its own; taskwire answers a gap in it with a read. A socket that dies mid-import costs
 the tab watching it a few hundred milliseconds of staleness — not a wrong percentage, not a missed
 question, and not a result that vanished.
 

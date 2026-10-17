@@ -167,7 +167,7 @@ describe('reconnecting (TW-REG-020)', () => {
     expect(offenders.map(([name]) => name)).toEqual([]);
 
     // ...and the one place that reconnects really does declare nothing.
-    const socket = [...sources()].find(([name]) => name === 'muxws/muxws.ts');
+    const socket = [...sources()].find(([name]) => name === 'socket/socket-transport.ts');
     if (socket !== undefined) {
       expect(socket[1]).toMatch(/announce\(\)[\s\S]*?this\.watch\(\{\}\)/);
     }

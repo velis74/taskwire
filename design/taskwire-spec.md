@@ -69,8 +69,12 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-CORE-004** `store.publish()` MUST drive a reader, and the reader MUST be the only caller of
   `transport.notify()`. `MemoryStore.publish` invokes its in-process reader synchronously;
   `RedisStore.publish` performs a Redis `PUBLISH` consumed by a long-lived reader in each web process.
+  With a transport whose `crosses_processes` is True (TW-EVT-002) every store invokes the reader of
+  its own process, and that transport carries the envelope to the other processes.
 - **TW-CORE-005** There MUST be no event log, no sequence numbers, no replay endpoint and no
-  gap detection. A client is entitled to current state only.
+  gap detection. A client is entitled to current state only. The rule binds taskwire's protocol: the
+  fastapi-viewsets event store that carries pushes under TW-EVT-* keeps a log, revs and a poll of its
+  own, and taskwire relies on none of them for a document's state (TW-EVT-007).
 - **TW-CORE-006** Python core MUST NOT import FastAPI, Celery, Redis, pydantic or fastapi-viewsets.
   Framework imports are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify
   or the modal kit outside a subpath export.
@@ -219,7 +223,10 @@ adapters to things outside the process, never a capability the core lacks.
   | `tw:{ns}:{token}:rev` | integer | seeded per TW-REV-002, `INCR` on every commit |
   | `tw:{ns}:index` | sorted set | token → `created_at` ms, **shared operations only**; backs `GET {prefix}` |
   | `tw:{ns}:asking` | set | tokens currently holding at least one **open** dialog, private ones included (TW-KEY-005) |
-  | `twx:{ns}` | pub/sub channel | one per namespace |
+  | `twx:{ns}` | pub/sub channel | one per namespace; unused under TW-EVT-* |
+
+  Under TW-EVT-* the event store keys taskwire's topics in its own keyspace
+  (`{prefix}rev:`, `{prefix}log:`, `{prefix}ch:` of `RedisEventStore`), outside this table.
 
 - **TW-KEY-002** There MUST be no `:seen` key, no watcher list, and no per-tab bookkeeping anywhere
   in the keyspace.
@@ -638,13 +645,16 @@ adapters to things outside the process, never a capability the core lacks.
   MUST be wrapped in `settings.push_timeout` (default 2 s) and a timeout MUST be swallowed as a
   dropped push.
 - **TW-TR-004** `notify()` MUST take a namespace and an envelope and nothing else. There MUST be no
-  list of interested connections anywhere in the design.
+  list of interested connections anywhere in taskwire. Under TW-EVT-* the subscriptions are
+  fastapi-viewsets', keyed by topic and socket, and taskwire keeps none.
 - **TW-TR-005** A transport that knows about individual connections MUST fan out over all of them and
   MUST apply the delivery decision (TW-DEL-010) as the only per-connection judgement.
 - **TW-TR-006** A transport that does not know about connections MAY ignore overrides and the
   predicate entirely and is still correct.
 - **TW-TR-007** Shipped implementations MUST be `NullTransport` (`notify` is `pass`),
-  `LocalTransport` (core, both languages) and `MuxwsTransport` (extra `[muxws]`, Python).
+  `LocalTransport` (core, both languages), `MuxwsTransport` (extra `[muxws]`, Python) and
+  `ViewsetEventsTransport` (extra `[viewsets]`, Python, TW-EVT-*). `TaskwireTransport.crosses_processes`
+  is False except on a transport whose `notify()` reaches the other processes itself.
 - **TW-TR-008** `LocalTransport` MUST deliver each envelope to every subscriber registered against
   that namespace, in registration order, without a wire, a socket or a serialization step. It MUST
   require no optional dependency and MUST live in the core of both languages, because an application
@@ -661,7 +671,8 @@ adapters to things outside the process, never a capability the core lacks.
 
 ### 2.14 muxws transport (`TW-WS-*`)
 
-- **TW-WS-001** taskwire's required dependency on muxws MUST be exactly two calls:
+- **TW-WS-001** taskwire's required dependency on muxws MUST be exactly two calls (none under
+  TW-EVT-*, where fastapi-viewsets' `deliver()` writes to the socket):
   `peer.notify(payload)` and `PeerRegistry.peers_for(session=...)`. `open()`, `stream.send()` and
   `stream.cancel()` MUST NOT be used on the delivery path. The delivery path is server→client; a
   client opening a stream to *call* the server is a caller, not a delivery, and `MuxwsCalls` reaches
@@ -709,15 +720,96 @@ adapters to things outside the process, never a capability the core lacks.
   having sent nothing when the stream is not a viewset command. A library that took the slot would
   lock the application out of its own socket. Test:
   `contrib/muxws_test.py::test_taskwire_leaves_the_peers_single_handler_slot_to_the_application`.
+
+  The browser half: under TW-EVT-* `attachViewsetEvents` MUST NOT install the peer's stream handler;
+  the application's `attachEvents(peer, fallback)` holds the slot and passes a stream that is not an
+  event to `fallback`. `MuxwsClientTransport`, the standalone browser half, installs the handler,
+  passes a stream carrying `:event` to `handleEventStream` and parses every other stream as an
+  envelope, dropping one that does not parse; it stays installed after `detachMuxws`, since muxws
+  removes no handler. Tests: `fastapi-viewsets.spec.ts::installs no stream handler`,
+  `muxws.spec.ts::shares the peer's one stream handler`.
 - **TW-WS-011** Mounting the socket half MUST be **one call per connection**
   (`register_taskwire_muxws`), the counterpart of `register_taskwire_rest(router)`. It tags the peer
   and subscribes the process to `twx:{ns}` (TW-BP-004); the application registers the peer and serves
   it. The tag MUST be set before `PeerRegistry.register`, which indexes a peer under the tags it
   holds at that instant (WSM-REG-010) — a peer registered untagged is indexed under nothing, receives
   no push, and looks correct from every other angle. `release_peer` MUST `deregister` the peer and
-  unsubscribe once the process holds no more sockets of that namespace.
+  unsubscribe once the process holds no more sockets of that namespace. Under TW-EVT-* no reader
+  runs, so the call subscribes nothing, and neither a `PeerRegistry` nor `release_peer` takes part:
+  fastapi-viewsets drops a socket's subscriptions when it closes.
+
+### 2.14a fastapi-viewsets events (`TW-EVT-*`)
+
+An application that uses fastapi-viewsets events carries taskwire's pushes on them in place of
+`MuxwsTransport`, the reader's backplane and `twx:{ns}`: one push path, one stream handler on each
+side of the socket and one channel family. `register_taskwire_events()` (`contrib/viewsets_events.py`)
+enables it in a process; `attachViewsetEvents` (`taskwire/fastapi-viewsets`) is the browser half. The
+standalone path of §2.14 and §2.15 stays for applications without fastapi-viewsets.
+
+- **TW-EVT-001** Every envelope of namespace `ns` MUST be published with
+  `fastapi_viewsets.events.publish` as one `EnvelopeEvent` (`event_name` `"envelope"`, payload
+  `Envelope.to_dict()`) to exactly one topic of the source `taskwire`, or to none:
+
+  | Envelope | Topic |
+  |---|---|
+  | `progress` or `snapshot` of a private operation, `origin_connection` set | `taskwire:c.{sha256(ns, origin_connection)}` |
+  | `progress` or `snapshot` of a private operation, `origin_connection` null | none (TW-PRIV-003) |
+  | every other envelope, the dialog family of a private operation included (TW-PRIV-004) | `taskwire:ns.{sha256(ns)}` |
+
+  A topic key MUST be a digest, so no namespace and no connection id reaches a client in a topic
+  name. The connection topic digests the namespace with the connection id: an `origin_connection`
+  that names a socket of another namespace yields a topic that socket cannot follow (TW-EVT-003).
+  Tests: `contrib/viewsets_events_test.py::test_each_envelope_goes_to_the_topic_its_privacy_names`,
+  `..._register_documents_reach_every_socket_of_the_namespace_and_private_progress_one`.
+- **TW-EVT-002** `ViewsetEventsTransport` MUST set `crosses_processes`. With it configured, every
+  store's `publish()` invokes the reader of its own process (TW-CORE-004), `RedisStore` publishes
+  nothing on `twx:{ns}`, `start_taskwire_reader()` starts no reader and `check_taskwire_readers()`
+  warns about none. The event store (`viewsets_event_store`) is the backplane, started with
+  `start_events()`. A Celery worker configures the same transport (TW-CELERY-002). Tests:
+  `..._no_taskwire_reader_runs_beside_the_events_transport`,
+  `..._a_redis_store_publishes_nothing_on_its_channel`.
+- **TW-EVT-003** **Admission to a taskwire topic MUST be decided by an authorizer, never by a
+  delivery filter.** `authorize_taskwire_topic` MUST be first in `viewsets_event_authorizers`, so no
+  authorizer the application lists decides a taskwire topic, and MUST admit:
+
+  - a namespace topic to a caller whose `session_resolver(request)` answers the namespace it names;
+  - a connection topic to a caller whose request arrived on a socket holding that connection id,
+    with `session_resolver(request)` answering the namespace it names. A poll over REST has no
+    socket and MUST be refused.
+
+  Every other topic of the source `taskwire` MUST be refused, and so MUST every topic for which
+  `session_resolver` raises or answers None. The authorizer runs on every `subscribe` and on every
+  `poll`. Tests: `..._a_namespace_topic_admits_its_own_namespace_only`,
+  `..._a_connection_topic_admits_its_own_socket_only`,
+  `..._an_authorizer_the_application_lists_does_not_open_a_taskwire_topic`.
+
+  > A fastapi-viewsets delivery filter is a display decision: a subscription is authorized once, at
+  > subscribe, and an exception out of a filter counts as `True`. Privacy that rested on one would
+  > fail open. The topic is the fan-out unit and the authorizer is the gate, so TW-PRIV-003 holds
+  > with every filter removed.
+- **TW-EVT-004** `taskwire_delivery_filter` MUST apply the delivery decision of TW-DEL-001 for the
+  socket of each subscription, on a push and on a poll, and only to non-terminal `progress`
+  (TW-DEL-010). A terminal `progress` MUST delete its token from the override map of the
+  subscription's socket (TW-DEL-023). Every event of another source passes. Test:
+  `..._a_muted_operation_is_suppressed_on_that_socket_only`.
+- **TW-EVT-005** With `ViewsetEventsTransport` configured, the `watch` reply (TW-DEL-022) MUST carry
+  `"topics"`: the namespace topic and the socket's connection topic. The browser half MUST, on every
+  open socket, send one `watch` (TW-REG-020), subscribe each topic of the reply through the peer's
+  event client, and only once every one is followed hold the reply's connection id, report itself
+  healthy (TW-TS-007) and read the register and every polled token once. On a closed socket it MUST
+  unsubscribe every topic, hold no connection id and report itself unhealthy, so the event client
+  polls none of taskwire's topics and the client's ladder is the only poller. A refused topic or a
+  reply without `topics` MUST leave it unhealthy. Tests: `fastapi-viewsets.spec.ts`.
+- **TW-EVT-006** The rev and log of a connection topic MUST be dropped from the event store when its
+  socket closes. Test: `..._closing_a_socket_drops_its_connection_topic`.
+- **TW-EVT-007** The browser half MUST apply an envelope by the envelope's own `rev` (TW-REV-*), and
+  MUST answer the event client's `onResync` of a topic with one read of the register and of every
+  polled token. The event's `rev` and `prev` serve the event client's gap detection only.
 
 ### 2.15 The Redis backplane and reader (`TW-BP-*`)
+
+TW-BP-001 to TW-BP-006 bind the standalone push path. Under TW-EVT-* the event store is the
+backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 
 - **TW-BP-001** The pub/sub channel MUST be `twx:{ns}` — one per namespace. There MUST be no
   per-token channel and no per-tab channel. Private operations publish on the same channel and are
@@ -885,7 +977,8 @@ adapters to things outside the process, never a capability the core lacks.
   answering `status: 1` (TW-DEL-022).
 - **TW-DEL-009** The override map MUST live in per-connection memory (`peer.tags` under muxws), MUST
   die with the socket, and MUST NOT be persisted anywhere on either side.
-- **TW-DEL-022** The `watch` handler MUST answer `{"v": 1, "status": int, "connection": str}`, where
+- **TW-DEL-022** The `watch` handler MUST answer `{"v": 1, "status": int, "connection": str}`, plus
+  `"topics"` under TW-EVT-005, where
   `status` is `0` accepted, `1` rejected for exceeding `max_overrides`, `2` malformed, and
   `connection` is the opaque connection id of the socket it was applied to. A rejected declaration
   MUST still carry the connection id, since the socket is unchanged. A client MAY send
@@ -895,7 +988,9 @@ adapters to things outside the process, never a capability the core lacks.
   operation reaches a terminal state**, at the last hop that fans the terminal envelope out. This is
   behaviour, not tidiness: without it a long-lived socket's map grows monotonically toward
   `max_overrides` and eventually rejects a declaration the user meant. The client MUST prune its own
-  copy on the same event, since that copy exists only to be re-sent. Test:
+  copy on the same event, since that copy exists only to be re-sent. Under TW-EVT-* that hop is the
+  delivery filter, which prunes the map of each socket it delivers the terminal envelope to
+  (TW-EVT-004). Test:
   `watch_test.py::test_override_is_gone_after_the_operation_ends`.
 - **TW-DEL-010** **Only non-terminal `progress` MAY be suppressed, by either half.** `dialog.open`,
   `dialog.close`, `cancel` and any `progress` carrying a terminal state MUST be delivered to every
@@ -940,8 +1035,10 @@ adapters to things outside the process, never a capability the core lacks.
 
 - **TW-CELERY-001** Every blocking primitive MUST work under a synchronous worker running
   `loop.run_until_complete` with `nest_asyncio` applied.
-- **TW-CELERY-002** A worker MUST configure its own store and `NullTransport`; a worker MUST NOT
-  push. Store and transport configuration MUST NOT travel in the serialized `Context`.
+- **TW-CELERY-002** A worker MUST configure its own store and `NullTransport`, or under TW-EVT-*
+  `ViewsetEventsTransport`, which publishes to the event store and writes to no socket;
+  `configure_worker` MUST refuse any other transport. A worker MUST NOT push to a socket. Store and
+  transport configuration MUST NOT travel in the serialized `Context`.
 - **TW-CELERY-003** The token and the resolved namespace MUST cross into the worker as plain strings,
   without `SerializableObject` / `LazyObject` wrapping, and the namespace MUST NOT be re-resolved
   there (TW-AMB-008).
@@ -1028,7 +1125,9 @@ adapters to things outside the process, never a capability the core lacks.
   `origin_connection` null — a caller that never obtained a connection id, which is every caller in a
   deployment with no socket — no socket receives it and the originating client learns from its own
   per-token poll. That is a latency degradation, never a functional one, and it is the same
-  degradation the whole design already accepts for a dropped push.
+  degradation the whole design already accepts for a dropped push. Under TW-EVT-* the last hop is the
+  topic: the progress is published to the connection topic of `origin_connection`, which only that
+  socket is admitted to (TW-EVT-001, TW-EVT-003).
 - **TW-PRIV-004** **Privacy MUST NOT narrow the dialog family.** A `dialog.open`, `dialog.close` or
   `cancel` on a private operation reaches every socket of the namespace exactly as one on a shared
   operation does, and such an operation MUST appear in the register for as long as it holds an open
@@ -1064,7 +1163,7 @@ adapters to things outside the process, never a capability the core lacks.
   | `RedisStore` and the `twx:{ns}` backplane (TW-STORE-011) | the polling client and its ladder (TW-REST-010) |
   | the Celery worker entry (`TW-CELERY-*`) | the `/vue`, `/vuetify` and `/fastapi-viewsets` subpaths |
   | the FastAPI / ASGI adapters (TW-REST-001) | `tw.register`, `tw.aggregate`, `tw.selected`, `tw.operations` |
-  | `MuxwsTransport`'s server side (`TW-WS-*`) | the tab-hint rules (`TW-TAB-*`) |
+  | `MuxwsTransport`'s and `ViewsetEventsTransport`'s server side (`TW-WS-*`, `TW-EVT-*`) | the tab-hint rules (`TW-TAB-*`) |
   | the ambient reporter proxy (`TW-AMB-*`, see TW-SYM-004) | `tw.busy` and the call sources (TW-TS-022..TW-TS-025) |
   | tracked viewset calls (`TW-CALL-*`) | — |
 
@@ -1498,6 +1597,7 @@ class TaskwireStore(ABC):
     async def migrate(self, from_ns: str, to_ns: str) -> int: ...
 
 class TaskwireTransport(ABC):
+    crosses_processes: bool = False                  # TW-EVT-002
     async def notify(self, session: str, envelope: Envelope) -> None: ...
     async def is_online(self, session: str) -> bool: return True
 ```
@@ -1782,14 +1882,14 @@ function use_register(options?: TaskwireOptions):
   without a string `key` MUST be refused with a `TypeError`.
   `tw.awaitCall(call, handler, options?)` MUST register the same handler and resolve or reject
   exactly as `call`. Tests: `client.spec.ts::trackCall follows a viewset call under its key`.
-- **TW-TS-020** **`attachMuxws` MUST register an open interceptor on the peer** (muxws
+- **TW-TS-020** **`attachMuxws` and `attachViewsetEvents` MUST register an open interceptor on the peer** (muxws
   `Peer.interceptOpen`, WSM-API-026) that writes `X-Taskwire-Connection` once the socket has a
   connection id, and `X-Taskwire-Token` while `run()` has a token bound, on every stream opened on
   the peer — the application's own commands included. It is the socket's counterpart of TW-TS-003's
   axios interceptor and follows the same rules: the token covers only the synchronous part of `fn`,
   and a header the caller set is overwritten only by a value the client holds. The interceptor MUST
-  be removed when the transport is detached (`detachMuxws`, a replacing `attachTransport`,
-  `dispose`). Test: `muxws.spec.ts::the headers on every stream opened on an attached peer`.
+  be removed when the transport is detached (`detachMuxws`, `detachViewsetEvents`, a replacing
+  `attachTransport`, `dispose`). Test: `muxws.spec.ts::the headers on every stream opened on an attached peer`.
 - **TW-TS-021** `tw.headers()` MUST return the headers the axios interceptor would write on a request
   made at that moment — `X-Taskwire-Token` while `run()` has a token bound, `X-Taskwire-Connection`
   once a socket declared an id — so that any other HTTP client can carry them. The axios interceptor
@@ -1819,9 +1919,11 @@ function use_register(options?: TaskwireOptions):
   leaving. `tw.retryNow()` MUST call `retryNow()` of every attached source that has one. Tests:
   `busy.spec.ts::unreachable calls`.
 - **TW-TS-025** `taskwire/fastapi-viewsets` MUST export `viewsetCallSource()`, a `CallSource` over
-  fastapi-viewsets' `onCallActivity` whose `retryNow()` is fastapi-viewsets' own. It is the only
-  module besides `taskwire/muxws` that imports `@dynamicforms/fastapi-viewsets`. Test:
-  `busy.spec.ts::viewsetCallSource`.
+  fastapi-viewsets' `onCallActivity` whose `retryNow()` is fastapi-viewsets' own, and
+  `attachViewsetEvents`, `detachViewsetEvents` and `ViewsetEventsTransport` (TW-EVT-005); it MUST NOT
+  import `taskwire/muxws`. Besides it, only `taskwire/muxws` and the module holding `MuxwsCalls`,
+  which both import, import `@dynamicforms/fastapi-viewsets`. Tests:
+  `busy.spec.ts::viewsetCallSource`, `fastapi-viewsets.spec.ts`.
 
 ### 5.6 Shipped deliverables
 
