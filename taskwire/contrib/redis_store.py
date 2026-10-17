@@ -31,6 +31,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import weakref
 
 from typing import Any
 
@@ -229,6 +230,18 @@ return released
 """
 
 
+class _Scripts:
+    """One Redis client and the five scripts registered on it."""
+
+    def __init__(self, client: Any) -> None:
+        self.redis = client
+        self.commit = client.register_script(_COMMIT)
+        self.put_dialog = client.register_script(_PUT_DIALOG)
+        self.resolve_dialog = client.register_script(_RESOLVE_DIALOG)
+        self.withdraw_dialogs = client.register_script(_WITHDRAW_DIALOGS)
+        self.release_result = client.register_script(_RELEASE_RESULT)
+
+
 class RedisStore(TaskwireStore):
     """The cross-process store. Passes the exported conformance suite unchanged (TW-STORE-011).
 
@@ -237,12 +250,32 @@ class RedisStore(TaskwireStore):
     """
 
     def __init__(self, url: str = "redis://127.0.0.1:6379/0", *, client: Any = None) -> None:
-        self._redis = client if client is not None else aioredis.Redis.from_url(url, decode_responses=True)
-        self._commit = self._redis.register_script(_COMMIT)
-        self._put_dialog = self._redis.register_script(_PUT_DIALOG)
-        self._resolve_dialog = self._redis.register_script(_RESOLVE_DIALOG)
-        self._withdraw_dialogs = self._redis.register_script(_WITHDRAW_DIALOGS)
-        self._release_result = self._redis.register_script(_RELEASE_RESULT)
+        """A store on the Redis at `url`, or on `client`.
+
+        A `redis.asyncio` connection belongs to the event loop it was opened on. Built from `url`, the
+        store opens one client per event loop that uses it, so one store serves every loop of a process:
+        a worker's executions, its own transition loop, and the private loop of each synchronous
+        `operation()`. A `client` passed in is used on every loop as it is, and is the caller's to keep
+        on one.
+        """
+        self._url = url
+        self._fixed = _Scripts(client) if client is not None else None
+        self._per_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _Scripts] = weakref.WeakKeyDictionary()
+
+    def _bound(self) -> _Scripts:
+        if self._fixed is not None:
+            return self._fixed
+        loop = asyncio.get_running_loop()
+        bound = self._per_loop.get(loop)
+        if bound is None:
+            bound = _Scripts(aioredis.Redis.from_url(self._url, decode_responses=True))
+            self._per_loop[loop] = bound
+        return bound
+
+    @property
+    def _redis(self) -> Any:
+        """The client of the running event loop."""
+        return self._bound().redis
 
     # ---------------------------------------------------------------- keys
 
@@ -273,7 +306,7 @@ class RedisStore(TaskwireStore):
         """TW-STORE-014: one script call answers with the rev and the cancel flag it saw."""
         k = self._keys(key)
         created_ms = self._now_ms()
-        rev, cancelled = await self._commit(
+        rev, cancelled = await self._bound().commit(
             keys=[k["progress"], k["rev"], k["index"], k["cancel"]],
             args=[
                 json.dumps(progress.to_dict()),
@@ -442,7 +475,7 @@ class RedisStore(TaskwireStore):
 
     async def put_dialog(self, key: str, dialog: DialogRequest, ttl: float) -> int:  # noqa: A002
         k = self._keys(key)
-        rev = await self._put_dialog(
+        rev = await self._bound().put_dialog(
             keys=[k["dialogs"], k["rev"], k["asking"], f"{k['reply_prefix']}{dialog.id}:reply"],
             args=[dialog.id, json.dumps(dialog.to_dict()), int(ttl), self._now_ms(), k["token"]],
         )
@@ -450,7 +483,7 @@ class RedisStore(TaskwireStore):
 
     async def resolve_dialog(self, key: str, did: str, reply: DialogReply) -> DialogResolution:  # noqa: A002
         k = self._keys(key)
-        outcome, _rev = await self._resolve_dialog(
+        outcome, _rev = await self._bound().resolve_dialog(
             keys=[k["dialogs"], k["rev"], k["asking"], f"{k['reply_prefix']}{did}:reply"],
             args=[did, json.dumps(reply.to_dict()), self._now_ms(), k["token"]],
         )
@@ -458,7 +491,7 @@ class RedisStore(TaskwireStore):
 
     async def withdraw_dialogs(self, key: str) -> list[str]:  # noqa: A002
         k = self._keys(key)
-        withdrawn = await self._withdraw_dialogs(
+        withdrawn = await self._bound().withdraw_dialogs(
             keys=[k["dialogs"], k["rev"], k["asking"]],
             args=[
                 self._now_ms(),
@@ -496,7 +529,7 @@ class RedisStore(TaskwireStore):
 
     async def release_result(self, key: str) -> Result | None:  # noqa: A002
         k = self._keys(key)
-        released = await self._release_result(
+        released = await self._bound().release_result(
             keys=[k["progress"], k["rev"], k["dialogs"], k["index"]],
             args=[self._now_ms(), k["token"]],
         )
@@ -511,8 +544,13 @@ class RedisStore(TaskwireStore):
         return RedisReader(self)
 
     async def aclose(self) -> None:
-        """Close the Redis connection this store was built with."""
-        await self._redis.aclose()
+        """Close the Redis client of the running event loop, or the one the store was built with."""
+        if self._fixed is not None:
+            await self._fixed.redis.aclose()
+            return
+        bound = self._per_loop.pop(asyncio.get_running_loop(), None)
+        if bound is not None:
+            await bound.redis.aclose()
 
 
 # --------------------------------------------------------------------------- the reader

@@ -257,7 +257,8 @@ _transport: ViewsetEventsTransport | None = None
 def register_taskwire_events() -> ViewsetEventsTransport:
     """
     Carries taskwire's pushes over fastapi-viewsets events, in this process. Called once at startup,
-    in the web process and in a Celery worker alike; a second call changes nothing.
+    in the web process and in a process that executes deferred actions alike; a second call changes
+    nothing.
 
     - declares the source `taskwire` with `authorize_taskwire_topic`, and puts the authorizer first
       in `settings.viewsets_event_authorizers`, so no authorizer the application lists admits a
@@ -268,8 +269,8 @@ def register_taskwire_events() -> ViewsetEventsTransport:
 
     The application mounts the events viewset (`register_events(router)`), sets
     `settings.viewsets_event_store` to a `RedisEventStore` when more than one process publishes, and
-    calls `start_events()` / `stop_events()` from its lifespan. A worker passes the transport to
-    `configure_worker(store, transport)`.
+    calls `start_events()` / `stop_events()` from its lifespan. In a process that executes deferred
+    actions the transport stays configured: it writes to no socket (TW-CALL-009).
     """
     from .viewsets import taskwire_context_processor
 

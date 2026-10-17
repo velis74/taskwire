@@ -15,7 +15,7 @@ from __future__ import annotations
 __version__ = "0.3.0"
 
 from .ambient import ask, current_reporter, progress
-from .calls import Call, call_token, execute_call, hand_off, receive_call
+from .calls import Call, call_token, end_call, execute_call, hand_off, receive_call
 from .conformance import run_conformance
 from .decorators import (
     declared_result_kind,
@@ -60,7 +60,7 @@ from .reporter import (
     Reporter,
     SyncReporter,
 )
-from .settings import configure, configured, reset_configuration, Settings, settings
+from .settings import configure, configure_executor, configured, reset_configuration, Settings, settings
 from .store import (
     Commit,
     DialogResolution,
@@ -120,6 +120,7 @@ __all__ = [
     "declared_result_kind",
     "declared_result_params",
     "configure",
+    "configure_executor",
     "configured",
     "CONNECTION_HEADER",
     "key",
@@ -130,6 +131,7 @@ __all__ = [
     "TOKEN_HEADER",
     "operation",
     "receive_call",
+    "end_call",
     "execute_call",
     "hand_off",
     "reset_configuration",

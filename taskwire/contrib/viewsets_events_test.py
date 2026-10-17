@@ -398,11 +398,13 @@ async def test_a_redis_store_publishes_nothing_on_its_channel() -> None:
     class Redis:
         published: list = []
 
+        def register_script(self, _script: str) -> None:
+            return None
+
         async def publish(self, channel: str, _message: str) -> None:
             self.published.append(channel)
 
-    store = RedisStore.__new__(RedisStore)
-    store._redis = Redis()
+    store = RedisStore(client=Redis())
     dispatched: list = []
 
     class Recorder(ViewsetEventsTransport):
@@ -416,20 +418,23 @@ async def test_a_redis_store_publishes_nothing_on_its_channel() -> None:
     assert dispatched == [(NS, envelope.token)]
 
 
-def test_a_worker_takes_the_events_transport_and_no_pushing_one() -> None:
-    """TW-CELERY-002: a worker's transport pushes to no socket."""
-    pytest.importorskip("celery")
-    from taskwire.contrib.celery import configure_worker
+async def test_an_executor_keeps_the_events_transport_and_takes_no_pushing_one() -> None:
+    """TW-CALL-009: the process that executes a deferred action pushes to no socket; the events
+    transport publishes to the event store, and stays."""
+    from taskwire.contrib.viewsets import TaskwireMiddleware
     from taskwire.transport import LocalTransport, NullTransport
 
     store = MemoryStore()
     transport = ViewsetEventsTransport()
-    configure_worker(store, transport)
+    taskwire.configure(store=store, transport=transport)
+    await TaskwireMiddleware().executor_started()
     assert configured.transport is transport
-    configure_worker(store)
+    taskwire.configure(transport=LocalTransport())
+    await TaskwireMiddleware().executor_started()
     assert isinstance(configured.transport, NullTransport)
-    with pytest.raises(ValueError, match="TW-CELERY-002"):
-        configure_worker(store, LocalTransport())
+    assert configured.store is store
+    with pytest.raises(ValueError, match="TW-CALL-009"):
+        taskwire.configure_executor(store=store, transport=LocalTransport())
 
 
 def test_registering_twice_changes_nothing() -> None:

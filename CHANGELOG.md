@@ -28,8 +28,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   operation's progress, to the topic of the socket that started it. Its authorizer admits a
   namespace topic to callers of that namespace and a connection topic to that socket only, on
   `subscribe` and on `poll`; its delivery filter applies `push_filter` and the socket's overrides.
-  The fastapi-viewsets event store replaces `RedisReader` and `twx:{ns}`, and a Celery worker
-  publishes through it with `configure_worker(store, transport)`.
+  The fastapi-viewsets event store replaces `RedisReader` and `twx:{ns}`, and a worker publishes
+  through it.
 - `taskwire/fastapi-viewsets`: `attachViewsetEvents(tw, peer)`, `detachViewsetEvents(tw)` and
   `ViewsetEventsTransport`, which receive taskwire's pushes through the peer's fastapi-viewsets event
   client without importing `taskwire/muxws` or installing a stream handler.
@@ -41,13 +41,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `taskwire/vue`: `useBusy(client?)`, `tw.busy` as a ref.
 - `taskwire/vuetify`: `useBusyDialog(options?)`, one modal through the modal kit while `tw.busy`
   is visible, and `TaskwireBusy`, its default body, with **Try now** while a call is unreachable.
+- `TaskwireMiddleware.executor_started()`: configures the executor's process with
+  `taskwire.configure_executor()`.
+- `TaskwireMiddleware.on_transition()`: ends the operation of a deferred call the executor ended
+  outside its execution — `interrupted`, or `dialog_timeout` with an open question, for a hard time
+  limit, a termination or a lost process; `dispatch_failed` for a call still `queued` that will not
+  run; `failed` with `action_failed` for a failure around the execution.
+- The reserved error code `interrupted`, `retryable: true`, with `message.params.reason`: the
+  executor ended the work after it started.
+- `taskwire.end_call(call, error, *, queued_only=False, asking_error=None)`: ends the operation of a
+  call whose execution ended without a terminal write. `taskwire.calls.interrupted_error(reason)` and
+  `dialog_timeout_error()` build the two errors.
+- `taskwire.configure_executor(*, store=None, transport=None)`: configures a process that executes
+  work handed to it, with a transport that pushes to no socket. `configure_worker` applies it.
 
 ### Changed
 
-- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets>=0.10.0`.
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets>=0.11.0`.
+  `taskwire.contrib.viewsets` and `taskwire.contrib.viewsets_events` import no Celery: the process
+  that executes deferred actions calls `taskwire.configure()` and `track_viewset_calls()`.
+- `TaskwireMiddleware(timeout_errors=...)` defaults to `(ActionInterruptedError,)`. An
+  `ActionInterruptedError` ends the operation `interrupted` (`dialog_timeout` with an open question);
+  the web process leaves the operation of a call that ended with it, or with any
+  `ActionOutcomeUnknownError` (`ResultReaderStoppedError` included), to the executor's process.
+- An execution whose pool child exits writes no terminal state; the supervisor's `on_transition()`
+  reports its end. In the process that built the middleware (a solo pool) the execution ends
+  `interrupted` (`reason: terminated`), or `dialog_timeout` with an open question.
+- `mark_failed` withdraws the operation's open dialogs.
 - `connection_id` and `CONNECTION_TAG` are defined in `taskwire.delivery`;
   `taskwire.contrib.muxws` re-exports both.
-- The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.10.0, and
+- The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.11.0, and
   `@dynamicforms/vuetify-modal-form-kit` requires ^0.10.0. `taskwire/vuetify` imports
   `@dynamicforms/vuetify-inputs` ^0.14.2, a new optional peer dependency that the modal kit requires
   as well.
@@ -60,6 +83,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `dist/fastapi-viewsets.d.ts`, `dist/conformance.d.ts`) and every published subpath are unchanged.
 
 ### Fixed
+
+- `RedisStore` built from a URL opens one Redis client per event loop that uses it. A store used
+  on a second loop of a process - a prefork child forked after its supervisor used the store, each
+  synchronous `operation()` - no longer fails with a client bound to another loop.
 
 - `useTaskwireDialogs` states the buttons of a dialog without a mapped component as `Action`s, as
   the modal kit's `actions` option takes them, and answers nothing when the modal settles with the
