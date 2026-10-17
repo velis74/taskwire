@@ -41,7 +41,7 @@ import axios from 'axios';
 import { connect, type Peer } from 'muxws';
 import { computed, effectScope, onMounted, onScopeDispose, ref, shallowRef } from 'vue';
 
-import { DialogAdoption, type Operation, taskwireConfig, use_taskwire } from 'taskwire';
+import { DialogPresenter, type Operation, type PresentDialog, use_taskwire } from 'taskwire';
 import { attachMuxws, detachMuxws } from 'taskwire/muxws';
 import { use_register } from 'taskwire/vue';
 import { TaskwireFooter, useTaskwireDialogs } from 'taskwire/vuetify';
@@ -189,95 +189,68 @@ let vuetifyDialogs: ReturnType<typeof effectScope> | null = null;
 function chooseUi(next: Ui): void {
   if (next === ui.value) return;
   if (next === 'vuetify') {
+    // One presenter per tab: the page's own stops before the shipped adapter starts, and the page's
+    // scrim comes down without answering.
+    plainDialogs?.dispose();
+    plainDialogs = null;
+    settle(null);
     vuetifyDialogs = effectScope(true);
     vuetifyDialogs.run(() => useTaskwireDialogs({ client: tw }));
-    // The shipped adapter owns presentation from here - the page's own scrim must not also open
-    // for a dialog it is no longer watching.
-    asking.value = null;
   } else {
     vuetifyDialogs?.stop();
     vuetifyDialogs = null;
+    plainDialogs = new DialogPresenter({ client: tw, present });
   }
   ui.value = next;
 }
 
-onScopeDispose(() => vuetifyDialogs?.stop());
+onScopeDispose(() => {
+  vuetifyDialogs?.stop();
+  plainDialogs?.dispose();
+});
 
 // ------------------------------------------------------------------------------------------------
 // The question on screen
 // ------------------------------------------------------------------------------------------------
 
 const asking = ref<string | null>(null);
-const answering = ref(false);
 
 const openDialogFor = (id: string): Operation<unknown> | null =>
   entries.value.find((entry) => entry.dialog?.id === id && entry.dialog.state === 'open') ?? null;
 
+/** Settles the question on screen: with the button the user chose, or `null` when it came down. */
+let pending: ((button: string | null) => void) | null = null;
+
+function settle(button: string | null): void {
+  const resolve = pending;
+  pending = null;
+  asking.value = null;
+  resolve?.(button);
+}
+
 /**
- * The tab rule, run by the library rather than re-derived here.
- *
- * Two instances, because the rule differs by who started the work: the tab that minted the token
- * presents in the same tick, and every other waits and then checks again. Writing that out by hand
- * is where the timing bugs live, which is why `DialogAdoption` is framework-free and exported.
+ * The page's half of a dialog adapter: put the question in the scrim and settle with the chosen
+ * button. Which question to present, in which tab and when (TW-TAB-003), and the answer itself are
+ * `DialogPresenter`'s - the same class `useTaskwireDialogs` runs with the modal kit.
  */
-const present = (id: string): void => {
-  if (openDialogFor(id) !== null) asking.value = id;
-};
+const present: PresentDialog = (_operation, dialog) =>
+  new Promise((resolve) => {
+    settle(null);
+    pending = resolve;
+    asking.value = dialog.id;
+  });
 
-const adopters = {
-  here: new DialogAdoption({
-    startedHere: true,
-    dialogAdoptDelay: taskwireConfig().dialogAdoptDelay,
-    isStillOpen: (id) => openDialogFor(id) !== null,
-    present,
-  }),
-  elsewhere: new DialogAdoption({
-    startedHere: false,
-    dialogAdoptDelay: taskwireConfig().dialogAdoptDelay,
-    isStillOpen: (id) => openDialogFor(id) !== null,
-    present,
-  }),
-};
+let plainDialogs: DialogPresenter | null = new DialogPresenter({ client: tw, present });
 
-onScopeDispose(() => {
-  adopters.here.dispose();
-  adopters.elsewhere.dispose();
-});
-
-// Every register read, not only every push: a tab opened while a question was already outstanding
-// must adopt it too, so "arrives" has to include "was already there" (TW-TAB-004). Only in 'plain'
-// mode - in 'vuetify' mode the shipped adapter runs its own copy of this same loop.
+// Close the scrim when the question left `open` - answered in another tab, withdrawn because the
+// operation ended (TW-DLG-016), or replaced by the same operation's next question. `openDialogFor`
+// matches on dialog id, so an operation that moved on to a new dialog no longer answers for the id
+// this tab is holding, and the stale scrim comes down rather than silently relabelling itself.
 onScopeDispose(
-  tw.onRegisterChange((operations) => {
-    if (ui.value !== 'plain') return;
-    for (const entry of operations) {
-      const dialog = entry.dialog;
-      if (dialog === null) continue;
-      (entry.startedHere ? adopters.here : adopters.elsewhere).seen(dialog);
-    }
-    // Close the modal when the question left `open` - answered here, answered in another tab,
-    // withdrawn because the operation ended (TW-DLG-016), or replaced by the same operation's next
-    // question. `openDialogFor` matches on dialog id, so an operation that moved on to a new dialog
-    // no longer answers for the id this tab is holding, and the stale modal comes down rather than
-    // silently relabelling itself.
-    if (asking.value !== null && openDialogFor(asking.value) === null) asking.value = null;
+  tw.onRegisterChange(() => {
+    if (asking.value !== null && openDialogFor(asking.value) === null) settle(null);
   }),
 );
-
-async function answer(button: string): Promise<void> {
-  const operation = asking.value !== null ? openDialogFor(asking.value) : null;
-  if (operation === null) return;
-  answering.value = true;
-  try {
-    // Resolves quietly on 409 / 404 / 410 (TW-DLG-011). Another tab answering first is the normal
-    // outcome of a namespace-wide question, not a fault - so there is nothing to catch here and
-    // nothing to tell the user about.
-    await operation.answer(button);
-    asking.value = null;
-  } finally {
-    answering.value = false;
-  }
-}
 
 /**
  * The question's own facts, rendered as they arrive.
@@ -462,8 +435,7 @@ function resultText(entry: Operation<unknown>): string | null {
             v-for="button in question.dialog.buttons"
             :key="button.id"
             type="button"
-            :disabled="answering"
-            @click="answer(button.id)"
+            @click="settle(button.id)"
           >
             {{ button.label?.text ?? button.id }}
           </button>
