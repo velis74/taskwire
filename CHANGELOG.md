@@ -26,9 +26,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.9.2, and
+- The optional peer dependency `@dynamicforms/fastapi-viewsets` requires ^0.10.0, and
   `@dynamicforms/vuetify-modal-form-kit` requires ^0.10.0. `taskwire/vuetify` imports
-  `@dynamicforms/vuetify-inputs` ^0.14.1, a new optional peer dependency that the modal kit requires
+  `@dynamicforms/vuetify-inputs` ^0.14.2, a new optional peer dependency that the modal kit requires
   as well.
 
 ### Fixed

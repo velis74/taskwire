@@ -129,7 +129,7 @@ See [The Celery worker entry](../api/python.md#the-celery-worker-entry) for `tas
 
 ## The npm package
 
-`@dynamicforms/fastapi-viewsets` ^0.9.2 is an optional peer dependency of the npm package, imported
+`@dynamicforms/fastapi-viewsets` ^0.10.0 is an optional peer dependency of the npm package, imported
 by `taskwire/muxws` and `taskwire/fastapi-viewsets`. `taskwire/muxws` sends the six calls through
 its `MuxwsProxyImpl`, and hands the event streams on the peer to its `handleEventStream`, so one
 socket carries taskwire's pushes and the event client's events (see

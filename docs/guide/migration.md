@@ -33,8 +33,8 @@ renders it with `use_operations()` from `taskwire/vue`, or lists `tw.register` w
 ### Peer dependencies
 
 `taskwire/muxws` and `taskwire/fastapi-viewsets` require the optional npm peer
-`@dynamicforms/fastapi-viewsets` ^0.9.2. `taskwire/vuetify` requires
-`@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and imports `@dynamicforms/vuetify-inputs` ^0.14.1,
+`@dynamicforms/fastapi-viewsets` ^0.10.0. `taskwire/vuetify` requires
+`@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and imports `@dynamicforms/vuetify-inputs` ^0.14.2,
 which the modal kit 0.10 requires as well.
 
 ## Upgrading to v0.2.0 (from v0.1.x)

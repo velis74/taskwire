@@ -383,7 +383,7 @@ result, and **Collect** and **Dismiss** while it holds one. It emits `collected`
 renders nothing while the register is empty.
 
 `taskwire/vuetify` imports `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and
-`@dynamicforms/vuetify-inputs` ^0.14.1, both optional peers.
+`@dynamicforms/vuetify-inputs` ^0.14.2, both optional peers.
 
 `useBusyDialog({ client?, translate?, title?, component?, showCalls? })` opens one modal through
 the modal kit's `custom()`, with the body passed as a component, while `tw.busy.visible` holds and

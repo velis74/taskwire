@@ -62,8 +62,8 @@
     "url": "git@github.com:velis74/taskwire.git"
   },
   "peerDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.9.2",
-    "@dynamicforms/vuetify-inputs": "^0.14.1",
+    "@dynamicforms/fastapi-viewsets": "^0.10.0",
+    "@dynamicforms/vuetify-inputs": "^0.14.2",
     "@dynamicforms/vuetify-modal-form-kit": "^0.10.0",
     "axios": "^1.13.6",
     "muxws": "^0.4.1",
@@ -91,15 +91,15 @@
     }
   },
   "devDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.9.2",
-    "@dynamicforms/vuetify-inputs": "^0.14.1",
+    "@dynamicforms/fastapi-viewsets": "^0.10.0",
+    "@dynamicforms/vuetify-inputs": "^0.14.2",
     "@dynamicforms/vuetify-modal-form-kit": "^0.10.0",
-    "@types/node": "^24",
+    "@types/node": "^26",
     "@vitejs/plugin-vue": "^6",
     "@vitest/coverage-v8": "^3",
     "@vue/test-utils": "^2.2.4",
     "@vue/tsconfig": "^0.7.0",
-    "eslint-config-velis": "^2.0.12",
+    "eslint-config-velis": "^3.0.1",
     "jsdom": "^26.0.0",
     "markdownlint-cli2": "^0.18.1",
     "muxws": "^0.4.1",
