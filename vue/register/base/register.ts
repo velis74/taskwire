@@ -48,9 +48,9 @@
  * for the ceiling - and poll a blocked worker twelve times a second per tab.
  */
 
-import type { TaskwireCalls } from '../calls/calls';
-import type { Operation } from '../operation/operation';
-import { PollLadder, type PollLadderState, registerLadderState, revsOf } from '../poll/poll';
+import type { TaskwireCalls } from '../../calls/calls';
+import type { Operation } from '../../operation/base/operation';
+import { PollLadder, type PollLadderState, registerLadderState, revsOf } from '../../poll/poll';
 import {
   type Aggregate,
   type DialogRequest,
@@ -65,7 +65,7 @@ import {
   type Register,
   type Snapshot,
   type WireObject,
-} from '../wire/wire';
+} from '../../wire/wire';
 
 import { aggregate as computeAggregate, isActiveEntry, selectFifo } from './aggregate';
 

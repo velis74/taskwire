@@ -1,7 +1,7 @@
 /**
  * `taskwire/muxws` - the WebSocket implementation of the protocol, browser side.
  *
- * **This is the only module in the package that imports muxws**, and `ts/index.ts` must not reach it
+ * **This is the only module in the package that imports muxws**, and `index.ts` must not reach it
  * transitively (TW-CORE-006). A core that imports a socket library is a core that cannot be used by
  * an application that only ever polls.
  *

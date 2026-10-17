@@ -29,7 +29,7 @@
  * anywhere in this client (TW-TS-006).
  */
 
-import { type DialogRequest, isTerminal, type Progress, type Result, type Text } from '../wire/wire';
+import { type DialogRequest, isTerminal, type Progress, type Result, type Text } from '../../wire/wire';
 
 /**
  * The disappearance of a document that was there a moment ago.

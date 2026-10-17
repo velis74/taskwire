@@ -1,10 +1,9 @@
 import { type Ref, shallowRef } from 'vue';
 
-import type { TaskwireOptions } from '../client/types';
-import type { Operation } from '../operation/operation';
-import type { Aggregate, Result } from '../wire/wire';
-
-import { clientFor, untilScopeEnds } from './scope';
+import type { TaskwireOptions } from '../../client/types';
+import type { Operation } from '../../operation/base/operation';
+import { clientFor, untilScopeEnds } from '../../ui/scope';
+import type { Aggregate, Result } from '../../wire/wire';
 
 /** What `use_register` hands a widget: the entries, the aggregate, the selection, and four acts. */
 export interface RegisterBinding {

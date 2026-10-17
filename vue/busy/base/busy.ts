@@ -13,11 +13,11 @@
  * Its one runtime import is `isUuid` from `call-tracking/`; `client/taskwire.ts` depends on it.
  */
 
-import { isUuid } from '../call-tracking/call-tracking';
-import type { TaskwireUiConfig } from '../client/config';
-import type { KeyedCall } from '../client/types';
-import type { Operation } from '../operation/operation';
-import type { Text } from '../wire/wire';
+import { isUuid } from '../../call-tracking/call-tracking';
+import type { TaskwireUiConfig } from '../../client/config';
+import type { KeyedCall } from '../../client/types';
+import type { Operation } from '../../operation/base/operation';
+import type { Text } from '../../wire/wire';
 
 /**
  * What happens to one call, as a `CallSource` reports it. The shape of `CallEvent` in

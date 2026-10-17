@@ -2,7 +2,7 @@
 
 import axios, { type AxiosInstance } from 'axios';
 
-import type { Operation } from '../operation/operation';
+import type { Operation } from '../operation/base/operation';
 
 import { normaliseBasePath, Taskwire } from './taskwire';
 import { DEFAULT_BASE_PATH, type RunOptions, type TaskwireOptions } from './types';

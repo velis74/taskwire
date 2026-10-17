@@ -258,8 +258,8 @@ claim as written is false and should not survive into the user documentation.
 - `conformance/sequences/` is empty but for `.gitkeep`, and `vue/packaging.spec.ts` asserts that the
   empty directory exists. `taskwire-spec.md` §2.2 and three briefs reference
   `conformance/sequences/out-of-order-dialog.json`, which was never written. The behaviour it was to
-  cover (TW-REV-006) is implemented at `vue/operation/operation.ts` and tested in `client.spec.ts` and
-  `vuetify.spec.ts`, so nothing is uncovered — only promised.
+  cover (TW-REV-006) is implemented at `vue/operation/base/operation.ts` and tested in `client.spec.ts` and
+  `operation.spec.ts`, so nothing is uncovered — only promised.
 - A wire mismatch is not always loud. Required fields throw with the field path, but
   `optionalString` reads absent and `null` alike (TW-CORE-010), and for `result_kind` `null` *means*
   private — so a dropped or misspelled `result_kind` does not raise, it silently unshares the

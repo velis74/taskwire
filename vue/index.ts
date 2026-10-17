@@ -5,8 +5,9 @@
  * The composables are `taskwire/vue`, the dialog adapter and the components are
  * `taskwire/vuetify`, the muxws transport is `taskwire/muxws`, and the fastapi-viewsets call source
  * is `taskwire/fastapi-viewsets`; all four are subpath exports and none of them is imported below.
- * `composables.spec.ts::the core entry reaches no optional peer` walks this file's transitive
- * imports to keep it so.
+ * `packaging.spec.ts::the core entry reaches no optional peer` walks this file's transitive
+ * imports to keep it so, and `packaging.spec.ts::the core entry reaches no ui/ directory` checks
+ * that none of them lives under a `ui/` directory.
  *
  * The three module-level factories keep their Python names verbatim - `use_taskwire`,
  * `configure_taskwire`, `new_token` (TW-TS-011) - and there is no camelCase alias for any of them,
@@ -40,8 +41,8 @@ export {
 export { run, use_taskwire } from './client/use-taskwire';
 
 // The busy model (TW-TS-022..TW-TS-024): what `tw.attachCalls()` takes and `tw.busy` holds.
-export { type BusyCall, type BusyState, type CallEvent, type CallSource } from './busy/busy';
-export { axiosCallSource } from './busy/axios-call-source';
+export { type BusyCall, type BusyState, type CallEvent, type CallSource } from './busy/base/busy';
+export { axiosCallSource } from './busy/base/axios-call-source';
 
 // The six calls of TW-REST-004 as one interface: what `useCalls()` takes, and what a transport that
 // is not `taskwire/muxws` would implement. `RestCalls` itself is not exported - a client builds its
@@ -54,7 +55,7 @@ export {
   OperationGone,
   type OperationHost,
   type OperationInit,
-} from './operation/operation';
+} from './operation/base/operation';
 
 // The register, its aggregate and the FIFO selection (§3.8, §3.8a) - the same rules the server uses.
 export {
@@ -64,12 +65,12 @@ export {
   entryState,
   isActiveEntry,
   selectFifo,
-} from './register/aggregate';
+} from './register/base/aggregate';
 
 // TW-REG-005's sort, beside them, because a client that renders its own list sorts it by the same
 // two keys. The poll ladder is deliberately **not** exported: no application may derive a duration
 // from the cadence (TW-THR-007), and an export is an invitation to try.
-export { sortEntries } from './register/register';
+export { sortEntries } from './register/base/register';
 
 // The tab hints (TW-TAB-*). Framework-free on purpose: these are the rules a Vuetify footer or a
 // React modal would OBEY, and putting them in a UI layer would mean writing them again for
@@ -86,7 +87,8 @@ export {
   type Timers,
   VisibilityDelay,
   type VisibilityOptions,
-} from './tab-hints/tab-hints';
+} from './tab-hints/base/tab-hints';
+export { DialogPresenter, type DialogPresenterOptions, type PresentDialog } from './tab-hints/base/dialog-presenter';
 
 // TW-CALL-* - one call tracked as an operation, where it is received, executed and handed off.
 export {

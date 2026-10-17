@@ -1,10 +1,9 @@
 import { computed, type ComputedRef, type Ref, shallowRef } from 'vue';
 
-import type { TaskwireOptions } from '../client/types';
-import type { Operation } from '../operation/operation';
-import { ACTIVE_STATES, type DialogRequest, type Progress } from '../wire/wire';
-
-import { clientFor, untilScopeEnds } from './scope';
+import type { TaskwireOptions } from '../../client/types';
+import { clientFor, untilScopeEnds } from '../../ui/scope';
+import { ACTIVE_STATES, type DialogRequest, type Progress } from '../../wire/wire';
+import type { Operation } from '../base/operation';
 
 /** What `use_operation` needs: a token, and optionally which client to read it through. */
 export interface UseOperationOptions extends TaskwireOptions {

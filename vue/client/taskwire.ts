@@ -34,10 +34,10 @@
 
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
 
-import { BusyCalls, type BusyState, type CallSource } from '../busy/busy';
+import { BusyCalls, type BusyState, type CallSource } from '../busy/base/busy';
 import { RestCalls, type TaskwireCalls } from '../calls/calls';
-import { Operation, type OperationHost, type OperationInit } from '../operation/operation';
-import { type RegisterClient, RegisterState, type UiPolicy } from '../register/register';
+import { Operation, type OperationHost, type OperationInit } from '../operation/base/operation';
+import { type RegisterClient, RegisterState, type UiPolicy } from '../register/base/register';
 import { new_token } from '../reporter/operation-scope';
 import { type Aggregate, type Envelope, isTerminal, PUSHED_KINDS, type Snapshot } from '../wire/wire';
 

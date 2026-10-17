@@ -1,6 +1,6 @@
 /** The per-token poller and the raw `Subscription` it feeds. */
 
-import type { Operation } from '../operation/operation';
+import type { Operation } from '../operation/base/operation';
 import { PollLadder, snapshotLadderState } from '../poll/poll';
 import { isTerminal, parseSnapshot, type Snapshot, WIRE_VERSION } from '../wire/wire';
 

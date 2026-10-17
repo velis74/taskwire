@@ -5,7 +5,7 @@
  * `taskwire/muxws`. The core declares `CallEvent` structurally and never reaches them.
  */
 
-export { viewsetCallSource } from './busy/viewset-call-source';
+export { viewsetCallSource } from './busy/base/viewset-call-source';
 export {
   attachViewsetEvents,
   type AttachViewsetEventsOptions,

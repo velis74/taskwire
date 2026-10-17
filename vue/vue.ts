@@ -1,12 +1,13 @@
 /**
  * `taskwire/vue` - the composables (§5.5).
  *
- * **Only the modules this entry and `taskwire/vuetify` reach may import Vue** (TW-CORE-006,
- * TW-TS-010): `composables/`, `vuetify/`, `busy/use-busy.ts` and `busy/busy-dialog.ts`. This is a
- * subpath export, Vue is an optional peer dependency and an external in the vite config, and
- * `index.ts` must not reach any of them transitively - a core that imports Vue is a core that
- * cannot be used from React, from Svelte or from a plain script tag.
- * `composables.spec.ts::the core entry reaches no optional peer` walks the entry point's imports and
+ * **Only the modules in a `ui/` directory may import Vue** (TW-CORE-006, TW-TS-010): a feature with
+ * UI code keeps its UI-agnostic half in `<feature>/base/` and its UI half in `<feature>/ui/`, and
+ * helpers shared by UI features live in `vue/ui/`. Only this entry and `taskwire/vuetify` import
+ * them. This is a subpath export, Vue is an optional peer dependency and an external in the vite
+ * config, and `index.ts` must not reach any `ui/` module transitively - a core that imports Vue is a
+ * core that cannot be used from React, from Svelte or from a plain script tag.
+ * `packaging.spec.ts::the core entry reaches no ui/ directory` walks the entry point's imports and
  * keeps it that way.
  *
  * **The handoff is reactive collections of handles** (TW-TS-008), not a `show(operation)` callback:
@@ -20,7 +21,7 @@
  * question on **any** `tw.register` entry, including one that is not in `tw.operations`.
  */
 
-export { useBusy } from './busy/use-busy';
-export { type OperationBinding, use_operation, type UseOperationOptions } from './composables/use-operation';
-export { use_operations } from './composables/use-operations';
-export { type RegisterBinding, use_register } from './composables/use-register';
+export { useBusy } from './busy/ui/use-busy';
+export { type OperationBinding, use_operation, type UseOperationOptions } from './operation/ui/use-operation';
+export { use_operations } from './register/ui/use-operations';
+export { type RegisterBinding, use_register } from './register/ui/use-register';

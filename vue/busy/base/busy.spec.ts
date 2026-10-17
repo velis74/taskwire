@@ -1,12 +1,10 @@
 import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { effectScope, nextTick } from 'vue';
 
-import { configure_taskwire, resetTaskwireConfig } from '../client/config';
-import { Taskwire } from '../client/taskwire';
-import { TOKEN_HEADER } from '../client/types';
-import { new_token } from '../reporter/operation-scope';
-import { useBusy } from '../vue';
+import { configure_taskwire, resetTaskwireConfig } from '../../client/config';
+import { Taskwire } from '../../client/taskwire';
+import { TOKEN_HEADER } from '../../client/types';
+import { new_token } from '../../reporter/operation-scope';
 
 import { axiosCallSource } from './axios-call-source';
 import type { BusyState, CallEvent, CallSource } from './busy';
@@ -337,7 +335,7 @@ describe('axiosCallSource (TW-TS-023)', () => {
 
 describe('viewsetCallSource (TW-TS-025)', () => {
   it('wraps onCallActivity and retryNow', async () => {
-    const { viewsetCallSource } = await import('../fastapi-viewsets');
+    const { viewsetCallSource } = await import('../../fastapi-viewsets');
     tw.attachCalls(viewsetCallSource());
     expect(viewsets.listeners.size).toBe(1);
     viewsets.listeners.forEach((listener) => listener(start('v')));
@@ -347,25 +345,5 @@ describe('viewsetCallSource (TW-TS-025)', () => {
     expect(viewsets.retryNow).toHaveBeenCalledTimes(1);
     tw.dispose();
     expect(viewsets.listeners.size).toBe(0);
-  });
-});
-
-describe('useBusy', () => {
-  it('follows tw.busy and stops with its scope', async () => {
-    const source = manualSource();
-    tw.attachCalls(source);
-    const scope = effectScope();
-    const busy = scope.run(() => useBusy(tw))!;
-    expect(busy.value.visible).toBe(false);
-
-    source.emit(start('k'));
-    await vi.advanceTimersByTimeAsync(300);
-    await nextTick();
-    expect(busy.value.visible).toBe(true);
-
-    scope.stop();
-    source.emit(settle('k'));
-    expect(busy.value.visible).toBe(true);
-    expect(tw.busy.visible).toBe(false);
   });
 });

@@ -4,8 +4,8 @@
 
 import type { AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 
-import { requestKey } from '../call-tracking/call-tracking';
-import { ambientTaskwireToken } from '../client/ambient-token';
+import { requestKey } from '../../call-tracking/call-tracking';
+import { ambientTaskwireToken } from '../../client/ambient-token';
 
 import type { CallEvent, CallSource } from './busy';
 
