@@ -63,3 +63,49 @@ def test_conformance_directory_is_readable():
 def test_version_is_a_release_number():
     """`__version__` is parsed by hatchling and mirrored into package.json; keep it plain."""
     assert re.fullmatch(r"\d+\.\d+\.\d+", taskwire.__version__), taskwire.__version__
+
+
+CELERY_MODULES = ("celery", "billiard", "kombu")
+
+CELERY_IMPORTERS = {
+    "taskwire/contrib/celery.py",
+    "taskwire/contrib/celery_test.py",
+    "taskwire/contrib/viewsets_worker_test.py",
+}
+"""The standalone Celery connector, its test, and the test that runs a real worker. The fastapi-viewsets
+path reaches an executor through fastapi-viewsets' own outcomes and hooks (TW-CALL-105)."""
+
+
+def test_only_the_celery_connector_imports_celery():
+    """TW-CORE-006, TW-CALL-105: no module under `taskwire/` but the Celery connector imports Celery,
+    billiard or kombu, at any depth of the module."""
+    import ast
+
+    importers = set()
+    for path in (REPO_ROOT / "taskwire").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            else:
+                continue
+            if any(name.split(".")[0] in CELERY_MODULES for name in names):
+                importers.add(path.relative_to(REPO_ROOT).as_posix())
+    assert importers <= CELERY_IMPORTERS, f"{sorted(importers - CELERY_IMPORTERS)} import Celery"
+
+
+def test_the_viewsets_path_loads_no_celery():
+    """TW-CALL-105: importing the fastapi-viewsets binding loads none of Celery's packages."""
+    program = (
+        "import sys, taskwire.contrib.viewsets, taskwire.contrib.viewsets_events; "
+        f"print(','.join(m for m in {CELERY_MODULES!r} if m in sys.modules))"
+    )
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    assert completed.stdout.strip() == ""

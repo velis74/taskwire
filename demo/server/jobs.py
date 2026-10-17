@@ -252,9 +252,9 @@ async def hold_the_line(reporter: Reporter) -> None:
     Those fifteen seconds belong to **this function**. `ask()` has no timeout and must never grow
     one (TW-DLG-005), so a deadline has to be written where the cost of waiting is actually known:
     around the call, by the application. Here that is `asyncio.wait_for`, because the demo is a
-    single asyncio process with no Celery anywhere in it. In a deployment it is the worker's own
-    execution limit killing the task instead (TW-CELERY-010), which `contrib/celery.py` renders as
-    `failed` with code `dialog_timeout` and `retryable: true`. What happens to the operation is the
+    single asyncio process with no executor of its own. In a deployment it is the executor's own
+    time limit ending the work instead, which taskwire renders as `failed` with code
+    `dialog_timeout` and `retryable: true` (TW-DLG-006). What happens to the operation is the
     same in both: one terminal write, which withdraws every open dialog in the same step
     (TW-CANCEL-011), so no question is ever left on screen pointing at a worker that is gone.
 
@@ -302,8 +302,8 @@ async def hold_the_line(reporter: Reporter) -> None:
         # `name_error` decides what the one terminal write of `operation()` will say and writes
         # nothing itself; the write happens as this exception leaves the block. Without it the code
         # would be `TimeoutError` and the message the same word again - the exception's class is all
-        # taskwire can derive, and it does not know what the deadline was for. A worker killed by its
-        # own execution limit reports this code (TW-CELERY-010), so both deployments of this job end
+        # taskwire can derive, and it does not know what the deadline was for. An execution ended by
+        # its executor's time limit reports this code (TW-DLG-006), so both deployments of this job end
         # with the same document. `asyncio.TimeoutError` is only a distinct class from the builtin
         # before Python 3.11; both are named here so `wait_for` is caught on every supported version.
         reporter.name_error(

@@ -133,8 +133,9 @@ export interface Text {
  * imported this one. It is a document, not a throwable: it carries no stack trace, deliberately,
  * because it reaches a browser (TW-PROG-005).
  *
- * Reserved codes: `dispatch_failed` (TW-CELERY-004) and `dialog_timeout` (TW-DLG-006), both
- * `retryable: true`.
+ * Reserved codes: `dispatch_failed` (TW-CALL-005), `dialog_timeout` (TW-DLG-006) and `interrupted`
+ * (TW-CALL-008, `message.params.reason`), all `retryable: true`; `not_executed` (TW-CALL-005),
+ * `retryable: false`; `http_status` (TW-CALL-006), `retryable: true` for 502, 503 and 504 only.
  */
 export interface TaskwireError {
   code: string;

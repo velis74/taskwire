@@ -51,6 +51,9 @@ reach the same handlers over a stream instead of over HTTP.
 # narrow but it has teeth: a module a third-party decorator reads signatures off must expose real
 # objects, not text. Everything else in `taskwire/` keeps the import.
 
+import asyncio
+import os
+
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -58,16 +61,27 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi_viewsets.conf import settings as viewset_settings
 from fastapi_viewsets.context import Context
 from fastapi_viewsets.decorators.route_viewset import route_viewset
-from fastapi_viewsets.exceptions import ActionDispatchError, ResultTimeoutError
-from fastapi_viewsets.middleware import ActionExecution, Middleware, ViewSetResult
+from fastapi_viewsets.exceptions import ActionDispatchError, ActionInterruptedError, ActionOutcomeUnknownError
+from fastapi_viewsets.middleware import ActionExecution, ActionTransition, Middleware, ViewSetResult
 from fastapi_viewsets.response_classes import NOT_FOUND_RESPONSE
 
-from ..calls import Call, call_token, execute_call, receive_call
+from ..calls import (
+    Call,
+    call_token,
+    dialog_timeout_error,
+    DISPATCH_FAILED,
+    end_call,
+    execute_call,
+    hand_off,
+    interrupted_error,
+    receive_call,
+)
 from ..decorators import declared_result_kind
 from ..delivery import Client
 from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported
+from ..models import Error, Text
 from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
-from ..settings import configured, settings
+from ..settings import configure_executor, configured, settings
 from . import schema
 
 # The three keys the context processor contributes. Namespaced, because the context dict is shared
@@ -274,17 +288,10 @@ async def _call(context: Context | None, viewset_class: type, action: str | None
     )
 
 
-def _executor_limits() -> tuple[type[BaseException], ...]:
-    try:
-        from celery.exceptions import SoftTimeLimitExceeded
-    except ImportError:
-        return ()
-    return (SoftTimeLimitExceeded,)
-
-
 class TaskwireMiddleware(Middleware):
-    """Tracks every viewset call that carries a token: `receive_call()` in the command chain and
-    `execute_call()` around the action, where the action executes (TW-CALL-101).
+    """Tracks every viewset call that carries a token: `receive_call()` in the command chain,
+    `execute_call()` around the action where the action executes, and `end_call()` for an execution
+    its executor ended from outside (TW-CALL-101, TW-CALL-105).
 
     `register_taskwire_rest` and `track_viewset_calls` append an instance to
     `settings.viewsets_command_middleware` when none is listed. Listed by the application, it goes
@@ -293,13 +300,24 @@ class TaskwireMiddleware(Middleware):
 
     - `__call__` receives the call: `queued` before the rest of the chain, and `failed` when the chain
       ends with the operation still `queued` and the action not executed in this process -
-      `dispatch_failed` for `ActionDispatchError`, nothing for `ResultTimeoutError`, `not_executed`
-      otherwise.
+      `dispatch_failed` for `ActionDispatchError`, `not_executed` otherwise, and nothing for an
+      `ActionOutcomeUnknownError` or an `ActionInterruptedError`, whose operation the executor's
+      process ends.
     - `execute()` executes it: in the FastAPI process for an in-process action, in the executor's
-      process for a `celery_viewset` action. An action dispatched from inside another action's
-      execution (`ActionExecution.parent`) reports into nothing of its own. `timeout_errors` names the
-      executor's limit for TW-DLG-006; it defaults to Celery's `SoftTimeLimitExceeded` when Celery is
-      installed.
+      process for a deferred action. An action dispatched from inside another action's execution
+      (`ActionExecution.parent`) reports into nothing of its own. An exception in `timeout_errors`
+      (default `ActionInterruptedError`) that ends an execution holding an open question ends it
+      `dialog_timeout` (TW-DLG-006); an `ActionInterruptedError` otherwise ends it `interrupted`. In an
+      executor's process forked from the one that built the middleware, an execution that ends because
+      the process exits writes no terminal state: the supervisor reports that end to
+      `on_transition()`. In the process that built it (a solo pool) the exit ends it `interrupted`
+      (reason `terminated`), or `dialog_timeout` with an open question.
+    - `executor_started()` configures the executor's process with `taskwire.configure_executor()`
+      (TW-CALL-009).
+    - `on_transition()` ends the operation of a deferred call that the executor ended outside its
+      execution: `interrupted` (or `dialog_timeout` with an open question), `dispatch_failed` for a
+      call still `queued` that will not run, and `failed` with the executor's error code for a failure
+      around the execution.
 
     `@action_configuration({TaskwireMiddleware: False})` leaves an action untracked, and
     `{TaskwireMiddleware: {"result_kind": kind}}` declares its result kind; without one the kind is the
@@ -308,7 +326,9 @@ class TaskwireMiddleware(Middleware):
     """
 
     def __init__(self, *, timeout_errors: tuple[type[BaseException], ...] | None = None) -> None:
-        self.timeout_errors = timeout_errors if timeout_errors is not None else _executor_limits()
+        self.timeout_errors = timeout_errors if timeout_errors is not None else (ActionInterruptedError,)
+        self._executor_pids: set[int] = set()
+        self._origin_pid = os.getpid()
 
     async def __call__(
         self,
@@ -319,23 +339,83 @@ class TaskwireMiddleware(Middleware):
     ) -> ViewSetResult:
         viewset_class = viewset if isinstance(viewset, type) else type(viewset)
         call = await _call(context, viewset_class, _action_name(request))
-        async with receive_call(call, dispatch_errors=(ActionDispatchError,), pending_errors=(ResultTimeoutError,)):
+        async with receive_call(
+            call,
+            dispatch_errors=(ActionDispatchError,),
+            pending_errors=(ActionOutcomeUnknownError, ActionInterruptedError),
+        ):
             return await call_next()
 
     async def execute(self, execution: ActionExecution, call_next: Callable[[], Awaitable[Any]]) -> Any:
         if execution.parent is not None:
             return await call_next()
         call = await _call(execution.context, execution.viewset_class, execution.action)
-        async with execute_call(call, timeout_errors=self.timeout_errors):
-            return await call_next()
+        async with execute_call(call, timeout_errors=self.timeout_errors) as reporter:
+            try:
+                return await call_next()
+            except ActionInterruptedError as interrupted:
+                if reporter is not None:
+                    error = interrupted_error(_reason(interrupted))
+                    reporter.name_error(error.code, error.message, error.retryable)
+                raise
+            except BaseException as error:
+                if reporter is not None and os.getpid() in self._executor_pids and _ends_the_process(error):
+                    if os.getppid() == self._origin_pid:
+                        # The supervisor that forked this process reports the end (`on_transition()`),
+                        # so the execution's exit writes no state over it (TW-CALL-105).
+                        with hand_off():
+                            pass
+                    else:
+                        ended = dialog_timeout_error() if reporter.asking else interrupted_error("terminated")
+                        reporter.name_error(ended.code, ended.message, ended.retryable)
+                raise
+
+    async def executor_started(self) -> None:
+        self._executor_pids.add(os.getpid())
+        configure_executor()
+
+    async def on_transition(self, transition: ActionTransition) -> None:
+        if transition.parent is not None or transition.kind == "dispatched":
+            return
+        call = await _call(transition.context, transition.viewset_class, transition.action)
+        if call is None:
+            return
+        error = transition.error
+        if transition.kind == "interrupted":
+            await end_call(call, interrupted_error(_reason(error)), asking_error=dialog_timeout_error())
+        elif transition.kind == "not_run":
+            await end_call(
+                call,
+                Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True),
+                queued_only=True,
+            )
+        elif transition.kind == "failed":
+            code = getattr(error, "code", None) or "failed"
+            await end_call(call, Error(code=code, message=Text(text=str(getattr(error, "detail", code)))))
+
+
+def _ends_the_process(error: BaseException) -> bool:
+    """Whether `error` is the process exiting: `SystemExit` or `KeyboardInterrupt`, or the
+    `asyncio.CancelledError` with which an execution suspended at an `await` unwinds from one."""
+    exits = (SystemExit, KeyboardInterrupt)
+    return isinstance(error, exits) or (
+        isinstance(error, asyncio.CancelledError) and isinstance(error.__context__, exits)
+    )
+
+
+def _reason(error: BaseException | None) -> str | None:
+    """The `reason` an executor's error carries in its params, or None."""
+    params = getattr(error, "params", None)
+    reason = params.get("reason") if isinstance(params, dict) else None
+    return reason if isinstance(reason, str) else None
 
 
 def track_viewset_calls() -> None:
     """Append `taskwire_context_processor` to `viewsets_context_processors` and a `TaskwireMiddleware`
     to `viewsets_command_middleware`, each when absent.
 
-    `register_taskwire_rest` calls it. A Celery worker that executes `celery_viewset` actions calls it
-    too, since the executor's process runs the same command middleware (TW-CALL-101).
+    `register_taskwire_rest` calls it. A process that executes deferred actions calls it too, since
+    the executor's process runs the same command middleware (TW-CALL-101, TW-CALL-105).
     """
     if taskwire_context_processor not in viewset_settings.viewsets_context_processors:
         viewset_settings.viewsets_context_processors.append(taskwire_context_processor)

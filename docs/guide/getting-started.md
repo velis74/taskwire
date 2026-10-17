@@ -12,7 +12,7 @@ pip install taskwire               # core: no runtime dependencies at all
 pip install "taskwire[viewsets]"   # the REST API as a fastapi-viewsets viewset
 pip install "taskwire[fastapi]"    # the hand-rolled FastAPI router
 pip install "taskwire[redis]"      # cross-process store and backplane
-pip install "taskwire[celery]"     # the worker entry point
+pip install "taskwire[celery]"     # the entry point for a plain Celery task
 pip install "taskwire[muxws]"      # the WebSocket transport
 ```
 
@@ -66,7 +66,7 @@ That needs `pip install "taskwire[fastapi,viewsets]"`. taskwire declares its RES
 [fastapi-viewsets](https://docs.velis.si/) viewset, so your middleware chain, your authentication and
 your `@action_configuration` apply to taskwire's endpoints exactly as they do to your own — see
 [fastapi-viewsets integration](./fastapi-viewsets.md) for what that call registers and how to reach
-the same context from a Celery-dispatched viewset action.
+the same context from a deferred viewset action.
 
 **On a different framework, or none at all?** `taskwire.rest` holds every decision these endpoints
 make and imports no framework whatsoever; `taskwire.contrib.asgi` mounts the identical protocol with
@@ -159,4 +159,4 @@ which is the point: a user who starts an import in one tab and switches to anoth
 - [Transports](./transports.md) — one protocol, three implementations.
 - [The WebSocket transport](./websockets.md) — one endpoint, one call, and polling stops.
 - [fastapi-viewsets integration](./fastapi-viewsets.md) — the context processor, `@action_configuration`,
-  tracking every viewset call, and tracking a Celery-dispatched viewset action.
+  tracking every viewset call, and tracking a deferred viewset action.

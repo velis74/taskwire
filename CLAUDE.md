@@ -17,8 +17,10 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 340 pass, 13 skip
-npx vitest run                                            # 457 pass
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 348 pass, 20 skip
+TASKWIRE_WORKER_TEST_REDIS_URL=redis://127.0.0.1:6379/14 \
+  /home/jure/.venv/taskwire/bin/python -m pytest -q   # 355 pass, 13 skip: a real worker too
+npx vitest run                                            # 458 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
 python demo.py                                            # both halves, Ctrl-C stops the pair
@@ -65,9 +67,18 @@ it, never the reverse (`design/taskwire-spec.md` §2.1).
 
 It is also one of four adapters for **tracked calls** (TW-CALL-*). The tracking itself is
 `taskwire/calls.py` and `vue/call-tracking/` and names no framework; `TaskwireMiddleware` binds it to
-fastapi-viewsets 0.9.0's `Middleware` (`__call__` receives a call, `execute()` runs where the action
-executes, a Celery worker included), beside `contrib/asgi.py`, `contrib/wsgi.py` and `trackFetch`.
+fastapi-viewsets 0.11.0's `Middleware` (`__call__` receives a call, `execute()` runs where the action
+executes, `executor_started()` configures an executor's process, `on_transition()` reports what the
+executor ended outside the execution), beside `contrib/asgi.py`, `contrib/wsgi.py` and `trackFetch`.
 A feature that reaches tracked calls through one adapter only is incomplete.
+
+The executor behind a deferred action is fastapi-viewsets' business: `contrib/viewsets.py` sees only
+its `ActionDispatchError`, `ActionInterruptedError`, `ActionFailedError` and
+`ActionOutcomeUnknownError`, and imports nothing of Celery (`packaging_test.py` asserts it). Only
+`contrib/celery.py`, the entry for a plain Celery task, does. An execution suspended at an `await`
+when its process exits unwinds with a `CancelledError` whose `__context__` is the `SystemExit`. In a
+pool child `TaskwireMiddleware` writes nothing then and leaves the end to the supervisor's
+`on_transition()`; in the process that built it (a solo pool) it writes `interrupted` itself (GAPS.md).
 
 On npm it is an **optional** peer that two subpaths import. `taskwire/muxws`: `MuxwsProxyImpl` (through
 `vue/socket/muxws-calls.ts`), and `handleEventStream`, which `MuxwsClientTransport`'s `onStream`
@@ -131,5 +142,7 @@ eventually is not a row that arrived.
 
 **Next**: CI and publishing; the rest of the queue is in `NEXT.md`.
 
-**The seam that has never run**: a `celery_viewset` action in a real Celery worker. Its test drives
-the worker's `lifecycle_runner` directly with a carried `Context`.
+**A deferred action in a real worker** runs in `contrib/viewsets_worker_test.py`: a `celery worker
+-P prefork` executing actions over HTTP, with progress, a soft time limit on an open question, a hard
+time limit and a SIGTERM revoke, each with and without one, and a `-P solo` worker shut down under an open
+question. It skips without `TASKWIRE_WORKER_TEST_REDIS_URL`, which CI sets.

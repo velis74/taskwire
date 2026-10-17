@@ -219,8 +219,10 @@ configures a `ViewsetEventsTransport`. `register_taskwire_muxws` still answers `
 now names the socket's topics. No `PeerRegistry` and no `release_peer` are needed: fastapi-viewsets
 keeps the subscriptions and drops them when the socket closes.
 
-A Celery worker publishes too. It calls `register_taskwire_events()`, sets the same
-`RedisEventStore`, and passes the transport to `configure_worker(store, transport)`.
+A process that executes deferred actions publishes too. It calls `register_taskwire_events()` and
+sets the same `RedisEventStore`; `TaskwireMiddleware.executor_started()` keeps the transport there,
+since it writes to no socket. A worker of the [Celery entry](../api/python.md#the-celery-worker-entry)
+passes it to `configure_worker(store, transport)`.
 
 ### Who receives what
 

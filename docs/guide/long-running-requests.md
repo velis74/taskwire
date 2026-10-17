@@ -56,12 +56,12 @@ class ImportViewSet:
 No `from __future__ import annotations` in a viewset module: `route_viewset` reads the return
 annotations as objects.
 
-**A Celery action** reports the same way. A `celery_viewset` viewset runs the action in the worker,
-and `TaskwireMiddleware` binds the reporter there; the worker's process calls
-`track_viewset_calls()` once at startup:
+**A deferred action** reports the same way. A `celery_viewset` viewset runs the action in the
+executor's process, and `TaskwireMiddleware` binds the reporter there; that process configures the
+store and calls `track_viewset_calls()` once at startup:
 
 ```python
-# viewsets.py, imported by the web process and the worker
+# viewsets.py, imported by the web process and the executor
 @route_viewset(router, base_path="/imports")
 @celery_viewset(celery_app, task_prefix="imports", redis_client=redis_client)
 class ImportViewSet:
@@ -72,16 +72,18 @@ class ImportViewSet:
         await taskwire.progress.set(percent=0)
         ...
 
-# celery_worker.py
-from taskwire.contrib.celery import configure_worker
+# executor.py
+import taskwire
 from taskwire.contrib.viewsets import track_viewset_calls
 
-configure_worker(store)
+taskwire.configure(store=store)
 track_viewset_calls()
 ```
 
 `store` is a `RedisStore` shared with the web process. An action that reports nothing still shows
-the dialog after the delay, with an indeterminate bar.
+the dialog after the delay, with an indeterminate bar. An action its time limit ends is `failed`
+with `interrupted`, or `dialog_timeout` while it asks (see
+[Deferred actions](./fastapi-viewsets.md#deferred-actions)).
 
 ## The frontend with fastapi-viewsets
 

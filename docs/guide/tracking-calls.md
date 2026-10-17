@@ -74,6 +74,39 @@ When the block completes, `execute_call` exits without a terminal write and the 
 the operation ends `dispatch_failed`. Outside an execution `hand_off()` yields `{}`, and the task runs
 unreported.
 
+The process that receives the work pushes to no socket of its own. `configure_executor()` configures
+it: a transport whose `crosses_processes` is True stays, any other is replaced by `NullTransport`,
+and a transport passed explicitly that is neither raises `ValueError`.
+
+```python
+import taskwire
+
+taskwire.configure_executor(store=store)
+```
+
+### Ending a call from outside its execution
+
+An executor that ends an execution's process from outside — a hard time limit, a termination, a lost
+process — leaves the operation `running`. The process that learns of it ends the operation with
+`end_call()`:
+
+```python
+from taskwire import end_call
+from taskwire.calls import dialog_timeout_error, interrupted_error
+
+await end_call(call, interrupted_error("time_limit"), asking_error=dialog_timeout_error())
+```
+
+`end_call` writes `failed` only for an operation that is `queued`, `running` or `waiting_input`
+without a parked result, and withdraws its open dialogs in the same step. With a dialog open the
+error is `asking_error` when one is given; `queued_only=True` restricts the write to a `queued`
+operation. It returns whether it wrote, and logs a store failure instead of raising it.
+
+| Code | Meaning | `retryable` |
+|---|---|---|
+| `interrupted` | the executor ended the work after it started; `message.params.reason` names how | `true` |
+| `dialog_timeout` | the same, while the work held an open question | `true` |
+
 ## Adapters
 
 | Framework | Adapter |

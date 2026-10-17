@@ -22,17 +22,19 @@ There is no `timeout` parameter, no `settings.dialog_timeout`, no `timeout_at`, 
 `DialogTimeout` and no `expired` dialog state: a deadline needs a default answer, and there is no
 answer a library can invent on a user's behalf.
 
-**The consequence, stated plainly: an unanswered dialog blocks its worker.** Under Celery it blocks
-until that task's own execution timeout kills it, at which point the operation becomes `failed` with
+**The consequence, stated plainly: an unanswered dialog blocks its worker.** It blocks until the
+executor's own time limit ends the work — the `soft_time_limit` of a [Celery
+task](../api/python.md#the-celery-worker-entry), the `TimeLimits` of a [deferred viewset
+action](./fastapi-viewsets.md#deferred-actions) — at which point the operation becomes `failed` with
 code `dialog_timeout` and `retryable: true`, and its open dialogs are withdrawn. That code is written
-only when a question was actually open — a worker killed while doing the work reports what its own
-exception names, because telling a reader to answer a question nobody asked is worse than telling
-them nothing. taskwire solves the
-general problem of a blocked worker nowhere; if you need a deadline, implement one at whatever level
-suits your application, as the demo does with `asyncio.wait_for` around the `ask()`.
+only when a question was actually open: work ended while doing the work reports `interrupted` or
+what its own exception names, because telling a reader to answer a question nobody asked is worse
+than telling them nothing. taskwire solves the general problem of a blocked worker nowhere; if you
+need a deadline, implement one at whatever level suits your application, as the demo does with
+`asyncio.wait_for` around the `ask()`.
 
-A worker parked on a question is a worker not doing anything else, so route tasks that ask onto a
-queue of their own:
+A worker parked on a question is a worker not doing anything else, so route the work that asks onto
+a queue of its own. For a Celery task:
 
 ```python
 app.conf.task_routes = {"acme.tasks.reconcile": {"queue": "asks"}}

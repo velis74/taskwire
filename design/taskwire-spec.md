@@ -400,20 +400,24 @@ adapters to things outside the process, never a capability the core lacks.
   more.
 - **TW-DLG-005** **`ask()` MUST have no timeout.** There MUST be no `timeout` parameter, no
   `settings.dialog_timeout`, no `timeout_at` field, no declared default outcome, no `DialogTimeout`
-  exception, no `expired` dialog state and no validation against Celery's `soft_time_limit`. A
+  exception, no `expired` dialog state and no validation against an executor's time limit. A
   programmer who wants a deadline implements one at whatever level suits them.
 - **TW-DLG-006** The consequence MUST be stated plainly in the docs rather than softened: **an
-  unanswered dialog blocks its worker until Celery's own execution timeout kills the task**, at which
+  unanswered dialog blocks its worker until the executor's own time limit ends the work**, at which
   point the operation becomes `failed` with `code: "dialog_timeout"` and `retryable: true`, and its
   open dialogs are withdrawn (TW-STORE-004). taskwire does not solve the general problem of a blocked
   worker (TW-CELERY-010).
 
-  `dialog_timeout` MUST be written only when the operation was holding an open question. A worker
-  killed while doing the work reports the error its own exception names, because a code telling a
-  reader to answer a question nobody asked is worse than none. The condition MUST be answerable
-  without a store read - the operation knows whether it is waiting - since it is read at the moment
-  the worker is being killed. Test:
-  `celery_test.py::test_an_execution_limit_still_writes_the_terminal_state`.
+  `dialog_timeout` MUST be written only when the operation was holding an open question. Work ended
+  while doing the work reports `interrupted` (TW-CALL-008) or the error its own exception names,
+  because a code telling a reader to answer a question nobody asked is worse than none. Where the
+  limit raises into the work, the condition MUST be answerable without a store read - the operation
+  knows whether it is waiting - since it is read at the moment the work is being ended. Where the
+  executor ends the work's process from outside, the process that observes the end decides it from
+  the stored dialogs (TW-CALL-008). Tests:
+  `celery_test.py::test_an_execution_limit_still_writes_the_terminal_state`,
+  `contrib/viewsets_test.py::test_an_interrupted_execution_ends_dialog_timeout_or_interrupted`,
+  `contrib/viewsets_worker_test.py`.
 - **TW-DLG-007** `ask()` MUST return only when the store arbitrated a reply. There is no second
   outcome to reconcile, so `DialogAnswer` MUST carry no `timed_out` flag.
 - **TW-DLG-008** If `await_dialog` raises `DialogVanished`, `ask()` MUST propagate it. A vanished
@@ -765,7 +769,8 @@ standalone path of §2.14 and §2.15 stays for applications without fastapi-view
   store's `publish()` invokes the reader of its own process (TW-CORE-004), `RedisStore` publishes
   nothing on `twx:{ns}`, `start_taskwire_reader()` starts no reader and `check_taskwire_readers()`
   warns about none. The event store (`viewsets_event_store`) is the backplane, started with
-  `start_events()`. A Celery worker configures the same transport (TW-CELERY-002). Tests:
+  `start_events()`. A process that executes handed-off work keeps the same transport (TW-CALL-009).
+  Tests:
   `..._no_taskwire_reader_runs_beside_the_events_transport`,
   `..._a_redis_store_publishes_nothing_on_its_channel`.
 - **TW-EVT-003** **Admission to a taskwire topic MUST be decided by an authorizer, never by a
@@ -934,8 +939,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   regardless of `raise_on_cancel`.
 - **TW-CANCEL-005** `OperationCancelled` MUST be its own exception type, never a bare `RuntimeError`
   and never a subclass of `asyncio.CancelledError`.
-- **TW-CANCEL-006** `operation()` and the `celery_viewset` error path MUST map `OperationCancelled`
-  to the terminal state `cancelled`, not `failed`. Test:
+- **TW-CANCEL-006** `operation()`, and with it every adapter's error path, MUST map
+  `OperationCancelled` to the terminal state `cancelled`, not `failed`. Test:
   `cancel_test.py::test_operation_cancelled_not_swallowed_as_failed`.
 - **TW-CANCEL-007** Cancelling a token blocked on a dialog MUST push a cancellation sentinel onto the
   dialog reply list so the worker wakes immediately. Test: end-to-end —
@@ -1035,10 +1040,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 
 - **TW-CELERY-001** Every blocking primitive MUST work under a synchronous worker running
   `loop.run_until_complete` with `nest_asyncio` applied.
-- **TW-CELERY-002** A worker MUST configure its own store and `NullTransport`, or under TW-EVT-*
-  `ViewsetEventsTransport`, which publishes to the event store and writes to no socket;
-  `configure_worker` MUST refuse any other transport. A worker MUST NOT push to a socket. Store and
-  transport configuration MUST NOT travel in the serialized `Context`.
+- **TW-CELERY-002** A worker MUST configure itself with `configure_worker(store, transport=None)`,
+  which applies TW-CALL-009 with `NullTransport` for a `None` transport.
 - **TW-CELERY-003** The token and the resolved namespace MUST cross into the worker as plain strings,
   without `SerializableObject` / `LazyObject` wrapping, and the namespace MUST NOT be re-resolved
   there (TW-AMB-008).
@@ -1047,21 +1050,12 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   `running`. A dispatch failure MUST be written as `code: "dispatch_failed"` with `retryable: true`:
   an unreachable broker is transient, so a frontend may legitimately offer a retry. For a tracked
   call the web side's writes follow TW-CALL-003 and TW-CALL-005.
-- **TW-CELERY-005** The web process MUST NOT open `operation()` around work it dispatches to a
-  worker: the block would end with the request and write a terminal state while the worker runs. An
-  executing call hands its operation over (TW-CALL-007); a `celery_viewset` action is executed in
-  the worker (TW-CELERY-007).
-- **TW-CELERY-006** For an in-process viewset action `TaskwireMiddleware.execute()` MUST open
-  `operation()` in the web process, around the action itself, because the web process is the worker
-  there (TW-CALL-101).
-- **TW-CELERY-007** For a `celery_viewset` action the worker-side `operation()` MUST be opened by
-  `TaskwireMiddleware.execute()` around the action inside the worker's `lifecycle_runner`, from the
-  context the task carried (TW-CALL-101). The operation MUST be closed before the action returns, and
-  therefore before the result is published. Celery's `task_prerun` / `task_postrun` signals MUST NOT
-  be used (`postrun` fires after the result has already been `RPUSH`ed, so a client could observe the
-  result before `done`).
-- **TW-CELERY-008** `taskwire.contrib.celery.taskwire_task` MUST provide the same for a plain
-  Celery task, using the synchronous `with operation(...)` form.
+- **TW-CELERY-005** `dispatch()` applies TW-CALL-010: it writes `queued`, and `failed` only when the
+  task was not sent; the task's `operation()` writes the rest.
+- **TW-CELERY-008** `taskwire.contrib.celery.taskwire_task` MUST open `operation()` around a plain
+  Celery task body, using the synchronous `with operation(...)` form, and MUST close it before the
+  body returns, and therefore before Celery records the result. Celery's `task_prerun` /
+  `task_postrun` signals MUST NOT be used.
 - **TW-CELERY-009** `result_kind` MUST be written once, by the `queued` write in the web process; the
   worker's `operation()` MUST NOT overwrite it and passes one only when there was no `queued` write.
   There is no exception.
@@ -1181,8 +1175,9 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 ### 2.23 Tracked calls (`TW-CALL-*`)
 
 A call — an HTTP request, a command on a muxws stream, work handed to another process — is an
-operation of its own when the caller names one. TW-CALL-001..007 bind `taskwire.calls` and
-`vue/call-tracking/call-tracking.ts` and name no framework; TW-CALL-101..104 bind the adapters.
+operation of its own when the caller names one. TW-CALL-001..010 bind `taskwire.calls`,
+`taskwire.settings` and `vue/call-tracking/call-tracking.ts` and name no framework; TW-CALL-101..105
+bind the adapters.
 
 - **TW-CALL-001** **The token of a call MUST be its `X-Taskwire-Token` header when present, and
   otherwise the key of its `Idempotency-Key` header** (`draft-ietf-httpapi-idempotency-key-header-07`,
@@ -1224,18 +1219,47 @@ operation of its own when the caller names one. TW-CALL-001..007 bind `taskwire.
   the hand-off raises, the operation MUST end `dispatch_failed` with `retryable: true`. Work executing
   under a call MUST NOT open `operation()` for the call's own token: the two blocks would write two
   completions.
-- **TW-CALL-101** **`taskwire.contrib.viewsets.TaskwireMiddleware` binds TW-CALL-003..005 to
-  fastapi-viewsets ≥ 0.9.0.** Its `__call__`, in the command middleware chain, receives the call with
-  `ActionDispatchError` as a dispatch error and `ResultTimeoutError` as a pending one; its
-  `execute()` executes it where the action executes — in the FastAPI process for an in-process
-  action, in the executor's process for a `celery_viewset` action, from the context the task carried
-  — and MUST open nothing for an execution with a `parent`. `timeout_errors` defaults to Celery's
-  `SoftTimeLimitExceeded` when Celery is installed. `taskwire_context_processor` MUST place the token
-  under `context["taskwire_token"]`, the namespace under `["taskwire_session"]` and
-  `X-Taskwire-Connection` under `["taskwire_connection"]`, on REST and on muxws alike.
-  `register_taskwire_rest` (unless `track_calls=False`) and `track_viewset_calls` MUST append the
-  processor and a `TaskwireMiddleware` when absent; an executor's process calls
-  `track_viewset_calls`.
+- **TW-CALL-008** **An execution that ends without writing its terminal state - the executor ended it
+  from outside its process: a hard time limit, a termination, a lost process - MUST be ended by the
+  process that observes the end** (`end_call`). It writes `failed`, withdrawing the open dialogs in
+  the same step (TW-CANCEL-011), only for an operation that is `queued`, `running` or
+  `waiting_input` without a parked result: a terminal operation and one holding a result MUST be
+  left as they are. The error is `dialog_timeout` (`retryable: true`) when a dialog is open
+  (TW-DLG-006), and otherwise the observer's own: for an interrupted execution the reserved code
+  `interrupted` with `message.params: {"reason": reason}` when the executor names one, and
+  `retryable: true`. Work the executor ends with an exception raised into it (a soft time limit)
+  MUST end the same way from its own exit: `dialog_timeout` with an open question, `interrupted`
+  otherwise. A store failure MUST be logged and MUST NOT be raised.
+
+  > `interrupted` is retryable for the reason `dispatch_failed` and `dialog_timeout` are: the call
+  > failed for a reason outside its own logic, and the same interruption reaches an HTTP caller as a
+  > 503 or 504, which TW-CALL-006 marks retryable. Whether a retry is safe after partial work is the
+  > application's question, as it is for `dialog_timeout`.
+- **TW-CALL-009** **A process that executes work handed to it by another process MUST NOT push to a
+  socket** (`configure_executor`). Its transport MUST be `NullTransport`, or one whose
+  `crosses_processes` is True, which carries each envelope to the processes that deliver it
+  (TW-EVT-002); a transport passed explicitly that is neither MUST be refused. With none passed, a
+  configured transport whose `crosses_processes` is True MUST stay and any other MUST be replaced by
+  `NullTransport`. Store and transport configuration MUST NOT travel with the work.
+- **TW-CALL-010** **A process MUST NOT open `operation()` around work it hands to another process:**
+  the block would end with the request and write a terminal state while the other process runs. It
+  writes `queued` (TW-CALL-003) and `failed` only for work that was not handed over (TW-CALL-005); an
+  executing call hands its operation over (TW-CALL-007).
+- **TW-CALL-101** **`taskwire.contrib.viewsets.TaskwireMiddleware` binds TW-CALL-003..005 and
+  TW-CALL-008..010 to fastapi-viewsets ≥ 0.11.0, and imports nothing of the executor behind it.**
+  Its `__call__`, in the command middleware chain, receives the call with `ActionDispatchError` as a
+  dispatch error and `ActionOutcomeUnknownError` and `ActionInterruptedError` as pending ones: the
+  caller stopped waiting, or the executor ended an execution that started, and in both cases the
+  executor's process ends the operation. Its `execute()` executes the call where the action executes
+  — in the FastAPI process for an in-process action, around the action itself, and in the
+  executor's process for a deferred action, from the context the call carried — and MUST open
+  nothing for an execution with a `parent`. `timeout_errors` defaults to `(ActionInterruptedError,)`.
+  `taskwire_context_processor` MUST place the token under `context["taskwire_token"]`, the namespace
+  under `["taskwire_session"]` and `X-Taskwire-Connection` under `["taskwire_connection"]`, on REST
+  and on muxws alike. `register_taskwire_rest` (unless `track_calls=False`) and `track_viewset_calls`
+  MUST append the processor and a `TaskwireMiddleware` when absent. An executor's process calls
+  `taskwire.configure()` and `track_viewset_calls()`, and `register_taskwire_events()` where pushes
+  travel over fastapi-viewsets events (TW-EVT-002); it imports nothing of `contrib.celery`.
 - **TW-CALL-102** A call to `TaskwireViewSet`, and a call to an action whose action configuration for
   `TaskwireMiddleware` is `False`, MUST be untracked.
 - **TW-CALL-103** **The `result_kind` of a viewset call MUST be the `result_kind` entry of the
@@ -1250,6 +1274,28 @@ operation of its own when the caller names one. TW-CALL-001..007 bind `taskwire.
   decides TW-CALL-006. Requests under the excluded prefix (`settings.rest_prefix` /
   `DEFAULT_BASE_PATH`: taskwire's own endpoints) and non-HTTP scopes MUST pass through untouched.
   The WSGI adapter MUST end both blocks when the server closes the response iterable.
+- **TW-CALL-105** **In an executor's process `TaskwireMiddleware` MUST observe a deferred action
+  through fastapi-viewsets' hooks alone, and never through an executor's own signals.**
+
+  - `execute()` MUST close the operation before the action returns, and therefore before the result
+    is sent to the caller, so no client can observe the result before the terminal state. An
+    `ActionInterruptedError` ending the execution MUST end it `dialog_timeout` with an open question
+    and `interrupted` with the error's `reason` otherwise (TW-CALL-008). In a process
+    `executor_started()` ran in, an execution that ends because the process exits — `SystemExit` or
+    `KeyboardInterrupt`, or the `asyncio.CancelledError` whose context is one — MUST write no terminal
+    state when the process is a child of the process that built the middleware: that parent is the
+    executor's supervisor (a prefork pool), it reports the end to `on_transition()`, and a write from
+    the dying child would race it. In any other process (a solo pool executes in the process that
+    built the middleware) no supervisor outlives the exit, and the execution MUST end the operation
+    `dialog_timeout` with an open question and `interrupted` with reason `terminated` otherwise.
+  - `executor_started()` MUST apply TW-CALL-009 to the process (`configure_executor()`).
+  - `on_transition()` MUST end the operation of the call (TW-CALL-008) by the transition's kind:
+    `interrupted` with `interrupted` and the error's `reason`, or `dialog_timeout` with an open
+    question; `not_run` with `dispatch_failed` (`retryable: true`) for an operation still `queued`;
+    `failed` with the error's code (`action_failed`, `retryable: false`); `dispatched` with nothing.
+    A transition of a call dispatched inside another execution (`parent`) MUST write nothing.
+
+  Test: `contrib/viewsets_worker_test.py`, against a real worker.
 
 ---
 
@@ -1294,9 +1340,9 @@ taskwire MUST NOT attempt to validate. **TW-TXT-003** The dual form MUST NOT app
 | `updated_at` | RFC 3339 Z | yes | – | |
 
 `Error`: `{"code": string, "message": Text, "retryable": boolean}`. Reserved codes:
-`dispatch_failed` (TW-CELERY-004, TW-CALL-005) and `dialog_timeout` (TW-DLG-006), both
-`retryable: true`; `not_executed` (TW-CALL-005), `retryable: false`; `http_status` (TW-CALL-006),
-`retryable: true` for 502, 503 and 504 only.
+`dispatch_failed` (TW-CELERY-004, TW-CALL-005), `dialog_timeout` (TW-DLG-006) and `interrupted`
+(TW-CALL-008, `message.params.reason`), all `retryable: true`; `not_executed` (TW-CALL-005),
+`retryable: false`; `http_status` (TW-CALL-006), `retryable: true` for 502, 503 and 504 only.
 
 ### 3.3 `Result`
 
@@ -1478,6 +1524,7 @@ from taskwire import (
     OperationCancelled, DialogVanished,
     downloadable_result, panel_result, dialog_result,
     mark_queued, mark_failed, settings,
+    call_token, Call, receive_call, execute_call, hand_off, end_call, configure_executor,
 )
 
 def configure(*, store: TaskwireStore, transport: TaskwireTransport,
@@ -1501,6 +1548,11 @@ async def mark_queued(token: str, *, session: str, title: Text | None = None,
                       icon: str | None = None, data: dict | None = None,
                       result_kind: str | None = None, connection: str | None = None) -> None: ...
 async def mark_failed(token: str, *, session: str, error: BaseException | Error) -> None: ...
+
+def configure_executor(*, store: TaskwireStore | None = None,
+                       transport: TaskwireTransport | None = None) -> None: ...   # TW-CALL-009
+async def end_call(call: Call | None, error: Error, *, queued_only: bool = False,
+                   asking_error: Error | None = None) -> bool: ...              # TW-CALL-008
 ```
 
 The three result decorators are sugar over `result_kind` and nothing else — they wrap a task or an
@@ -1966,8 +2018,8 @@ function use_register(options?: TaskwireOptions):
 | `ValueError` | `data` / `params` / `result` over `max_data_bytes`, naming the offending size; `set_result()` on an operation that declared no `result_kind`; `set(state=...)` | Fix the call; nothing was committed. |
 | `ConnectionLost` (muxws) | a peer dies mid-fan-out | `MuxwsTransport` swallows it, counts a dropped push, continues. |
 
-There is no `DialogTimeout`: dialogs have no deadline (TW-DLG-005). A worker killed by Celery's own
-execution timeout while blocked on a question produces `failed` with `code: "dialog_timeout"` and
+There is no `DialogTimeout`: dialogs have no deadline (TW-DLG-005). Work ended by its executor's time
+limit while blocked on a question produces `failed` with `code: "dialog_timeout"` and
 `retryable: true` — an error code, not an exception taskwire raises.
 
 ### 6.2 `DialogResolution` → HTTP

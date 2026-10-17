@@ -298,7 +298,7 @@ The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `fl
 | `RedisStore` and the pub/sub backplane | the polling client and its ladder |
 | the Celery worker entry | the `/vue`, `/vuetify` and `/fastapi-viewsets` subpaths |
 | the FastAPI / ASGI / WSGI adapters, and the muxws server half | `tw.register`, `tw.aggregate`, `tw.selected` |
-| `timeout_errors` and `dialog_timeout` on an executor's limit | `trackFetch` |
+| `timeout_errors`, `end_call` and `configure_executor`: an executor's limits and processes | `trackFetch` |
 | the ambient `progress` proxy | the tab-hint rules |
 | — | `tw.busy` and the call sources |
 

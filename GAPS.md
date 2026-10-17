@@ -380,13 +380,14 @@ setting.
 
 ---
 
-## taskwire-spec.md §2.23 — TW-CALL-005 — a Celery call whose result wait timed out
+## taskwire-spec.md §2.23 — TW-CALL-005 — a deferred call whose outcome is unknown
 
-**What I assumed:** `ResultTimeoutError` is one of `TaskwireMiddleware`'s `pending_errors`: a call
-whose result wait timed out leaves its operation as it is. A task that is still in the broker queue
-then runs and ends the operation itself; one that never runs leaves it `queued` until `active_ttl`
-expires it. Writing `not_executed` instead would leave a tombstone the worker's `operation()` could
-not revise (TW-STORE-010).
+**What I assumed:** `ActionOutcomeUnknownError` (`ResultTimeoutError`, `ResultReaderStoppedError`) is
+one of `TaskwireMiddleware`'s `pending_errors`: a call whose caller stopped waiting leaves its
+operation as it is. A call that is still queued at the executor then runs and ends the operation
+itself; one that never runs, and that the executor does not report as `not_run`, leaves it `queued`
+until `active_ttl` expires it. Writing `not_executed` instead would leave a tombstone the executor's
+`operation()` could not revise (TW-STORE-010).
 
 **Still needs deciding:** whether a `queued` operation that outlived its call's answer by
 `active_ttl` is acceptable, or the receipt should write a distinct terminal state.
@@ -452,8 +453,8 @@ rules written for the standalone push path read on it.
   read, so no taskwire state depends on the log.
 - **TW-TR-004** forbids a list of interested connections in taskwire; the subscription table is
   fastapi-viewsets'.
-- **TW-CELERY-002**'s "a worker MUST NOT push" reads as "writes to no socket": under TW-EVT-* the
-  worker's transport publishes to the event store, as `RedisStore` publishes to `twx:{ns}` without
+- **TW-CALL-009**'s "MUST NOT push to a socket" reads as "writes to no socket": under TW-EVT-* the
+  executor's transport publishes to the event store, as `RedisStore` publishes to `twx:{ns}` without
   it.
 - **TW-DEL-023** under TW-EVT-* prunes the maps of the sockets the terminal envelope is delivered
   to. A private operation's terminal progress reaches its origin socket only, so another socket of
@@ -484,3 +485,47 @@ and shows no progress in `tw.busy`; `run()`'s own handle still does.
 
 **Still open:** a proxy call made inside `run()` shows no progress in `tw.busy`. The guide states
 it (`docs/guide/long-running-requests.md`).
+
+---
+
+## taskwire-spec.md §2.23 — TW-CALL-008, TW-CALL-105 — an execution its executor ended
+
+**What I needed:** the terminal state of a deferred viewset action that fastapi-viewsets' executor
+ended, and which process writes it.
+
+**What I assumed:**
+
+- **`interrupted` is a reserved code, `retryable: true`,** with `message.params.reason` from the
+  executor's `ActionInterruptedError` (`time_limit`, `terminated`, `lost`). A soft time limit, which
+  raises into the work, gives the same code from the execution's exit as a hard one gives from
+  `on_transition()`, so the reader sees one code whichever limit fired. Retryable follows TW-CALL-006
+  (the HTTP caller receives 503 or 504) and `dialog_timeout`, the same interruption with a question
+  open.
+- **`ActionInterruptedError` is a pending error of the receipt,** as `ActionOutcomeUnknownError` is:
+  the executor's process ends the operation. An operation the executor interrupted before it reached
+  `running` therefore ends `interrupted` from `on_transition()`, not `not_executed` from the web
+  process.
+- **`failed` from `on_transition()` writes the executor's error code, `action_failed`,** with
+  `retryable: false`, as the exit of `operation()` writes a code derived from the error.
+- **A process exit writes nothing from a dying pool child, and `interrupted` elsewhere.** A child of
+  the process that built `TaskwireMiddleware` has a supervisor that reports the end to
+  `on_transition()`; the process that built it (a solo pool) has none, since fastapi-viewsets
+  reports no transition for a process exit of its own (`_fail`'s `process_exit` path calls no
+  `_report`). The exit there names `interrupted` (`reason: terminated`), or `dialog_timeout`. A pool
+  that spawns its children instead of forking them gets the same `interrupted`, so a hard time limit
+  there reads `terminated`, not `time_limit`. fastapi-viewsets 0.11.0 documents that
+  `call_next()` raises `SystemExit` where a hard time limit or a termination ends the process; an
+  execution suspended at an `await` unwinds instead with the `asyncio.CancelledError` of
+  `_run_to_end`'s `task.cancel()`, whose `__context__` is the `SystemExit`. `TaskwireMiddleware`
+  treats both as the process exiting (`_ends_the_process`). Without it the child writes `failed` with
+  `CancelledError`, which races the supervisor's `dialog_timeout`: whichever terminal write lands
+  first stays (TW-STORE-010).
+
+**What it costs:** the `__context__` check reads a detail of fastapi-viewsets' implementation, not
+its documented contract.
+
+**Still needs deciding:** whether fastapi-viewsets maps the cancellation of a suspended execution
+whose process is exiting to `SystemExit` in `call_next()` (`_Run.interrupted` records only an
+`ActionInterruptedError` today), after which `_ends_the_process` reduces to the `isinstance` check;
+and whether `_fail` submits an `interrupted` transition for a process exit in a process that no
+supervisor outlives, after which the solo-pool write is no longer taskwire's.
