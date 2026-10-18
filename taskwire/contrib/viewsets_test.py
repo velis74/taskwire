@@ -12,7 +12,6 @@ that the context processor reaches the namespace, that a path parameter arrives 
 from __future__ import annotations
 
 import asyncio
-import os
 
 from collections.abc import Coroutine, Iterator
 from typing import Any, TypeVar
@@ -748,14 +747,6 @@ class ExecutorViewSet:
         await taskwire.progress.set(percent=40)
         raise SystemExit(1)
 
-    async def exits_suspended(self) -> None:
-        """Unwinds as an execution suspended at an `await` unwinds when its process exits."""
-        await taskwire.progress.set(percent=40)
-        try:
-            raise SystemExit(1)
-        except SystemExit:
-            raise asyncio.CancelledError from None
-
     async def exits_asking(self) -> None:
         reporter = taskwire.current_reporter()
         question = asyncio.ensure_future(reporter.ask("acme.confirm", buttons=["yes", "no"]))
@@ -839,54 +830,27 @@ def _tracking_middleware() -> Any:
 
 
 @pytest.mark.usefixtures("executor")
-def test_an_execution_its_forked_process_exits_from_writes_no_terminal_state(store: taskwire.MemoryStore) -> None:
-    """TW-CALL-105: in an executor's process forked from the process that built the middleware, the
-    supervisor reports a process exit (`on_transition()`), so the execution's exit writes nothing."""
-    middleware = _tracking_middleware()
+def test_an_execution_its_executor_process_exits_from_writes_no_terminal_state(store: taskwire.MemoryStore) -> None:
+    """TW-CALL-105: fastapi-viewsets reports a process exit of an executor to `on_transition()`, so the
+    execution's exit writes nothing; outside an executor the exit ends the operation as always."""
     in_process = taskwire.new_token()
     with pytest.raises(SystemExit):
         _execute(ExecutorViewSet.exits, in_process)
-    assert _ended(store, in_process).state == "failed", "outside an executor the exit writes as always"
+    assert _ended(store, in_process).state == "failed"
 
-    run(middleware.executor_started())
-    middleware._origin_pid = os.getppid()  # this process is the one its configuring process forked
-    exited, suspended, cancelled = taskwire.new_token(), taskwire.new_token(), taskwire.new_token()
+    run(_tracking_middleware().executor_started())
+    exited, asked, cancelled = taskwire.new_token(), taskwire.new_token(), taskwire.new_token()
     with pytest.raises(SystemExit):
         _execute(ExecutorViewSet.exits, exited)
-    with pytest.raises(asyncio.CancelledError):
-        _execute(ExecutorViewSet.exits_suspended, suspended)
+    with pytest.raises(SystemExit):
+        _execute(ExecutorViewSet.exits_asking, asked)
     with pytest.raises(asyncio.CancelledError):
         _execute(ExecutorViewSet.is_cancelled, cancelled)
 
-    for token in (exited, suspended):
-        progress = _ended(store, token)
-        assert (progress.state, progress.percent) == ("running", 40)
+    progress = _ended(store, exited)
+    assert (progress.state, progress.percent) == ("running", 40)
+    assert _ended(store, asked).state == "waiting_input", "the question stays open for on_transition() to end"
     assert _ended(store, cancelled).state == "failed", "a cancellation in a living process ends it"
-
-
-@pytest.mark.usefixtures("executor")
-def test_an_execution_its_own_process_exits_from_ends_interrupted(store: taskwire.MemoryStore) -> None:
-    """TW-CALL-105: in the executor's process that built the middleware (a solo pool) nothing reports
-    a process exit from outside, so the execution's exit writes `interrupted` (reason `terminated`),
-    or `dialog_timeout` with a question open."""
-    from taskwire.calls import DIALOG_TIMEOUT, INTERRUPTED
-
-    run(_tracking_middleware().executor_started())
-    exited, suspended, asked = taskwire.new_token(), taskwire.new_token(), taskwire.new_token()
-    with pytest.raises(SystemExit):
-        _execute(ExecutorViewSet.exits, exited)
-    with pytest.raises(asyncio.CancelledError):
-        _execute(ExecutorViewSet.exits_suspended, suspended)
-    with pytest.raises(SystemExit):
-        _execute(ExecutorViewSet.exits_asking, asked)
-
-    for token in (exited, suspended):
-        error = _ended(store, token).error
-        assert (error.code, error.message.params, error.retryable) == (INTERRUPTED, {"reason": "terminated"}, True)
-    error = _ended(store, asked).error
-    assert (error.code, error.retryable) == (DIALOG_TIMEOUT, True)
-    dialogs = run(store.snapshot(taskwire.key("ns:alice", asked))).dialogs
-    assert [dialog.state for dialog in dialogs] == ["cancelled"]
 
 
 def _transition(kind: str, token: str, *, error: Any = None, parent: Any = None) -> Any:

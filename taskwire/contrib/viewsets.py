@@ -51,7 +51,6 @@ reach the same handlers over a stream instead of over HTTP.
 # narrow but it has teeth: a module a third-party decorator reads signatures off must expose real
 # objects, not text. Everything else in `taskwire/` keeps the import.
 
-import asyncio
 import os
 
 from collections.abc import Awaitable, Callable
@@ -308,10 +307,9 @@ class TaskwireMiddleware(Middleware):
       (`ActionExecution.parent`) reports into nothing of its own. An exception in `timeout_errors`
       (default `ActionInterruptedError`) that ends an execution holding an open question ends it
       `dialog_timeout` (TW-DLG-006); an `ActionInterruptedError` otherwise ends it `interrupted`. In an
-      executor's process forked from the one that built the middleware, an execution that ends because
-      the process exits writes no terminal state: the supervisor reports that end to
-      `on_transition()`. In the process that built it (a solo pool) the exit ends it `interrupted`
-      (reason `terminated`), or `dialog_timeout` with an open question.
+      executor's process, an execution that ends because the process exits (`SystemExit`,
+      `KeyboardInterrupt`) writes no terminal state: fastapi-viewsets reports that end to
+      `on_transition()`.
     - `executor_started()` configures the executor's process with `taskwire.configure_executor()`
       (TW-CALL-009).
     - `on_transition()` ends the operation of a deferred call that the executor ended outside its
@@ -328,7 +326,6 @@ class TaskwireMiddleware(Middleware):
     def __init__(self, *, timeout_errors: tuple[type[BaseException], ...] | None = None) -> None:
         self.timeout_errors = timeout_errors if timeout_errors is not None else (ActionInterruptedError,)
         self._executor_pids: set[int] = set()
-        self._origin_pid = os.getpid()
 
     async def __call__(
         self,
@@ -359,15 +356,14 @@ class TaskwireMiddleware(Middleware):
                     reporter.name_error(error.code, error.message, error.retryable)
                 raise
             except BaseException as error:
-                if reporter is not None and os.getpid() in self._executor_pids and _ends_the_process(error):
-                    if os.getppid() == self._origin_pid:
-                        # The supervisor that forked this process reports the end (`on_transition()`),
-                        # so the execution's exit writes no state over it (TW-CALL-105).
-                        with hand_off():
-                            pass
-                    else:
-                        ended = dialog_timeout_error() if reporter.asking else interrupted_error("terminated")
-                        reporter.name_error(ended.code, ended.message, ended.retryable)
+                if (
+                    reporter is not None
+                    and os.getpid() in self._executor_pids
+                    and isinstance(error, (SystemExit, KeyboardInterrupt))
+                ):
+                    # `on_transition()` reports the end, so the exit writes no state over it (TW-CALL-105).
+                    with hand_off():
+                        pass
                 raise
 
     async def executor_started(self) -> None:
@@ -392,15 +388,6 @@ class TaskwireMiddleware(Middleware):
         elif transition.kind == "failed":
             code = getattr(error, "code", None) or "failed"
             await end_call(call, Error(code=code, message=Text(text=str(getattr(error, "detail", code)))))
-
-
-def _ends_the_process(error: BaseException) -> bool:
-    """Whether `error` is the process exiting: `SystemExit` or `KeyboardInterrupt`, or the
-    `asyncio.CancelledError` with which an execution suspended at an `await` unwinds from one."""
-    exits = (SystemExit, KeyboardInterrupt)
-    return isinstance(error, exits) or (
-        isinstance(error, asyncio.CancelledError) and isinstance(error.__context__, exits)
-    )
 
 
 def _reason(error: BaseException | None) -> str | None:

@@ -1281,13 +1281,10 @@ bind the adapters.
     is sent to the caller, so no client can observe the result before the terminal state. An
     `ActionInterruptedError` ending the execution MUST end it `dialog_timeout` with an open question
     and `interrupted` with the error's `reason` otherwise (TW-CALL-008). In a process
-    `executor_started()` ran in, an execution that ends because the process exits — `SystemExit` or
-    `KeyboardInterrupt`, or the `asyncio.CancelledError` whose context is one — MUST write no terminal
-    state when the process is a child of the process that built the middleware: that parent is the
-    executor's supervisor (a prefork pool), it reports the end to `on_transition()`, and a write from
-    the dying child would race it. In any other process (a solo pool executes in the process that
-    built the middleware) no supervisor outlives the exit, and the execution MUST end the operation
-    `dialog_timeout` with an open question and `interrupted` with reason `terminated` otherwise.
+    `executor_started()` ran in, an execution that ends because the process exits (`SystemExit` or
+    `KeyboardInterrupt` from `call_next()`) MUST write no terminal state: fastapi-viewsets reports
+    that end to `on_transition()` (from the supervisor of a prefork pool child, from the exiting
+    process itself otherwise), and a write from the exiting execution would race it.
   - `executor_started()` MUST apply TW-CALL-009 to the process (`configure_executor()`).
   - `on_transition()` MUST end the operation of the call (TW-CALL-008) by the transition's kind:
     `interrupted` with `interrupted` and the error's `reason`, or `dialog_timeout` with an open

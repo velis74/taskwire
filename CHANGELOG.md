@@ -57,16 +57,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets>=0.11.0`.
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets>=0.11.1`.
   `taskwire.contrib.viewsets` and `taskwire.contrib.viewsets_events` import no Celery: the process
   that executes deferred actions calls `taskwire.configure()` and `track_viewset_calls()`.
 - `TaskwireMiddleware(timeout_errors=...)` defaults to `(ActionInterruptedError,)`. An
   `ActionInterruptedError` ends the operation `interrupted` (`dialog_timeout` with an open question);
   the web process leaves the operation of a call that ended with it, or with any
   `ActionOutcomeUnknownError` (`ResultReaderStoppedError` included), to the executor's process.
-- An execution whose pool child exits writes no terminal state; the supervisor's `on_transition()`
-  reports its end. In the process that built the middleware (a solo pool) the execution ends
-  `interrupted` (`reason: terminated`), or `dialog_timeout` with an open question.
+- An execution whose executor process exits writes no terminal state; `on_transition()` ends it.
 - `mark_failed` withdraws the operation's open dialogs.
 - `connection_id` and `CONNECTION_TAG` are defined in `taskwire.delivery`;
   `taskwire.contrib.muxws` re-exports both.

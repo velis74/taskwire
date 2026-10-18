@@ -507,25 +507,3 @@ ended, and which process writes it.
   process.
 - **`failed` from `on_transition()` writes the executor's error code, `action_failed`,** with
   `retryable: false`, as the exit of `operation()` writes a code derived from the error.
-- **A process exit writes nothing from a dying pool child, and `interrupted` elsewhere.** A child of
-  the process that built `TaskwireMiddleware` has a supervisor that reports the end to
-  `on_transition()`; the process that built it (a solo pool) has none, since fastapi-viewsets
-  reports no transition for a process exit of its own (`_fail`'s `process_exit` path calls no
-  `_report`). The exit there names `interrupted` (`reason: terminated`), or `dialog_timeout`. A pool
-  that spawns its children instead of forking them gets the same `interrupted`, so a hard time limit
-  there reads `terminated`, not `time_limit`. fastapi-viewsets 0.11.0 documents that
-  `call_next()` raises `SystemExit` where a hard time limit or a termination ends the process; an
-  execution suspended at an `await` unwinds instead with the `asyncio.CancelledError` of
-  `_run_to_end`'s `task.cancel()`, whose `__context__` is the `SystemExit`. `TaskwireMiddleware`
-  treats both as the process exiting (`_ends_the_process`). Without it the child writes `failed` with
-  `CancelledError`, which races the supervisor's `dialog_timeout`: whichever terminal write lands
-  first stays (TW-STORE-010).
-
-**What it costs:** the `__context__` check reads a detail of fastapi-viewsets' implementation, not
-its documented contract.
-
-**Still needs deciding:** whether fastapi-viewsets maps the cancellation of a suspended execution
-whose process is exiting to `SystemExit` in `call_next()` (`_Run.interrupted` records only an
-`ActionInterruptedError` today), after which `_ends_the_process` reduces to the `isinstance` check;
-and whether `_fail` submits an `interrupted` transition for a process exit in a process that no
-supervisor outlives, after which the solo-pool write is no longer taskwire's.

@@ -58,7 +58,7 @@ frontend that branched on the old code reads `interrupted`.
 
 ### Peer dependencies
 
-The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.11.0`.
+The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.11.1`.
 `taskwire/muxws` and `taskwire/fastapi-viewsets` require the optional npm peer
 `@dynamicforms/fastapi-viewsets` ^0.11.0. `taskwire/vuetify` requires
 `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and imports `@dynamicforms/vuetify-inputs` ^0.14.2,

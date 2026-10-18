@@ -60,7 +60,7 @@ whether *this* socket carries them.
 
 ## Tracking viewset calls
 
-Requires `dynamicforms-fastapi-viewsets >= 0.11.0`. Every call a fastapi-viewsets proxy makes carries
+Requires `dynamicforms-fastapi-viewsets >= 0.11.1`. Every call a fastapi-viewsets proxy makes carries
 an `Idempotency-Key`, so every viewset command is a [tracked call](./tracking-calls.md) without the
 frontend sending a token of its own. `TaskwireMiddleware` is the binding:
 
@@ -138,11 +138,10 @@ How the call ends:
 
 `interrupted` and `dialog_timeout` are `retryable: true`. The web process passes
 `ActionInterruptedError` through as it passes `ActionOutcomeUnknownError`: the executor's process
-writes the terminal state, so the two never race. A pool child the executor ends while an execution
-is running writes no terminal state of its own; its supervisor reports that end to `on_transition()`.
-An executor that runs executions in the process that called `track_viewset_calls()` (a solo pool)
-has no supervisor: an execution its process exits from ends `interrupted` with reason `terminated`,
-or `dialog_timeout` with an open question.
+writes the terminal state, so the two never race. An execution whose process exits writes no
+terminal state of its own; fastapi-viewsets reports that end to `on_transition()`, from the
+supervisor of a prefork pool child or from the exiting process itself, and it ends `interrupted` or
+`dialog_timeout` there.
 
 **On the frontend**, `tw.trackCall(call, handler)` and `tw.awaitCall(call, handler)` follow a proxy
 call under its `key` — see [Tracking calls](./tracking-calls.md#on-the-frontend). Over muxws,

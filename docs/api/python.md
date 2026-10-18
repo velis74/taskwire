@@ -267,7 +267,7 @@ without it, it appends `taskwire_context_processor` to `viewsets_context_process
 
 ### Tracked viewset calls
 
-Requires `dynamicforms-fastapi-viewsets >= 0.11.0`.
+Requires `dynamicforms-fastapi-viewsets >= 0.11.1`.
 
 ```python
 from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_processor, track_viewset_calls
@@ -287,7 +287,7 @@ from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_proce
 | Hook | What it does |
 |---|---|
 | `__call__` | runs the rest of the command chain inside `receive_call`, with `ActionDispatchError` as a dispatch error and `ActionOutcomeUnknownError` and `ActionInterruptedError` as pending ones |
-| `execute()` | runs the action inside `execute_call`, where the action executes, and passes an execution with a `parent` straight through. An `ActionInterruptedError` ends the operation `dialog_timeout` with an open question, else `interrupted` with the error's `reason`. In an executor's pool child an execution that ends because the process exits writes no terminal state, which the supervisor reports; in the process that built the middleware it ends `interrupted` (`reason: terminated`), or `dialog_timeout` with an open question |
+| `execute()` | runs the action inside `execute_call`, where the action executes, and passes an execution with a `parent` straight through. An `ActionInterruptedError` ends the operation `dialog_timeout` with an open question, else `interrupted` with the error's `reason`. In an executor's process an execution that ends because the process exits writes no terminal state; `on_transition()` ends it |
 | `executor_started()` | `taskwire.configure_executor()` |
 | `on_transition(transition)` | `end_call` for a call the executor ended outside its execution: `interrupted` (or `dialog_timeout` with an open question), `not_run` as `dispatch_failed` when still `queued`, `failed` with the error's code; nothing for `dispatched` or a call with a `parent` |
 
