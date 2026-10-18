@@ -87,6 +87,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `RedisStore` built from a URL opens one Redis client per event loop that uses it. A store used
   on a second loop of a process - a prefork child forked after its supervisor used the store, each
   synchronous `operation()` - no longer fails with a client bound to another loop.
+- `RedisStore.await_dialog` blocks in `BLPOP` for at most half the client's `socket_timeout`, so
+  redis-py's read timeout (5 s by default in redis-py 8) no longer fails a pending `ask()` with
+  `TimeoutError`.
 
 - `useTaskwireDialogs` states the buttons of a dialog without a mapped component as `Action`s, as
   the modal kit's `actions` option takes them, and answers nothing when the modal settles with the

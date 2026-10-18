@@ -17,9 +17,9 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 348 pass, 20 skip
+/home/jure/.venv/taskwire/bin/python -m pytest -q     # 349 pass, 20 skip
 TASKWIRE_WORKER_TEST_REDIS_URL=redis://127.0.0.1:6379/14 \
-  /home/jure/.venv/taskwire/bin/python -m pytest -q   # 355 pass, 13 skip: a real worker too
+  /home/jure/.venv/taskwire/bin/python -m pytest -q   # 356 pass, 13 skip: a real worker too
 npx vitest run                                            # 458 pass
 /home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
 npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc

@@ -361,3 +361,28 @@ async def test_a_vanished_watcher_never_touches_the_operation(redis_url) -> None
     finally:
         taskwire.reset_configuration()
         await store.aclose()
+
+
+async def test_awaiting_a_dialog_outlasts_the_clients_socket_timeout(redis_url) -> None:
+    """`BLPOP` returns before the client's `socket_timeout` aborts the read, on any client."""
+    import asyncio
+
+    from taskwire.models import Button, DialogReply, DialogRequest
+
+    client = aioredis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=0.4)
+    worker = RedisStore(client=client)
+    web = RedisStore(redis_url)
+    key = make_key("acct-42", "slow-answer")
+
+    await worker.commit(key, Progress(state=ProgressState.RUNNING, result_kind="k", origin_session="acct-42"), 60)
+    await worker.put_dialog(key, DialogRequest(id="d1", dialog_id="confirm", buttons=[Button(id="ok")]), 60)
+
+    waiting = asyncio.create_task(worker.await_dialog(key, "d1"))
+    await asyncio.sleep(1)
+    await web.resolve_dialog(key, "d1", DialogReply(button="ok"))
+
+    reply = await asyncio.wait_for(waiting, timeout=5)
+    assert reply.button == "ok"
+
+    await worker.aclose()
+    await web.aclose()

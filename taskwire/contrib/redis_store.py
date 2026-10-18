@@ -60,6 +60,21 @@ overall deadline. A lost notification costs this much latency rather than hangin
 why the loop re-reads the dialog document on every wakeup *and* on every expiry.
 """
 
+
+def _blpop_seconds(client: Any) -> float:
+    """The `BLPOP` timeout for `client`: `_BLPOP_SECONDS`, or half its `socket_timeout` if that is less.
+
+    A redis-py client aborts a read that outlasts its `socket_timeout` (5 s by default in redis-py 8)
+    with `TimeoutError`, and a blocking command is no exception. A `BLPOP` therefore has to return
+    before the socket timeout does.
+    """
+    pool = getattr(client, "connection_pool", None)
+    socket_timeout = pool.connection_kwargs.get("socket_timeout") if pool is not None else None
+    if not socket_timeout:
+        return _BLPOP_SECONDS
+    return min(_BLPOP_SECONDS, socket_timeout / 2)
+
+
 # --------------------------------------------------------------------------- Lua
 
 _COMMIT = """
@@ -522,7 +537,8 @@ class RedisStore(TaskwireStore):
             if state is DialogState.CANCELLED:
                 return DialogReply(button=CANCELLED_BUTTON)
 
-            popped = await self._redis.blpop([reply_key], timeout=_BLPOP_SECONDS)
+            client = self._redis
+            popped = await client.blpop([reply_key], timeout=_blpop_seconds(client))
             if popped is not None:
                 return DialogReply.from_dict(json.loads(popped[1])) or DialogReply(button=CANCELLED_BUTTON)
             # Expired: re-read and wait again. No overall deadline is consumed by this.
