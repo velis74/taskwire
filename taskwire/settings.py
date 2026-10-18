@@ -117,6 +117,35 @@ def configure(
         configured.result_released = result_released
 
 
+def configure_executor(*, store: Any = None, transport: Any = None) -> None:
+    """Configure a process that executes work handed to it by another process (TW-CALL-009).
+
+    Such a process holds no client's socket: the process that received the call delivers its pushes.
+    Its transport is therefore `NullTransport`, which writes and pushes nothing, or one whose
+    `crosses_processes` is True, which carries each envelope to the processes that deliver it
+    (`ViewsetEventsTransport`, TW-EVT-002). A transport passed here that is neither raises
+    `ValueError`. With no `transport`, a configured one whose `crosses_processes` is True stays and any
+    other is replaced by `NullTransport`, so a process that imports the web process's configuration
+    pushes to no socket.
+
+    `store`, when given, replaces the configured store. Store and transport configuration never travel
+    with the work: they are objects with connections, and a serialized copy would be one nobody owns.
+    """
+    from .transport import NullTransport
+
+    if transport is not None:
+        if not isinstance(transport, NullTransport) and not getattr(transport, "crosses_processes", False):
+            raise ValueError(
+                "taskwire: an executor's process takes NullTransport or a transport whose crosses_processes "
+                "is True (TW-CALL-009)"
+            )
+        configured.transport = transport
+    elif not getattr(configured.transport, "crosses_processes", False):
+        configured.transport = NullTransport()
+    if store is not None:
+        configured.store = store
+
+
 def reset_configuration() -> None:
     """Return the process to its unconfigured state. For tests; applications configure once."""
     configured.store = None

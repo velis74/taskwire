@@ -215,7 +215,7 @@ def test_an_unanswered_question_dies_with_the_worker_that_asked_it(http: TestCli
     """TW-CANCEL-011: the terminal write withdraws the dialog in the same step.
 
     The deadline here is `hold_the_line`'s own `asyncio.wait_for` - taskwire has none to offer
-    (TW-DLG-005) and the demo has no Celery to impose one. When it expires the operation goes
+    (TW-DLG-005) and the demo has no executor to impose one. When it expires the operation goes
     `failed` and the question goes with it, so nothing is left on screen pointing at a worker that
     is no longer running. A reply arriving after that is a 410 - the question was withdrawn under
     the answerer - rather than an error the client has to explain (TW-DLG-011).

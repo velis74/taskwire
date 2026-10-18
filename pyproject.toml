@@ -30,16 +30,19 @@ dependencies = []   # DELIBERATE: core has no runtime dependency of any kind (TW
 redis = ["redis>=5.0"]
 celery = ["celery>=5.3", "nest_asyncio>=1.6"]
 fastapi = ["fastapi>=0.100"]
-# >=0.9.0: the execution hook, the Idempotency-Key helpers and a muxws command that runs to the end
-# of its action when its stream ends early (TW-CALL-*). >=0.10.0: the delivery filters of
-# `fastapi_viewsets.events` run on poll as on push, which `contrib/viewsets_events.py` relies on for
-# the display decision (TW-EVT-004).
-viewsets = ["dynamicforms-fastapi-viewsets>=0.10.0"]
+# >=0.11.1: the execution hook and the Idempotency-Key helpers; a muxws command that runs to the end
+# of its action when its stream ends early (TW-CALL-*); delivery filters that run on poll as on push,
+# which `contrib/viewsets_events.py` relies on for the display decision (TW-EVT-004); and an executor
+# that reports its outcomes in its own terms - `ActionInterruptedError`, `ActionOutcomeUnknownError`,
+# `Middleware.executor_started()` and `Middleware.on_transition()` - so that `contrib/viewsets.py`
+# imports no Celery (TW-CALL-101, TW-CALL-105), and that reports a process exit to `on_transition()`
+# in every pool.
+viewsets = ["dynamicforms-fastapi-viewsets>=0.11.1"]
 # The socket carries the six request/response calls as viewset commands (TW-REST-004), so the muxws
 # extra needs the viewset layer's muxws half as well as muxws itself. >=0.4.1: `Peer.close()` sends
 # every queued frame before closing the socket, so the `goaway` of `goaway_if_stale` (TW-WS-007)
 # reaches the client.
-muxws = ["muxws>=0.4.1", "dynamicforms-fastapi-viewsets[muxws]>=0.10.0"]
+muxws = ["muxws>=0.4.1", "dynamicforms-fastapi-viewsets[muxws]>=0.11.1"]
 demo = ["uvicorn>=0.27"]
 # Everything the test suite, the linters and the demo need.
 dev = [

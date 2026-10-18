@@ -11,6 +11,9 @@ each has one primitive:
 - **where the work is handed to another process**, `hand_off()`: the values that cross the boundary,
   and the terminal write left to the process that receives them.
 
+A process that learns that an execution ended without writing its terminal state - an executor that
+ended it from outside - ends the operation with `end_call()`.
+
 The adapters do nothing but read a framework's request into a `Call` and place these primitives:
 `taskwire.contrib.asgi.track_calls`, `taskwire.contrib.wsgi.track_calls` and
 `taskwire.contrib.viewsets.TaskwireMiddleware`. Both context managers have an asynchronous and a
@@ -35,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .headers import TOKEN_HEADER
-from .models import Error, ProgressState, Text
+from .models import DialogState, Error, ProgressState, Text
 from .reporter import mark_failed, mark_queued, operation, OperationScope, Reporter
 from .rest import _is_uuid
 from .settings import configured
@@ -59,6 +62,11 @@ TW-CELERY-004)."""
 DIALOG_TIMEOUT = "dialog_timeout"
 """An execution limit ended the work while it held an open question. `retryable: true` (TW-DLG-006)."""
 
+INTERRUPTED = "interrupted"
+"""The executor ended the work after it started, with no open question: a time limit, a termination, the
+loss of the executing process. `message.params.reason` names which when the executor says. `retryable:
+true` (TW-CALL-008)."""
+
 HTTP_STATUS = "http_status"
 """The call was answered with an error status and no exception (TW-CALL-006)."""
 
@@ -74,6 +82,21 @@ def status_error(status: int) -> Error | None:
         code=HTTP_STATUS,
         message=Text(key="taskwire.http_status", params={"status": status}, text=f"HTTP {status}"),
         retryable=status in (502, 503, 504),
+    )
+
+
+def dialog_timeout_error() -> Error:
+    """The error of work an execution limit ended while it held an open question (TW-DLG-006)."""
+    return Error(code=DIALOG_TIMEOUT, message=Text(key="taskwire.dialog_timeout"), retryable=True)
+
+
+def interrupted_error(reason: str | None = None) -> Error:
+    """The error of work the executor ended after it started (TW-CALL-008): `interrupted`, with
+    `message.params.reason` when `reason` is given."""
+    return Error(
+        code=INTERRUPTED,
+        message=Text(key="taskwire.interrupted", params={"reason": reason} if reason is not None else None),
+        retryable=True,
     )
 
 
@@ -397,6 +420,45 @@ def execute_call(call: Call | None, *, timeout_errors: tuple[type[BaseException]
     the work to run unreported; a failure of the terminal write is logged.
     """
     return CallExecution(call, timeout_errors)
+
+
+async def end_call(
+    call: Call | None,
+    error: Error,
+    *,
+    queued_only: bool = False,
+    asking_error: Error | None = None,
+) -> bool:
+    """End the operation of a call whose execution ended without writing its terminal state
+    (TW-CALL-008). For the process that observes such an end from outside the execution.
+
+    Writes `failed` with `error`, withdrawing the open dialogs in the same step, when the operation is
+    `queued`, `running` or `waiting_input` - only when `queued` with `queued_only`. With an open dialog
+    the error is `asking_error` when one is given. An operation holding a parked result is left as it
+    is: its work finished. Returns whether it wrote.
+
+    `call=None` and a store-less configuration make it a no-op. A store failure is logged and never
+    raised.
+    """
+    store = configured.store
+    if call is None or store is None:
+        return False
+    try:
+        snapshot = await store.snapshot(make_key(call.session, call.token))
+        if snapshot is None or snapshot.progress.is_terminal or snapshot.progress.result is not None:
+            return False
+        if queued_only and ProgressState(snapshot.progress.state) is not ProgressState.QUEUED:
+            return False
+        asking = any(DialogState(dialog.state) is DialogState.OPEN for dialog in snapshot.dialogs)
+        await mark_failed(
+            call.token,
+            session=call.session,
+            error=asking_error if asking and asking_error is not None else error,
+        )
+    except Exception:  # noqa: BLE001 - reporting is an accelerator
+        logger.warning("taskwire: could not end the operation %s", call.token, exc_info=True)
+        return False
+    return True
 
 
 @contextlib.contextmanager

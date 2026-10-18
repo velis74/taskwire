@@ -30,11 +30,37 @@ With fastapi-viewsets, attach `viewsetCallSource()` from `taskwire/fastapi-views
 renders it with `use_operations()` from `taskwire/vue`, or lists `tw.register` with
 `<TaskwireOperations />`.
 
+### Deferred viewset actions
+
+The process that executes `celery_viewset` actions configures taskwire with `taskwire.configure()`
+and no longer imports `taskwire.contrib.celery`:
+
+```python
+# 0.2
+configure_worker(store)
+track_viewset_calls()
+
+# 0.3
+taskwire.configure(store=store)
+track_viewset_calls()
+```
+
+`TaskwireMiddleware.executor_started()` replaces a transport that pushes to sockets with
+`NullTransport` in that process, and keeps `ViewsetEventsTransport`. `configure_worker` stays for a
+plain Celery task (`taskwire_task`).
+
+`TaskwireMiddleware(timeout_errors=...)` defaults to `(ActionInterruptedError,)` from
+`fastapi_viewsets.exceptions`; an application that passed `SoftTimeLimitExceeded` passes nothing.
+An execution its time limit ends without an open question is `failed` with code `interrupted` and
+`message.params.reason`, `retryable: true`, instead of the code `SoftTimeLimitExceeded`; a hard time
+limit, a termination and a lost process end it the same way instead of leaving it `running`. A
+frontend that branched on the old code reads `interrupted`.
+
 ### Peer dependencies
 
-The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.10.0`.
+The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.11.1`.
 `taskwire/muxws` and `taskwire/fastapi-viewsets` require the optional npm peer
-`@dynamicforms/fastapi-viewsets` ^0.10.0. `taskwire/vuetify` requires
+`@dynamicforms/fastapi-viewsets` ^0.11.0. `taskwire/vuetify` requires
 `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 and imports `@dynamicforms/vuetify-inputs` ^0.14.2,
 which the modal kit 0.10 requires as well.
 

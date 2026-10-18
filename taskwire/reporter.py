@@ -1127,11 +1127,13 @@ async def mark_failed(
     error: BaseException | Error,
     store: Any = None,
 ) -> None:
-    """Write `failed` from outside the operation - a dispatch that never reached a worker.
+    """Write `failed` from outside the operation - a dispatch that never reached a worker, or an
+    execution its executor ended from outside (TW-CALL-008).
 
-    Takes the entry out of the register in the same step and leaves the document readable at its own
-    address, exactly as `operation()`'s exit does (TW-REG-007, TW-RET-004): the caller is already
-    watching a token, and a `404` would tell it nothing about why the work never started.
+    Withdraws the open dialogs and takes the entry out of the register in the same step, and leaves
+    the document readable at its own address, exactly as `operation()`'s exit does (TW-CANCEL-011,
+    TW-REG-007, TW-RET-004): the caller is already watching a token, and a `404` would tell it nothing
+    about why the work ended.
     """
     if session is None:
         return None
@@ -1144,6 +1146,8 @@ async def mark_failed(
     if snapshot is None:
         return None
 
+    if snapshot.dialogs:
+        await store.withdraw_dialogs(k)
     progress = snapshot.progress
     progress.error = (
         error

@@ -79,7 +79,8 @@ The web side's writes. `mark_queued` fixes `result_kind` and `origin_connection`
 whole life; the worker that later enters `operation()` inherits them and cannot change them.
 
 `mark_failed` is the terminal write for a job that never reached a worker — a broker that refused the
-task, a command that raised before dispatch. It leaves exactly what `operation()`'s exit leaves: the
+task, a command that raised before dispatch — and for an execution its executor ended from outside
+(`end_call`). It leaves exactly what `operation()`'s exit leaves: the open dialogs withdrawn, the
 entry out of the register, and a tombstone carrying `failed` and the `error` for `tombstone_ttl`, so
 the token the caller is already watching answers with the failure instead of hanging.
 
@@ -185,7 +186,10 @@ Call(token, session, connection=None, result_kind=None)
 receive_call(call, *, dispatch_errors=(), pending_errors=()) -> CallReceipt
 execute_call(call, *, timeout_errors=()) -> CallExecution
 hand_off() -> ContextManager[dict[str, str]]
+async end_call(call, error, *, queued_only=False, asking_error=None) -> bool
 status_error(status) -> Error | None
+interrupted_error(reason=None) -> Error
+dialog_timeout_error() -> Error
 ```
 
 `call_token` takes a mapping or a sequence of `(name, value)` pairs and returns `X-Taskwire-Token`
@@ -212,10 +216,27 @@ exits without an exception.
 `hand_off()` yields the executing call's `carried()` (`{}` outside an execution). A clean exit leaves
 the terminal write to the process that receives the values; an exception names `dispatch_failed`.
 
+`end_call(call, error)` ends the operation of a call whose execution ended without a terminal write,
+from the process that observed the end: `failed` with `error` for an operation that is `queued`,
+`running` or `waiting_input` without a parked result, with its open dialogs withdrawn. With a dialog
+open the error is `asking_error` when given; with `queued_only` only a `queued` operation is written.
+Returns whether it wrote. `interrupted_error(reason)` is `INTERRUPTED` (`"interrupted"`,
+`message.params == {"reason": reason}` when given, `retryable: true`); `dialog_timeout_error()` is
+`DIALOG_TIMEOUT` (`"dialog_timeout"`, `retryable: true`).
+
 `status_error(status)` is the `Error` of TW-CALL-006: `None` below 400, else `HTTP_STATUS`
 (`"http_status"`) with `message.params == {"status": status}`, retryable for 502, 503 and 504.
 
 Store failures on any of these writes are logged and never raised.
+
+```python
+taskwire.configure_executor(*, store=None, transport=None)
+```
+
+Configures a process that executes work handed to it by another process. `store`, when given,
+replaces the configured store. A `transport` must be `NullTransport` or one whose `crosses_processes`
+is True, else `ValueError`; without one, a configured transport whose `crosses_processes` is True
+stays and any other is replaced by `NullTransport`.
 
 ### ASGI and WSGI
 
@@ -246,7 +267,7 @@ without it, it appends `taskwire_context_processor` to `viewsets_context_process
 
 ### Tracked viewset calls
 
-Requires `dynamicforms-fastapi-viewsets >= 0.9.0`.
+Requires `dynamicforms-fastapi-viewsets >= 0.11.1`.
 
 ```python
 from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_processor, track_viewset_calls
@@ -261,11 +282,16 @@ from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_proce
 | `taskwire_connection` (`CONNECTION_KEY`) | the `X-Taskwire-Connection` header, or `None` |
 | `taskwire_token` (`TOKEN_KEY`) | `call_token(request.headers, request.method)` |
 
-`TaskwireMiddleware(*, timeout_errors=None)` is a fastapi-viewsets `Middleware`. `__call__` runs the
-rest of the command chain inside `receive_call`, with `ActionDispatchError` as a dispatch error and
-`ResultTimeoutError` as a pending one. `execute()` runs the action inside `execute_call`, where the
-action executes, and passes an execution with a `parent` straight through. `timeout_errors` defaults
-to Celery's `SoftTimeLimitExceeded` when Celery is installed, else `()`.
+`TaskwireMiddleware(*, timeout_errors=None)` is a fastapi-viewsets `Middleware`:
+
+| Hook | What it does |
+|---|---|
+| `__call__` | runs the rest of the command chain inside `receive_call`, with `ActionDispatchError` as a dispatch error and `ActionOutcomeUnknownError` and `ActionInterruptedError` as pending ones |
+| `execute()` | runs the action inside `execute_call`, where the action executes, and passes an execution with a `parent` straight through. An `ActionInterruptedError` ends the operation `dialog_timeout` with an open question, else `interrupted` with the error's `reason`. In an executor's process an execution that ends because the process exits writes no terminal state; `on_transition()` ends it |
+| `executor_started()` | `taskwire.configure_executor()` |
+| `on_transition(transition)` | `end_call` for a call the executor ended outside its execution: `interrupted` (or `dialog_timeout` with an open question), `not_run` as `dispatch_failed` when still `queued`, `failed` with the error's code; nothing for `dispatched` or a call with a `parent` |
+
+`timeout_errors` defaults to `(ActionInterruptedError,)`.
 
 A call is tracked when the context holds a token and a namespace, the viewset is not taskwire's own,
 and the action configuration for `TaskwireMiddleware` is not `False`. `result_kind` is the
@@ -275,8 +301,8 @@ fastapi-viewsets raises `ValueError` for an action configured with the `Taskwire
 no instance is in `viewsets_command_middleware`.
 
 `track_viewset_calls()` appends `taskwire_context_processor` and a `TaskwireMiddleware()` to
-fastapi-viewsets' settings, each when absent. A Celery worker executing `celery_viewset` actions
-calls it.
+fastapi-viewsets' settings, each when absent. A process that executes deferred actions calls it after
+`taskwire.configure(store=...)`.
 
 ### Pushes over fastapi-viewsets events
 
@@ -343,7 +369,8 @@ caller is already watching does not hang. `configure_worker` gives the worker a 
 `NullTransport`: **a worker never pushes**, because the web process's reader is already delivering
 every envelope the worker's writes produce. Over fastapi-viewsets events the worker passes the
 `ViewsetEventsTransport` that `register_taskwire_events()` returns, which publishes to the event store;
-any other transport raises `ValueError`.
+any other transport raises `ValueError`. It is `configure_executor(store=store, transport=...)` with
+`NullTransport` for a `None` transport.
 
 The operation of a call the web process is executing moves to a task with `hand_off()`:
 
@@ -352,8 +379,8 @@ with hand_off() as carried:
     import_rows.delay(rows=rows, **carried)
 ```
 
-A `celery_viewset` action needs no entry of its own: `TaskwireMiddleware.execute()` runs in the
-worker (see [`track_viewset_calls`](#tracked-viewset-calls)).
+A deferred viewset action needs none of this module: `TaskwireMiddleware` runs in the executor's
+process (see [`track_viewset_calls`](#tracked-viewset-calls)).
 
 ## Headers
 
@@ -412,8 +439,10 @@ the namespace is the only authorization scope and the token is an address inside
 `RedisStore(url="redis://127.0.0.1:6379/0", *, client=None)` is the cross-process store: it holds the
 same documents under `tw:{ns}:{token}:…`, keeps one sorted-set index per namespace, publishes to
 `twx:{ns}` (or, beside a transport whose `crosses_processes` is True, dispatches in process), and
-hands out its reader through `make_reader()`. `await store.aclose()` releases the
-connection.
+hands out its reader through `make_reader()`. Built from `url`, it opens one client per event loop
+that uses it, so one store serves every loop of a process: an executor's executions, its transition
+loop, and the private loop of each synchronous `operation()`. A `client` passed in is used on every
+loop as it is. `await store.aclose()` closes the client of the running loop, or the one passed in.
 
 Writing your own store? Run the exported suite against it:
 

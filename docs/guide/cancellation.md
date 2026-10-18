@@ -39,7 +39,7 @@ way.
 
 ## It is cooperative
 
-taskwire does not revoke Celery tasks, send signals or kill threads, and it cannot interrupt
+taskwire does not revoke queued work, send signals or kill threads, and it cannot interrupt
 blocking code. The flag is **sticky and never cleared**; the operation notices at its next progress
 call.
 

@@ -57,7 +57,7 @@ from ..decorators import declared_result_kind
 from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported for callers
 from ..models import Error, Text
 from ..reporter import mark_failed, mark_queued, operation
-from ..settings import configured
+from ..settings import configure_executor
 
 logger = logging.getLogger("taskwire.celery")
 
@@ -177,16 +177,9 @@ def configure_worker(store: Any, transport: Any = None) -> None:
     pushes. A transport whose `crosses_processes` is True, `ViewsetEventsTransport`, publishes each
     envelope to the cross-process event store, from which every web process delivers it
     (TW-EVT-002). Any other transport raises `ValueError`: a worker that pushed would duplicate every
-    envelope the reader is already delivering (TW-INV-002).
-
-    Store and transport configuration must not travel in a serialized context: they are objects with
-    connections, and the serialized form would be a copy nobody owns.
+    envelope the reader is already delivering (TW-INV-002). `taskwire.configure_executor` applies the
+    rule (TW-CALL-009).
     """
     from ..transport import NullTransport
 
-    if transport is not None and not getattr(transport, "crosses_processes", False):
-        raise ValueError(
-            "taskwire: a worker takes NullTransport or a transport whose crosses_processes is True (TW-CELERY-002)"
-        )
-    configured.store = store
-    configured.transport = transport if transport is not None else NullTransport()
+    configure_executor(store=store, transport=transport if transport is not None else NullTransport())

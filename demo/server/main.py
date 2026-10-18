@@ -100,7 +100,7 @@ def resolve_session(connection: Request | WebSocket) -> str | None:
 
 
 #: The one process-wide store. `MemoryStore` is enough because the demo is one process; a deployment
-#: with several web processes or a Celery worker swaps in `RedisStore` and changes nothing else.
+#: with several web processes or a separate executor swaps in `RedisStore` and changes nothing else.
 store = taskwire.MemoryStore()
 
 #: Every job this process has running, so the app can await them at shutdown rather than leaving a

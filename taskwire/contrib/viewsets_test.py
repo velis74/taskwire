@@ -465,12 +465,21 @@ class ItemViewSet:
     @__router.post("deferred")
     async def deferred(self, outcome: str = "done") -> dict:
         """Stands in for a `celery_viewset_client` method: it hands the call on instead of executing."""
-        from fastapi_viewsets.exceptions import ActionDispatchError, ResultTimeoutError
+        from fastapi_viewsets.exceptions import (
+            ActionDispatchError,
+            ActionInterruptedError,
+            ResultReaderStoppedError,
+            ResultTimeoutError,
+        )
 
         if outcome == "dispatch":
-            raise ActionDispatchError("items.deferred")
+            raise ActionDispatchError("items.deferred", "send")
         if outcome == "timeout":
             raise ResultTimeoutError("items.deferred", 1.0)
+        if outcome == "stopped":
+            raise ResultReaderStoppedError("items")
+        if outcome == "interrupted":
+            raise ActionInterruptedError("items.deferred", "lost")
         return {"token": taskwire.progress.token}
 
 
@@ -708,3 +717,229 @@ def test_an_action_whose_running_write_failed_is_not_failed_unexecuted(
 
     assert http.post("/items/plain", headers={**HEADERS, KEY_HEADER: f'"{key}"'}).status_code == 200
     assert _states(seen, key) == ["queued"]
+
+
+# ------------------------------------------------------------------ executor outcomes (TW-CALL-105)
+
+
+class ExecutorViewSet:
+    """Actions that end as an executor ends them: `call_next()` raises what fastapi-viewsets raises."""
+
+    async def asks(self) -> None:
+        from fastapi_viewsets.exceptions import ActionInterruptedError
+
+        reporter = taskwire.current_reporter()
+        question = asyncio.ensure_future(reporter.ask("acme.confirm", buttons=["yes", "no"]))
+        while not reporter.asking:
+            await asyncio.sleep(0)
+        try:
+            raise ActionInterruptedError("acme.asks", "time_limit")
+        finally:
+            question.cancel()
+
+    async def grinds(self) -> None:
+        from fastapi_viewsets.exceptions import ActionInterruptedError
+
+        await taskwire.progress.set(percent=40)
+        raise ActionInterruptedError("acme.grinds", "time_limit")
+
+    async def exits(self) -> None:
+        await taskwire.progress.set(percent=40)
+        raise SystemExit(1)
+
+    async def exits_asking(self) -> None:
+        reporter = taskwire.current_reporter()
+        question = asyncio.ensure_future(reporter.ask("acme.confirm", buttons=["yes", "no"]))
+        while not reporter.asking:
+            await asyncio.sleep(0)
+        try:
+            raise SystemExit(1)
+        finally:
+            question.cancel()
+
+    async def is_cancelled(self) -> None:
+        await taskwire.progress.set(percent=40)
+        raise asyncio.CancelledError
+
+
+def _execute(action: Any, token: str) -> None:
+    from fastapi_viewsets.context import Context
+    from fastapi_viewsets.decorators.lifecycle_runner import lifecycle_runner
+
+    from taskwire.contrib.viewsets import SESSION_KEY, TOKEN_KEY
+
+    run(
+        lifecycle_runner(
+            action, ExecutorViewSet(), ExecutorViewSet, context=Context({TOKEN_KEY: token, SESSION_KEY: "ns:alice"})
+        )
+    )
+
+
+@pytest.fixture
+def executor(store: taskwire.MemoryStore) -> Iterator[None]:  # noqa: ARG001 - configures the store first
+    """`TaskwireMiddleware` listed, as the executor's process lists it."""
+    from fastapi_viewsets.conf import settings as viewset_settings
+
+    from taskwire.contrib.viewsets import track_viewset_calls
+
+    previous = list(viewset_settings.viewsets_command_middleware)
+    track_viewset_calls()
+    try:
+        yield
+    finally:
+        viewset_settings.viewsets_command_middleware = previous
+
+
+def test_the_executors_interruption_is_the_default_timeout_error() -> None:
+    """TW-CALL-101: `timeout_errors` defaults to fastapi-viewsets' own `ActionInterruptedError`."""
+    from fastapi_viewsets.exceptions import ActionInterruptedError
+
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
+    assert TaskwireMiddleware().timeout_errors == (ActionInterruptedError,)
+
+
+@pytest.mark.usefixtures("executor")
+def test_an_interrupted_execution_ends_dialog_timeout_or_interrupted(store: taskwire.MemoryStore) -> None:
+    """TW-DLG-006, TW-CALL-008: an interruption that ends a question is `dialog_timeout`, and one that
+    ends the work is `interrupted` with the executor's reason. Both are retryable."""
+    from fastapi_viewsets.exceptions import ActionInterruptedError
+
+    from taskwire.calls import DIALOG_TIMEOUT, INTERRUPTED
+
+    asked, ground = taskwire.new_token(), taskwire.new_token()
+    with pytest.raises(ActionInterruptedError):
+        _execute(ExecutorViewSet.asks, asked)
+    with pytest.raises(ActionInterruptedError):
+        _execute(ExecutorViewSet.grinds, ground)
+
+    error = _ended(store, asked).error
+    assert (error.code, error.retryable) == (DIALOG_TIMEOUT, True)
+    dialogs = run(store.snapshot(taskwire.key("ns:alice", asked))).dialogs
+    assert [dialog.state for dialog in dialogs] == ["cancelled"], "the question went with it"
+    error = _ended(store, ground).error
+    assert (error.code, error.message.params, error.retryable) == (INTERRUPTED, {"reason": "time_limit"}, True)
+
+
+def _tracking_middleware() -> Any:
+    from fastapi_viewsets.conf import settings as viewset_settings
+
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
+    return next(m for m in viewset_settings.viewsets_command_middleware if isinstance(m, TaskwireMiddleware))
+
+
+@pytest.mark.usefixtures("executor")
+def test_an_execution_its_executor_process_exits_from_writes_no_terminal_state(store: taskwire.MemoryStore) -> None:
+    """TW-CALL-105: fastapi-viewsets reports a process exit of an executor to `on_transition()`, so the
+    execution's exit writes nothing; outside an executor the exit ends the operation as always."""
+    in_process = taskwire.new_token()
+    with pytest.raises(SystemExit):
+        _execute(ExecutorViewSet.exits, in_process)
+    assert _ended(store, in_process).state == "failed"
+
+    run(_tracking_middleware().executor_started())
+    exited, asked, cancelled = taskwire.new_token(), taskwire.new_token(), taskwire.new_token()
+    with pytest.raises(SystemExit):
+        _execute(ExecutorViewSet.exits, exited)
+    with pytest.raises(SystemExit):
+        _execute(ExecutorViewSet.exits_asking, asked)
+    with pytest.raises(asyncio.CancelledError):
+        _execute(ExecutorViewSet.is_cancelled, cancelled)
+
+    progress = _ended(store, exited)
+    assert (progress.state, progress.percent) == ("running", 40)
+    assert _ended(store, asked).state == "waiting_input", "the question stays open for on_transition() to end"
+    assert _ended(store, cancelled).state == "failed", "a cancellation in a living process ends it"
+
+
+def _transition(kind: str, token: str, *, error: Any = None, parent: Any = None) -> Any:
+    from fastapi_viewsets.context import Context
+    from fastapi_viewsets.middleware import ActionTransition
+
+    from taskwire.contrib.viewsets import SESSION_KEY, TOKEN_KEY
+
+    return ActionTransition(
+        kind=kind,
+        viewset_class=ExecutorViewSet,
+        action="grinds",
+        context=Context({TOKEN_KEY: token, SESSION_KEY: "ns:alice"}),
+        parent=parent,
+        error=error,
+    )
+
+
+def _queued(store: taskwire.MemoryStore, token: str, *, running: bool = False, asking: bool = False) -> None:
+    """An operation as a call leaves it: `queued`, or `running`, or `running` with an open question."""
+
+    async def write() -> None:
+        await taskwire.mark_queued(token, session="ns:alice")
+        k = taskwire.key("ns:alice", token)
+        if running or asking:
+            progress = (await store.snapshot(k)).progress
+            progress.state = taskwire.ProgressState.RUNNING
+            await store.commit(k, progress, 3600)
+        if asking:
+            question = {"id": "d1", "dialog_id": "acme.q", "state": "open", "buttons": [{"id": "yes"}]}
+            await store.put_dialog(k, taskwire.DialogRequest.from_dict(question), 3600)
+
+    run(write())
+
+
+def test_on_transition_ends_what_the_executor_ended_outside_the_execution(store: taskwire.MemoryStore) -> None:
+    """TW-CALL-105: `interrupted` ends a running operation `interrupted` and a questioning one
+    `dialog_timeout`, `not_run` ends a `queued` one `dispatch_failed`, and `failed` ends one with the
+    executor's code. A terminal operation, an execution with a parent and `dispatched` write nothing."""
+    from fastapi_viewsets.exceptions import ActionDispatchError, ActionFailedError, ActionInterruptedError
+    from fastapi_viewsets.middleware import ExecutionRef
+
+    from taskwire.calls import DIALOG_TIMEOUT, DISPATCH_FAILED, INTERRUPTED
+    from taskwire.contrib.viewsets import TaskwireMiddleware
+
+    middleware = TaskwireMiddleware()
+    lost, asking, unsent, started, broken, nested, sent = (taskwire.new_token() for _ in range(7))
+    _queued(store, lost, running=True)
+    _queued(store, asking, asking=True)
+    _queued(store, unsent)
+    _queued(store, started, running=True)
+    _queued(store, broken, running=True)
+    _queued(store, nested, running=True)
+    _queued(store, sent)
+
+    run(middleware.on_transition(_transition("interrupted", lost, error=ActionInterruptedError("t", "lost"))))
+    run(middleware.on_transition(_transition("interrupted", asking, error=ActionInterruptedError("t", "time_limit"))))
+    run(middleware.on_transition(_transition("not_run", unsent, error=ActionDispatchError("t", "revoked"))))
+    run(middleware.on_transition(_transition("not_run", started, error=ActionDispatchError("t", "revoked"))))
+    run(middleware.on_transition(_transition("failed", broken, error=ActionFailedError("t", "executor"))))
+    run(
+        middleware.on_transition(
+            _transition(
+                "interrupted", nested, error=ActionInterruptedError("t", "lost"), parent=ExecutionRef("a.B", "c")
+            )
+        )
+    )
+    run(middleware.on_transition(_transition("dispatched", sent)))
+    run(middleware.on_transition(_transition("interrupted", lost, error=ActionInterruptedError("t", "terminated"))))
+
+    error = _ended(store, lost).error
+    assert (error.code, error.message.params, error.retryable) == (INTERRUPTED, {"reason": "lost"}, True)
+    assert (_ended(store, asking).error.code, _ended(store, asking).error.retryable) == (DIALOG_TIMEOUT, True)
+    assert [d.state for d in run(store.snapshot(taskwire.key("ns:alice", asking))).dialogs] == ["cancelled"]
+    assert (_ended(store, unsent).error.code, _ended(store, unsent).error.retryable) == (DISPATCH_FAILED, True)
+    assert _ended(store, started).state == "running", "a started call is not ended by not_run"
+    assert (_ended(store, broken).error.code, _ended(store, broken).error.retryable) == ("action_failed", False)
+    assert _ended(store, nested).state == "running"
+    assert _ended(store, sent).state == "queued"
+
+
+def test_a_call_whose_outcome_is_unknown_or_interrupted_stays_queued(tracked) -> None:
+    """TW-CALL-005, TW-CALL-101: the caller stopped waiting, or the executor ended the execution; the
+    executor's process ends the operation, not the receipt."""
+    http, seen = tracked
+    stopped, interrupted = taskwire.new_token(), taskwire.new_token()
+
+    http.post("/items/deferred?outcome=stopped", headers={**HEADERS, KEY_HEADER: f'"{stopped}"'})
+    http.post("/items/deferred?outcome=interrupted", headers={**HEADERS, KEY_HEADER: f'"{interrupted}"'})
+
+    assert _states(seen, stopped) == ["queued"]
+    assert _states(seen, interrupted) == ["queued"]
