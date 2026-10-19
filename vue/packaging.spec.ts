@@ -39,15 +39,20 @@ describe('packaging', () => {
     expect(subpaths).toContain('conformance');
   });
 
-  it('every published subpath declares its types first', () => {
+  it('every published subpath declares its types per module system', () => {
     // The top-level `types` covers the root only; a subpath's declarations are found through its
-    // conditions. Conditions match in key order, so `types` precedes `import`/`require`, otherwise a
-    // resolver that applies `types` stops at the JS bundle first.
+    // conditions, which match in key order, so `types` precedes `default`. In a `"type": "module"`
+    // package a `.d.ts` declares an ES module, so `require` gets the `.d.cts` twin the build writes.
     const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf-8'));
-    Object.entries(packageJson.exports as Record<string, Record<string, string>>).forEach(([name, conditions]) => {
+    const exports = packageJson.exports as Record<string, Record<string, Record<string, string>>>;
+    Object.entries(exports).forEach(([name, conditions]) => {
       const entry = name === '.' ? 'index' : name.slice(2);
-      expect(Object.keys(conditions)[0], name).toBe('types');
-      expect(conditions.types, name).toBe(`./dist/${entry}.d.ts`);
+      expect(conditions, name).toEqual({
+        import: { types: `./dist/${entry}.d.ts`, default: `./dist/${entry}.js` },
+        require: { types: `./dist/${entry}.d.cts`, default: `./dist/${entry}.cjs` },
+      });
+      expect(Object.keys(conditions.import)[0], name).toBe('types');
+      expect(Object.keys(conditions.require)[0], name).toBe('types');
     });
   });
 

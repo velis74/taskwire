@@ -6,13 +6,17 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] - 2026-10-19
 
 ### Fixed
 
-- Every entry in the npm export map declares a `types` condition ahead of `import` and `require`,
-  so resolvers that read conditions only find the declarations of `taskwire/vue`,
-  `taskwire/vuetify`, `taskwire/muxws`, `taskwire/fastapi-viewsets` and `taskwire/conformance`.
+- Every entry in the npm export map declares its types per module system: `import` resolves to a
+  `.d.ts`, `require` to a `.d.cts`. Resolvers that read conditions only find the declarations of
+  `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws`, `taskwire/fastapi-viewsets` and
+  `taskwire/conformance`.
+- The declaration files resolve under `moduleResolution: node16` and `nodenext`: every relative
+  specifier in them carries its extension. Previously `taskwire/muxws` and the other subpaths
+  exported nothing there.
 
 ## [0.3.0] - 2026-10-18
 
