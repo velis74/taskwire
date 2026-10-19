@@ -1,7 +1,7 @@
 {
   "name": "taskwire",
   "private": false,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Progress reporting and awaitable dialogs for long-running server-side operations.",
   "author": "Jure Erznožnik",
@@ -15,28 +15,64 @@
   "sideEffects": false,
   "exports": {
     ".": {
-      "require": "./dist/index.cjs",
-      "import": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./vue": {
-      "require": "./dist/vue.cjs",
-      "import": "./dist/vue.js"
+      "import": {
+        "types": "./dist/vue.d.ts",
+        "default": "./dist/vue.js"
+      },
+      "require": {
+        "types": "./dist/vue.d.cts",
+        "default": "./dist/vue.cjs"
+      }
     },
     "./muxws": {
-      "require": "./dist/muxws.cjs",
-      "import": "./dist/muxws.js"
+      "import": {
+        "types": "./dist/muxws.d.ts",
+        "default": "./dist/muxws.js"
+      },
+      "require": {
+        "types": "./dist/muxws.d.cts",
+        "default": "./dist/muxws.cjs"
+      }
     },
     "./vuetify": {
-      "require": "./dist/vuetify.cjs",
-      "import": "./dist/vuetify.js"
+      "import": {
+        "types": "./dist/vuetify.d.ts",
+        "default": "./dist/vuetify.js"
+      },
+      "require": {
+        "types": "./dist/vuetify.d.cts",
+        "default": "./dist/vuetify.cjs"
+      }
     },
     "./fastapi-viewsets": {
-      "require": "./dist/fastapi-viewsets.cjs",
-      "import": "./dist/fastapi-viewsets.js"
+      "import": {
+        "types": "./dist/fastapi-viewsets.d.ts",
+        "default": "./dist/fastapi-viewsets.js"
+      },
+      "require": {
+        "types": "./dist/fastapi-viewsets.d.cts",
+        "default": "./dist/fastapi-viewsets.cjs"
+      }
     },
     "./conformance": {
-      "require": "./dist/conformance.cjs",
-      "import": "./dist/conformance.js"
+      "import": {
+        "types": "./dist/conformance.d.ts",
+        "default": "./dist/conformance.js"
+      },
+      "require": {
+        "types": "./dist/conformance.d.cts",
+        "default": "./dist/conformance.cjs"
+      }
     }
   },
   "workspaces": [
