@@ -6,6 +6,14 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Every entry in the npm export map declares a `types` condition ahead of `import` and `require`,
+  so resolvers that read conditions only find the declarations of `taskwire/vue`,
+  `taskwire/vuetify`, `taskwire/muxws`, `taskwire/fastapi-viewsets` and `taskwire/conformance`.
+
 ## [0.3.0] - 2026-10-18
 
 ### Added

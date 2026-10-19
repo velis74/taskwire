@@ -39,6 +39,18 @@ describe('packaging', () => {
     expect(subpaths).toContain('conformance');
   });
 
+  it('every published subpath declares its types first', () => {
+    // The top-level `types` covers the root only; a subpath's declarations are found through its
+    // conditions. Conditions match in key order, so `types` precedes `import`/`require`, otherwise a
+    // resolver that applies `types` stops at the JS bundle first.
+    const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf-8'));
+    Object.entries(packageJson.exports as Record<string, Record<string, string>>).forEach(([name, conditions]) => {
+      const entry = name === '.' ? 'index' : name.slice(2);
+      expect(Object.keys(conditions)[0], name).toBe('types');
+      expect(conditions.types, name).toBe(`./dist/${entry}.d.ts`);
+    });
+  });
+
   it('conformance fixtures are reachable from vitest', () => {
     // TW-PKG-002: read in place by both runners, with no copy step that could let them drift.
     expect(existsSync(resolve(REPO_ROOT, 'conformance/wire'))).toBe(true);

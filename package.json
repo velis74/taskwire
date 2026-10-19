@@ -15,26 +15,32 @@
   "sideEffects": false,
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "require": "./dist/index.cjs",
       "import": "./dist/index.js"
     },
     "./vue": {
+      "types": "./dist/vue.d.ts",
       "require": "./dist/vue.cjs",
       "import": "./dist/vue.js"
     },
     "./muxws": {
+      "types": "./dist/muxws.d.ts",
       "require": "./dist/muxws.cjs",
       "import": "./dist/muxws.js"
     },
     "./vuetify": {
+      "types": "./dist/vuetify.d.ts",
       "require": "./dist/vuetify.cjs",
       "import": "./dist/vuetify.js"
     },
     "./fastapi-viewsets": {
+      "types": "./dist/fastapi-viewsets.d.ts",
       "require": "./dist/fastapi-viewsets.cjs",
       "import": "./dist/fastapi-viewsets.js"
     },
     "./conformance": {
+      "types": "./dist/conformance.d.ts",
       "require": "./dist/conformance.cjs",
       "import": "./dist/conformance.js"
     }
