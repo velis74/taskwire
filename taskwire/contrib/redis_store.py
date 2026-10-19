@@ -31,7 +31,7 @@ import asyncio
 import contextlib
 import json
 import logging
-import weakref
+import threading
 
 from typing import Any
 
@@ -269,23 +269,53 @@ class RedisStore(TaskwireStore):
 
         A `redis.asyncio` connection belongs to the event loop it was opened on. Built from `url`, the
         store opens one client per event loop that uses it, so one store serves every loop of a process:
-        a worker's executions, its own transition loop, and the private loop of each synchronous
-        `operation()`. A `client` passed in is used on every loop as it is, and is the caller's to keep
-        on one.
+        a worker's executions, its own transition loop, the private loop of each synchronous
+        `operation()` and the loop of each `asyncio.run()` or `async_to_sync()`. A loop's client is
+        closed and forgotten when the loop's tasks are cancelled at its end, as `asyncio.run()` and the
+        synchronous `operation()` do. The client of a loop closed without that is forgotten by the next
+        call that opens a client, and its connections close when it is garbage-collected. A `client`
+        passed in is used on every loop as it is, and is the caller's to keep on one.
         """
         self._url = url
         self._fixed = _Scripts(client) if client is not None else None
-        self._per_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _Scripts] = weakref.WeakKeyDictionary()
+        self._per_loop: dict[asyncio.AbstractEventLoop, _Scripts] = {}
+        self._lock = threading.Lock()
 
     def _bound(self) -> _Scripts:
         if self._fixed is not None:
             return self._fixed
         loop = asyncio.get_running_loop()
-        bound = self._per_loop.get(loop)
-        if bound is None:
-            bound = _Scripts(aioredis.Redis.from_url(self._url, decode_responses=True))
-            self._per_loop[loop] = bound
+        with self._lock:
+            bound = self._per_loop.get(loop)
+            if bound is not None:
+                return bound
+            for closed in [held for held in self._per_loop if held.is_closed()]:
+                del self._per_loop[closed]
+            bound = self._per_loop[loop] = _Scripts(aioredis.Redis.from_url(self._url, decode_responses=True))
+        closer = loop.create_task(self._close_with_loop(loop, bound), name="RedisStore: close with the loop")
+        # A loop that ends without cancelling its tasks destroys this one without a warning.
+        closer._log_destroy_pending = False  # type: ignore[attr-defined]
         return bound
+
+    async def _close_with_loop(self, loop: asyncio.AbstractEventLoop, bound: _Scripts) -> None:
+        try:
+            await loop.create_future()
+        except asyncio.CancelledError:
+            if self._forget(loop, bound):
+                await bound.redis.aclose()
+            raise
+        except GeneratorExit:
+            # The task is destroyed with its loop: there is no loop to close the client on.
+            self._forget(loop, bound)
+            raise
+
+    def _forget(self, loop: asyncio.AbstractEventLoop, bound: _Scripts) -> bool:
+        """Drop `bound` as the client of `loop`; False when it no longer is (`aclose()` dropped it)."""
+        with self._lock:
+            if self._per_loop.get(loop) is not bound:
+                return False
+            del self._per_loop[loop]
+            return True
 
     @property
     def _redis(self) -> Any:
@@ -564,7 +594,8 @@ class RedisStore(TaskwireStore):
         if self._fixed is not None:
             await self._fixed.redis.aclose()
             return
-        bound = self._per_loop.pop(asyncio.get_running_loop(), None)
+        with self._lock:
+            bound = self._per_loop.pop(asyncio.get_running_loop(), None)
         if bound is not None:
             await bound.redis.aclose()
 

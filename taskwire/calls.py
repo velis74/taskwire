@@ -190,12 +190,12 @@ _execution: contextvars.ContextVar[CallExecution | None] = contextvars.ContextVa
 
 
 def _run(coroutine: Any) -> Any:
-    """Run `coroutine` to completion on a loop of its own, for the synchronous forms."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coroutine)
-    finally:
-        loop.close()
+    """Run `coroutine` to completion on a loop of its own, for the synchronous forms.
+
+    `asyncio.run()` cancels the loop's remaining tasks before it closes it, which is what closes the
+    loop's client in a `RedisStore`.
+    """
+    return asyncio.run(coroutine)
 
 
 class CallReceipt:
