@@ -1010,12 +1010,24 @@ class OperationScope:
             loop, thread = self._loop, self._loop_thread
             self._loop, self._loop_thread = None, None
             if loop is not None:
+                asyncio.run_coroutine_threadsafe(_cancel_remaining_tasks(), loop).result()
                 loop.call_soon_threadsafe(loop.stop)
             if thread is not None:
                 thread.join(timeout=5)
             if loop is not None:
                 loop.close()
         return False
+
+
+async def _cancel_remaining_tasks() -> None:
+    """Cancel every other task of the running loop and wait for them, as `asyncio.run()` does before
+    it closes its loop. A `RedisStore` closes the loop's client on that cancellation.
+    """
+    current = asyncio.current_task()
+    tasks = [task for task in asyncio.all_tasks() if task is not current]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _terminal_for(exc_type: Any, exc: Any) -> tuple[ProgressState, Error | None]:

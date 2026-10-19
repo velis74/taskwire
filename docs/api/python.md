@@ -441,8 +441,12 @@ same documents under `tw:{ns}:{token}:…`, keeps one sorted-set index per names
 `twx:{ns}` (or, beside a transport whose `crosses_processes` is True, dispatches in process), and
 hands out its reader through `make_reader()`. Built from `url`, it opens one client per event loop
 that uses it, so one store serves every loop of a process: an executor's executions, its transition
-loop, and the private loop of each synchronous `operation()`. A `client` passed in is used on every
-loop as it is. `await store.aclose()` closes the client of the running loop, or the one passed in.
+loop, the private loop of each synchronous `operation()` and the loop of each `asyncio.run()` or
+`async_to_sync()`. A loop's client is closed and forgotten when the loop's tasks are cancelled at its
+end, as `asyncio.run()` and the synchronous `operation()` do; the client of a loop closed without that
+is forgotten by the next call that opens a client, and its connections close when it is
+garbage-collected. A `client` passed in is used on every loop as it is. `await store.aclose()` closes
+the client of the running loop, or the one passed in.
 
 Writing your own store? Run the exported suite against it:
 

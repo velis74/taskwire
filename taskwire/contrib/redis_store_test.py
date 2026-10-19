@@ -386,3 +386,38 @@ async def test_awaiting_a_dialog_outlasts_the_clients_socket_timeout(redis_url) 
 
     await worker.aclose()
     await web.aclose()
+
+
+async def test_a_loop_that_ends_closes_its_client(redis_url) -> None:
+    """Each loop that used the store, `asyncio.run()`'s or a synchronous `operation()`'s, leaves
+    neither a client in the store nor a connection on the server once it ends.
+    """
+    import asyncio
+
+    from taskwire import new_token
+    from taskwire.reporter import operation
+
+    name = f"tw-loops-{os.getpid()}"
+    store = RedisStore(f"{redis_url}?client_name={name}")
+    observer = aioredis.Redis.from_url(redis_url, decode_responses=True)
+
+    async def connections() -> int:
+        return sum(1 for client in await observer.client_list() if client["name"] == name)
+
+    def on_loops_of_their_own() -> None:
+        for _ in range(5):
+            asyncio.run(store.commit(make_key("ns", new_token()), Progress(state=ProgressState.RUNNING), 60))
+        for _ in range(5):
+            with operation(new_token(), session="ns", store=store, result_kind="k") as reporter:
+                reporter.sync.set(percent=50.0)
+
+    await asyncio.to_thread(on_loops_of_their_own)
+
+    assert not store._per_loop
+    # The server drops a closed connection from its list a moment after the socket closes.
+    for _ in range(50):
+        if await connections() == 0:
+            break
+        await asyncio.sleep(0.02)
+    assert await connections() == 0
+    await observer.aclose()
