@@ -1,3 +1,7 @@
+---
+description: 'Install taskwire, wire up a store and transport, start a long-running job under a token, report its progress and watch it from the browser.'
+---
+
 # Getting started
 
 taskwire lets a long-running job tell whoever started it what it is doing, and lets it ask them

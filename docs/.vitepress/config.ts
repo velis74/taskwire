@@ -5,8 +5,14 @@ import { defineConfig } from 'vitepress';
 // why the library is what it is, and would only mislead somebody trying to use it.
 export default defineConfig({
   title: 'taskwire',
-  description: 'Progress reporting and awaitable dialogs for long-running operations',
+  description:
+    'Progress bars, awaitable dialogs and cancellation for long-running tasks in Python (FastAPI, Celery) and TypeScript/Vue, over polling or WebSocket push.',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/taskwire-icon.svg' }]],
+  // Canonical URL of each page as published on docs.velis.si, under the `--base` given to the build.
+  transformHead({ pageData, siteConfig }) {
+    const path = pageData.relativePath.replace(/(^|\/)index\.md$/, '$1').replace(/\.md$/, '.html');
+    return [['link', { rel: 'canonical', href: `https://docs.velis.si${siteConfig.site.base}${path}` }]];
+  },
   themeConfig: {
     logo: '/taskwire-icon.svg',
     nav: [
