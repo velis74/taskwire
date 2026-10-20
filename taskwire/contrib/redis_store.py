@@ -250,6 +250,7 @@ class _Scripts:
 
     def __init__(self, client: Any) -> None:
         self.redis = client
+        self.closer: asyncio.Task | None = None
         self.commit = client.register_script(_COMMIT)
         self.put_dialog = client.register_script(_PUT_DIALOG)
         self.resolve_dialog = client.register_script(_RESOLVE_DIALOG)
@@ -295,6 +296,9 @@ class RedisStore(TaskwireStore):
         closer = loop.create_task(self._close_with_loop(loop, bound), name="RedisStore: close with the loop")
         # A loop that ends without cancelling its tasks destroys this one without a warning.
         closer._log_destroy_pending = False  # type: ignore[attr-defined]
+        # A loop holds its tasks weakly. Unreferenced, this task and the future it waits on are garbage
+        # that a collection destroys while the loop runs, which forgets the client without closing it.
+        bound.closer = closer
         return bound
 
     async def _close_with_loop(self, loop: asyncio.AbstractEventLoop, bound: _Scripts) -> None:
@@ -597,6 +601,8 @@ class RedisStore(TaskwireStore):
         with self._lock:
             bound = self._per_loop.pop(asyncio.get_running_loop(), None)
         if bound is not None:
+            if bound.closer is not None:
+                bound.closer.cancel()
             await bound.redis.aclose()
 
 
