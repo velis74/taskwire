@@ -98,7 +98,7 @@ useBusyDialog();
 ```
 
 Call `useBusyDialog()` once, in the setup of a component that lives as long as the page, with
-`<ModalView />` of `@dynamicforms/vuetify-modal-form-kit` ^0.10.0 mounted. `taskwire/vuetify` also
+`<ModalView />` of `@dynamicforms/vuetify-modal-form-kit` ^0.11.0 mounted. `taskwire/vuetify` also
 imports `@dynamicforms/vuetify-inputs`, which the modal kit requires as well. `viewsetCallSource()` reports
 every proxy call, over REST and muxws, with its repeats; `tw.retryNow()` calls fastapi-viewsets'
 `retryNow()`. A request listed in `tw.busy` is followed under its key as `tw.trackCall()` follows
