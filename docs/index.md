@@ -1,4 +1,6 @@
 ---
+title: 'Task progress for FastAPI, Celery and Vue'
+description: 'taskwire reports progress, asks the user awaitable questions and handles cancellation for long-running backend jobs, in Python and TypeScript.'
 layout: home
 hero:
   name: taskwire
