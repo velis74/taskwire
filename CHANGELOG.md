@@ -58,6 +58,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `409` and `410` of a dialog reply carry the settled `dialog` (TW-DLG-010), over REST and over
   muxws; previously the body held `detail` only.
 - The OpenAPI schema of the six endpoints declares each error status with `ErrorBody`.
+- `RedisStore` built from a URL keeps a reference to the task that closes a loop's client when the
+  loop ends. Previously a garbage collection while the loop ran could destroy that task, which
+  dropped the loop's client without closing it and left its connection open; the loop's next call
+  opened a second client.
+- `RedisStore.aclose()` cancels that task of the running loop along with closing its client.
 
 ## [0.3.2] - 2026-10-19
 

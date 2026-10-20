@@ -388,6 +388,25 @@ async def test_awaiting_a_dialog_outlasts_the_clients_socket_timeout(redis_url) 
     await web.aclose()
 
 
+async def test_a_garbage_collection_keeps_the_client_of_a_running_loop(redis_url) -> None:
+    """The client of a loop that is still running survives a garbage collection, and is the one the
+    loop's next call uses."""
+    import asyncio
+    import gc
+
+    store = RedisStore(redis_url)
+
+    async def on_a_loop_of_its_own() -> bool:
+        await store.commit(make_key("ns", "a"), Progress(state=ProgressState.RUNNING), 60)
+        first = store._per_loop[asyncio.get_running_loop()]
+        gc.collect()
+        await store.commit(make_key("ns", "b"), Progress(state=ProgressState.RUNNING), 60)
+        return store._per_loop.get(asyncio.get_running_loop()) is first
+
+    assert await asyncio.to_thread(asyncio.run, on_a_loop_of_its_own())
+    assert not store._per_loop
+
+
 async def test_a_loop_that_ends_closes_its_client(redis_url) -> None:
     """Each loop that used the store, `asyncio.run()`'s or a synchronous `operation()`'s, leaves
     neither a client in the store nor a connection on the server once it ends.
