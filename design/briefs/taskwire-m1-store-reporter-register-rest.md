@@ -447,8 +447,8 @@ dependency. That last test must still pass at the end of this milestone.
 ## 5. Data shapes (§3, reproduced; wire names are snake_case)
 
 `Text`: `key?: str`, `params?: dict`, `text?: str` - any subset valid.
-`Error`: `{"code": str, "message": Text, "retryable": bool}`. Reserved codes: `dispatch_failed`
-(TW-CELERY-004) and `dialog_timeout` (TW-DLG-006), both `retryable: true`.
+`Error`: `{"code": str, "message": Text, "retryable": bool}`. Reserved codes: `taskwire.dispatch_failed`
+(TW-CELERY-004) and `taskwire.dialog_timeout` (TW-DLG-006), both `retryable: true`.
 `Result`: `kind` (str, **required** - which component collects this, mapped exactly as `dialog_id`
 is), `params?: dict`, `label?: Text`, `value?: any`, `ref?: ResultRef`.
 `ResultRef`: `href` (required), `mime?`, `bytes?`, `expires_at?`.
@@ -706,7 +706,7 @@ Wire conformance (`models_test.py`, reading `conformance/wire/*.json` in place):
     `origin_connection` null; a `Result` with `kind` plus `params`, one with a `ref` carrying
     `expires_at`, and one with `label` + `value` and no `ref`; a `rev` seeded from wall-clock ms,
     asserted to stay inside `Number.MAX_SAFE_INTEGER` (TW-REV-004); a `Snapshot` and a `Register`
-    each carrying `"v": 1` (TW-CORE-012); and an `Aggregate` with counts and **no `percent` key**.
+    each carrying `"v": 2` (TW-CORE-012); and an `Aggregate` with counts and **no `percent` key**.
 
 ## 8. Done when
 

@@ -18,7 +18,7 @@ import { CONNECTION_HEADER, DEFAULT_BASE_PATH, TOKEN_HEADER } from '../client/ty
 import { markFailed, markQueued, type OperationOptions, operationScope } from '../reporter/operation-scope';
 import { type Reporter, type ReporterStore } from '../reporter/reporter';
 import { key as storeKey, type TaskwireStore } from '../store/store';
-import { isTerminal, type TaskwireError } from '../wire/wire';
+import { DISPATCH_FAILED, HTTP_STATUS, isTerminal, NOT_EXECUTED, type TaskwireError } from '../wire/wire';
 
 export const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 
@@ -31,13 +31,6 @@ export function isUuid(key: string): boolean {
 
 /** Methods whose `Idempotency-Key` does not make a call tracked (TW-CALL-002). */
 export const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
-
-/** A tracked call ended before anything executed it. `retryable: false` (TW-CALL-005). */
-export const NOT_EXECUTED = 'not_executed';
-/** The work could not be handed to the process that executes it. `retryable: true` (TW-CALL-005). */
-export const DISPATCH_FAILED = 'dispatch_failed';
-/** The call was answered with an error status and no exception (TW-CALL-006). */
-export const HTTP_STATUS = 'http_status';
 
 /** Headers as a WHATWG `Headers`, a plain record, or `[name, value]` pairs. */
 export type HeadersLike =
@@ -156,7 +149,7 @@ export interface CallExecution {
   /**
    * Hand the operation to another process (TW-CALL-007). `send` receives the carried values; when it
    * resolves, the execution ends without a terminal write, and when it throws, the operation ends
-   * `failed` with `dispatch_failed` (`retryable: true`) and the error propagates.
+   * `failed` with `taskwire.dispatch_failed` (`retryable: true`) and the error propagates.
    */
   handOff<T>(send: (carried: CarriedCall) => T | Promise<T>): Promise<T>;
   /** End the operation `failed` with `error` when the body returns normally (TW-CALL-006). */
@@ -191,7 +184,7 @@ export async function executeCall<T>(
         scope.handOff();
         return sent;
       } catch (error) {
-        scope.failWith({ code: DISPATCH_FAILED, message: { key: 'taskwire.dispatch_failed' }, retryable: true });
+        scope.failWith({ code: DISPATCH_FAILED, message: { key: DISPATCH_FAILED }, retryable: true });
         throw error;
       }
     },
@@ -210,7 +203,7 @@ export async function executeCall<T>(
 }
 
 export interface ReceiveOptions extends ExecuteOptions {
-  /** Errors meaning the work was not handed to the process that executes it: `dispatch_failed`. */
+  /** Errors meaning the work was not handed to the process that executes it: `taskwire.dispatch_failed`. */
   dispatchError?: (error: unknown) => boolean;
   /** Errors after which the work may still execute elsewhere: the operation is left `queued`. */
   pendingError?: (error: unknown) => boolean;
@@ -229,8 +222,8 @@ export interface CallReceipt {
  *
  * The opening write drops a terminal document under the token, since the call executes anew; an
  * existing non-terminal document is left as it is. When `body` ends with the operation still `queued`
- * and `receipt.execute()` never entered, the closing write is `dispatch_failed` (`retryable: true`)
- * for an error `dispatchError` accepts, nothing for one `pendingError` accepts, and `not_executed`
+ * and `receipt.execute()` never entered, the closing write is `taskwire.dispatch_failed` (`retryable: true`)
+ * for an error `dispatchError` accepts, nothing for one `pendingError` accepts, and `taskwire.not_executed`
  * (`retryable: false`) otherwise, a normal return included. With `call` or `store` null nothing is
  * written. A store failure never replaces the body's own outcome.
  */
@@ -280,8 +273,8 @@ export async function receiveCall<T>(
         if (snapshot !== null && snapshot.progress.state === 'queued') {
           const dispatch = raised !== null && options.dispatchError?.(raised.error) === true;
           const error: TaskwireError = dispatch
-            ? { code: DISPATCH_FAILED, message: { key: 'taskwire.dispatch_failed' }, retryable: true }
-            : { code: NOT_EXECUTED, message: { key: 'taskwire.not_executed' }, retryable: false };
+            ? { code: DISPATCH_FAILED, message: { key: DISPATCH_FAILED }, retryable: true }
+            : { code: NOT_EXECUTED, message: { key: NOT_EXECUTED }, retryable: false };
           await markFailed({ ...opts, error });
         }
       } catch {
@@ -296,7 +289,7 @@ export function statusError(status: number): TaskwireError | null {
   if (status < 400) return null;
   return {
     code: HTTP_STATUS,
-    message: { key: 'taskwire.http_status', params: { status }, text: `HTTP ${status}` },
+    message: { key: HTTP_STATUS, params: { status }, text: `HTTP ${status}` },
     retryable: status === 502 || status === 503 || status === 504,
   };
 }
@@ -314,7 +307,7 @@ export interface TrackFetchOptions extends ExecuteOptions {
  * Track every request of a WHATWG `fetch` handler that carries a token (TW-CALL-104): the request
  * runs inside `receiveCall()` and its execution, and `handler` receives the execution (or `null`) to
  * report through and to hand work off with. A response status of 400 or more ends the operation
- * `failed` with `http_status`. Requests under `excludePrefix` pass through.
+ * `failed` with `taskwire.http_status`. Requests under `excludePrefix` pass through.
  */
 export function trackFetch(
   handler: (request: Request, execution: CallExecution | null) => Promise<Response>,

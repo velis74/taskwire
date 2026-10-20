@@ -38,7 +38,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from .headers import TOKEN_HEADER
-from .models import DialogState, Error, ProgressState, Text
+from .models import (
+    DIALOG_TIMEOUT,
+    DialogState,
+    DISPATCH_FAILED,
+    Error,
+    HTTP_STATUS,
+    INTERRUPTED,
+    NOT_EXECUTED,
+    ProgressState,
+    Text,
+)
 from .reporter import mark_failed, mark_queued, operation, OperationScope, Reporter
 from .rest import _is_uuid
 from .settings import configured
@@ -52,50 +62,32 @@ IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 """Methods whose `Idempotency-Key` does not make a call tracked (TW-CALL-002)."""
 
-NOT_EXECUTED = "not_executed"
-"""A tracked call ended before anything executed it. `retryable: false` (TW-CALL-005)."""
-
-DISPATCH_FAILED = "dispatch_failed"
-"""The work could not be handed to the process that executes it. `retryable: true` (TW-CALL-005,
-TW-CELERY-004)."""
-
-DIALOG_TIMEOUT = "dialog_timeout"
-"""An execution limit ended the work while it held an open question. `retryable: true` (TW-DLG-006)."""
-
-INTERRUPTED = "interrupted"
-"""The executor ended the work after it started, with no open question: a time limit, a termination, the
-loss of the executing process. `message.params.reason` names which when the executor says. `retryable:
-true` (TW-CALL-008)."""
-
-HTTP_STATUS = "http_status"
-"""The call was answered with an error status and no exception (TW-CALL-006)."""
-
 
 def status_error(status: int) -> Error | None:
     """The error of a call answered with HTTP `status`, or None below 400 (TW-CALL-006).
 
-    `http_status` with `params={"status": status}`, `retryable: true` for 502, 503 and 504.
+    `taskwire.http_status` with `params={"status": status}`, `retryable: true` for 502, 503 and 504.
     """
     if status < 400:
         return None
     return Error(
         code=HTTP_STATUS,
-        message=Text(key="taskwire.http_status", params={"status": status}, text=f"HTTP {status}"),
+        message=Text(key=HTTP_STATUS, params={"status": status}, text=f"HTTP {status}"),
         retryable=status in (502, 503, 504),
     )
 
 
 def dialog_timeout_error() -> Error:
     """The error of work an execution limit ended while it held an open question (TW-DLG-006)."""
-    return Error(code=DIALOG_TIMEOUT, message=Text(key="taskwire.dialog_timeout"), retryable=True)
+    return Error(code=DIALOG_TIMEOUT, message=Text(key=DIALOG_TIMEOUT), retryable=True)
 
 
 def interrupted_error(reason: str | None = None) -> Error:
-    """The error of work the executor ended after it started (TW-CALL-008): `interrupted`, with
+    """The error of work the executor ended after it started (TW-CALL-008): `taskwire.interrupted`, with
     `message.params.reason` when `reason` is given."""
     return Error(
         code=INTERRUPTED,
-        message=Text(key="taskwire.interrupted", params={"reason": reason} if reason is not None else None),
+        message=Text(key=INTERRUPTED, params={"reason": reason} if reason is not None else None),
         retryable=True,
     )
 
@@ -248,9 +240,9 @@ class CallReceipt:
             if snapshot is None or ProgressState(snapshot.progress.state) is not ProgressState.QUEUED:
                 return
             if exc is not None and isinstance(exc, self._dispatch_errors):
-                error = Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True)
+                error = Error(code=DISPATCH_FAILED, message=Text(key=DISPATCH_FAILED), retryable=True)
             else:
-                error = Error(code=NOT_EXECUTED, message=Text(key="taskwire.not_executed"), retryable=False)
+                error = Error(code=NOT_EXECUTED, message=Text(key=NOT_EXECUTED), retryable=False)
             await mark_failed(call.token, session=call.session, error=error)
         except Exception:  # noqa: BLE001 - reporting never replaces the call's own outcome
             logger.warning("taskwire: could not end the unexecuted operation %s", call.token, exc_info=True)
@@ -294,9 +286,9 @@ def receive_call(
     Entry drops a terminal document under the token, since the call executes anew, and writes `queued`
     with `call.result_kind` and `call.connection`; an existing non-terminal document is left as it is.
     Exit writes `failed` when the operation is still `queued` and `execute_call()` was not entered for
-    the call in this context: `dispatch_failed` (`retryable: true`) when the exception leaving the block
+    the call in this context: `taskwire.dispatch_failed` (`retryable: true`) when the exception leaving the block
     is one of `dispatch_errors`, nothing when it is one of `pending_errors` (the work may still execute
-    elsewhere, and `active_ttl` expires the document otherwise), and `not_executed` (`retryable: false`)
+    elsewhere, and `active_ttl` expires the document otherwise), and `taskwire.not_executed` (`retryable: false`)
     in every other case, a clean exit included.
 
     `call=None` and a store-less configuration make it a no-op, and so does a block nested in one
@@ -345,7 +337,7 @@ class CallExecution:
         if exc is not None and isinstance(exc, self._timeout_errors) and reporter.asking:
             reporter.name_error(
                 DIALOG_TIMEOUT,
-                Text(key="taskwire.dialog_timeout"),
+                Text(key=DIALOG_TIMEOUT),
                 True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
             )
         return scope
@@ -413,7 +405,7 @@ def execute_call(call: Call | None, *, timeout_errors: tuple[type[BaseException]
     to `running`, binds the ambient reporter and writes exactly one terminal state on exit (TW-API-001),
     and marks the call started for the `receive_call()` block around it. When an exception in
     `timeout_errors` ends the block while the operation holds an open question, the terminal error is
-    `dialog_timeout` with `retryable: true` (TW-DLG-006).
+    `taskwire.dialog_timeout` with `retryable: true` (TW-DLG-006).
 
     Yields None, and reports nothing, for `call=None` and inside another `execute_call()` block: work
     the executing call does on its own behalf belongs to its operation. A store failure on entry leaves
@@ -467,7 +459,7 @@ def hand_off() -> Iterator[dict[str, str]]:
 
     Yields `Call.carried()` of the call `execute_call()` is executing in this context, `{}` outside
     one. A block that exits cleanly leaves the terminal write to the receiving process: the
-    `execute_call()` exit writes no state. An exception leaving the block names `dispatch_failed`
+    `execute_call()` exit writes no state. An exception leaving the block names `taskwire.dispatch_failed`
     (`retryable: true`) as the operation's error, and the `execute_call()` exit writes it.
 
     ```python
@@ -484,7 +476,7 @@ def hand_off() -> Iterator[dict[str, str]]:
     except BaseException:
         execution._reporter.name_error(
             DISPATCH_FAILED,
-            Text(key="taskwire.dispatch_failed"),
+            Text(key=DISPATCH_FAILED),
             True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
         )
         raise

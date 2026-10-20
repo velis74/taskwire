@@ -99,7 +99,7 @@ Every one of these places an obligation on prose. They are the reason this miles
   this as strongly as the hazard warrants.
 - **TW-DLG-006** The consequence MUST be stated plainly in the docs rather than softened: **an
   unanswered dialog blocks its worker until Celery's own execution timeout kills the task**, at which
-  point the operation becomes `failed` with `code: "dialog_timeout"` and `retryable: true`, and its
+  point the operation becomes `failed` with `code: "taskwire.dialog_timeout"` and `retryable: true`, and its
   open dialogs are withdrawn (TW-STORE-004). The general problem of a blocked worker is
   **deliberately unsolved** (TW-CELERY-010).
 - **TW-DLG-005** **`ask()` MUST have no timeout.** There MUST be no `timeout` parameter, no
@@ -319,7 +319,7 @@ Python — `taskwire/docs_test.py`:
    - the wrong and right `gather` forms side by side (TW-NEST-014);
    - the `ask()`-inside-a-transaction prohibition in the dialogs guide (TW-DLG-017);
    - the sentence that an unanswered dialog blocks its worker until Celery's own execution timeout
-     kills the task, with `dialog_timeout` and `retryable` named (TW-DLG-006);
+     kills the task, with `taskwire.dialog_timeout` and `retryable` named (TW-DLG-006);
    - the words *deliberately unsolved* on the blocked-worker page (TW-CELERY-010);
    - the every-tab visibility note adjacent to the `ask()` example (TW-SEC-005);
    - the `result_ttl` / artefact-retention sentence adjacent to the `Result.ref` example

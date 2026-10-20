@@ -317,6 +317,8 @@ async def test_reply_endpoint_status_matrix(configured_store):
     # 422 - rejected BEFORE the store is touched (TW-DLG-015).
     status, payload = await reply_to_dialog(client, token, did, {"button": "not-a-button"})
     assert status == 422, payload
+    assert payload["code"] == "taskwire.invalid_reply"
+    assert payload["params"] == {"reason": "unknown_button", "button": "not-a-button"}
     snapshot = await store.snapshot(make_key(NS, token))
     assert snapshot is not None
     assert DialogState(snapshot.dialogs[0].state) is DialogState.OPEN, "a rejected reply changes nothing"
@@ -334,6 +336,7 @@ async def test_reply_endpoint_status_matrix(configured_store):
     status, payload = await reply_to_dialog(client, token, did, {"button": "cancel"})
     assert status == 409
     assert payload is not None
+    assert payload["detail"] == "taskwire.already_answered"
     assert payload["dialog"]["state"] == "answered"
     assert payload["dialog"]["reply"]["button"] == "ok", "the loser is shown the winning reply"
 
@@ -352,6 +355,7 @@ async def test_reply_to_a_withdrawn_dialog_is_410(configured_store):
 
     status, payload = await reply_to_dialog(Client(session=NS), token, did, {"button": "ok"})
     assert status == 410, payload
+    assert payload["detail"] == "taskwire.cancelled"
 
     with pytest.raises(OperationCancelled):
         await task
@@ -387,11 +391,31 @@ async def test_required_inputs_are_validated_before_the_store(configured_store):
     did = snapshot.open_dialogs[0].id
     client = Client(session=NS)
 
-    assert (await reply_to_dialog(client, token, did, {"button": "ok"}))[0] == 422, "required input missing"
-    assert (await reply_to_dialog(client, token, did, {"button": "ok", "values": {"name": 7}}))[0] == 422
-    assert (await reply_to_dialog(client, token, did, {"button": "ok", "values": {"name": "x", "count": "no"}}))[
-        0
-    ] == 422
+    async def refused(body: dict) -> tuple[int, str, dict]:
+        status, payload = await reply_to_dialog(client, token, did, body)
+        return status, payload["code"], payload["params"]
+
+    assert await refused({}) == (422, "taskwire.invalid_reply", {"reason": "button_required"})
+    assert await refused({"button": "ok", "values": "x"}) == (
+        422,
+        "taskwire.invalid_reply",
+        {"reason": "values_not_an_object"},
+    )
+    assert await refused({"button": "ok"}) == (
+        422,
+        "taskwire.invalid_reply",
+        {"reason": "input_required", "input": "name"},
+    )
+    assert await refused({"button": "ok", "values": {"name": 7}}) == (
+        422,
+        "taskwire.invalid_reply",
+        {"reason": "wrong_input_type", "input": "name", "expected": "string"},
+    )
+    assert await refused({"button": "ok", "values": {"name": "x", "count": "no"}}) == (
+        422,
+        "taskwire.invalid_reply",
+        {"reason": "wrong_input_type", "input": "count", "expected": "number"},
+    )
     assert (await reply_to_dialog(client, token, did, {"button": "ok", "values": {"name": "x", "count": 3}}))[0] == 204
 
     answer = await task

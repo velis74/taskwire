@@ -1,7 +1,7 @@
 {
   "kind": "register",
   "document": {
-    "v": 1,
+    "v": 2,
     "operations": [],
     "aggregate": null,
     "server_time": "2026-08-11T09:15:04.317Z",

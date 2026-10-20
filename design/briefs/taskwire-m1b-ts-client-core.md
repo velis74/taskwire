@@ -39,7 +39,7 @@ place with no copy step.
   `conformance/wire/*.json` that this milestone reads **in place**.
 - `poll_after_ms` on both `Snapshot` and `Register`: `400` when any entry is `queued` or `running`,
   else `5000`, and never below the base interval.
-- **`"v": 1` is a required field** on `Snapshot` and `Register` as well as on `Envelope`
+- **`"v": 2` is a required field** on `Snapshot` and `Register` as well as on `Envelope`
   (TW-CORE-012). A client reading REST determines the wire version by the same path as one reading a
   push.
 - The register holds the namespace's **shared** operations only; an operation started with no
@@ -70,8 +70,8 @@ camelCase properties (`dialogId`, `createdAt`, `updatedAt`, `originSession`, `or
 exception and keep their Python name verbatim (TW-TS-011).
 
 `Text`: `key?: string`, `params?: object`, `text?: string` - any subset is valid.
-`Error`: `{ code: string, message: Text, retryable: boolean }`. Reserved codes: `dispatch_failed`
-and `dialog_timeout`, both `retryable: true`.
+`Error`: `{ code: string, message: Text, retryable: boolean }`. Reserved codes: `taskwire.dispatch_failed`
+and `taskwire.dialog_timeout`, both `retryable: true`.
 `Result`: `kind` (string, **required** - which component collects this), `params?: object`,
 `label?: Text`, `value?: any`, `ref?: ResultRef`.
 `ResultRef`: `href` (required), `mime?`, `bytes?`, `expires_at?` (RFC 3339 Z).

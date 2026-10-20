@@ -38,7 +38,7 @@
 
 /** TW-CORE-011: bumped only on a breaking wire change, never on an implementation change. Package
  *  semver tracks the implementation and says nothing about this number. */
-export const WIRE_VERSION = 1;
+export const WIRE_VERSION = 2;
 
 /** A JSON object as it travels: values are `unknown` because free-form bags are genuinely free. */
 export type WireObject = Record<string, unknown>;
@@ -127,15 +127,63 @@ export interface Text {
   text?: string | null;
 }
 
+/** The namespace of every error code taskwire declares: `taskwire.<code>`. A namespaced code splits at
+ * its last `.` into the namespace and the code. */
+export const ERROR_NAMESPACE = 'taskwire';
+
+/**
+ * The namespace of the fastapi-viewsets codes the Python `TaskwireMiddleware` writes into
+ * `error.code` verbatim: the `code` of the executor's error for a deferred call that failed around
+ * its execution.
+ */
+export const ERROR_NAMESPACE_FASTAPI_VIEWSETS = 'fastapi-viewsets';
+
+/** The work could not be handed to the process that executes it. `retryable: true` (TW-CALL-005). */
+export const DISPATCH_FAILED = `${ERROR_NAMESPACE}.dispatch_failed`;
+/** A tracked call ended before anything executed it. `retryable: false` (TW-CALL-005). */
+export const NOT_EXECUTED = `${ERROR_NAMESPACE}.not_executed`;
+/** An execution limit ended the work while it held an open question. `retryable: true` (TW-DLG-006). */
+export const DIALOG_TIMEOUT = `${ERROR_NAMESPACE}.dialog_timeout`;
+/** The executor ended the work after it started; `message.params.reason`. `retryable: true` (TW-CALL-008). */
+export const INTERRUPTED = `${ERROR_NAMESPACE}.interrupted`;
+/** The call was answered with an error status and no exception; `message.params.status` (TW-CALL-006). */
+export const HTTP_STATUS = `${ERROR_NAMESPACE}.http_status`;
+/** An exception ended the operation; `message.params.exception` is `exceptionName()` of its name. */
+export const UNHANDLED_EXCEPTION = `${ERROR_NAMESPACE}.unhandled_exception`;
+/** A failure without a code of its own: Python `TaskwireMiddleware.on_transition()` for an executor error
+ * without `code`, and `OperationFailed.code` of a `failed` document without an `error`. */
+export const FAILED = `${ERROR_NAMESPACE}.failed`;
+/** A cancellation: `OperationFailed.code` of a `cancelled` operation, and the `detail` of a `410` reply to
+ * a dialog the operation withdrew. Never written into a document. */
+export const CANCELLED = `${ERROR_NAMESPACE}.cancelled`;
+
+/**
+ * A class name in snake case, the rule Python's `exception_name()` applies too.
+ *
+ * In order: `_` between an uppercase letter and an uppercase letter followed by a lowercase one
+ * (`HTTPError` -> `HTTP_Error`); `_` between a lowercase letter or digit and an uppercase letter
+ * (`ValueError` -> `Value_Error`); every run of characters outside `A-Z`, `a-z`, `0-9` becomes one
+ * `_`; leading and trailing `_` are removed; the result is lowercased. An empty result is `error`.
+ */
+export function exceptionName(name: string): string {
+  const snake = name
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+  return snake === '' ? 'error' : snake;
+}
+
 /**
  * §3.2's `Error`. Named `TaskwireError` because `Error` is the global exception type, and a wire
  * document that shadowed it would make `throw new Error(...)` unwritable in every module that
  * imported this one. It is a document, not a throwable: it carries no stack trace, deliberately,
  * because it reaches a browser (TW-PROG-005).
  *
- * Reserved codes: `dispatch_failed` (TW-CALL-005), `dialog_timeout` (TW-DLG-006) and `interrupted`
- * (TW-CALL-008, `message.params.reason`), all `retryable: true`; `not_executed` (TW-CALL-005),
- * `retryable: false`; `http_status` (TW-CALL-006), `retryable: true` for 502, 503 and 504 only.
+ * The codes taskwire writes are the constants above, each with `message.key` equal to the code. Every
+ * other `code` is written as given: a code the application passes (`Reporter.fail()`, `failWith()`)
+ * is the application's to namespace, and a forwarded fastapi-viewsets code keeps its namespace.
  */
 export interface TaskwireError {
   code: string;

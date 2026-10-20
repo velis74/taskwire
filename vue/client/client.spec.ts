@@ -1389,13 +1389,14 @@ describe('the write path (TW-REST-004)', () => {
 
   it('treats a 409 as a race lost and lets everything else through', async () => {
     const token = new_token();
-    // `already_terminal`, `holds_an_uncollected_result`, `no_uncollected_result`: three names for
-    // one event, which is another reader having got there first (TW-CANCEL-010, TW-REST-008).
+    // `taskwire.already_terminal`, `taskwire.holds_an_uncollected_result` and
+    // `taskwire.no_uncollected_result`: three names for one event, which is another reader having
+    // got there first (TW-CANCEL-010, TW-REST-008).
     let writeStatus = 409;
     server.handler = (url) =>
       url === `${DEFAULT_BASE_PATH}/${token}`
         ? { status: 200, data: parkedPayload(token) }
-        : { status: writeStatus, data: { detail: 'already_terminal' } };
+        : { status: writeStatus, data: { detail: 'taskwire.already_terminal' } };
 
     const handle = tw.track(token);
     await vi.advanceTimersByTimeAsync(BASE);

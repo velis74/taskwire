@@ -9,6 +9,57 @@ exists.
 
 <!-- New releases go directly below this comment, above the previous one, as `## Upgrading to vX.Y.Z (from vA.B.x)`. -->
 
+## Upgrading to v0.4.0 (from v0.3.x)
+
+### Error codes
+
+Every code taskwire writes carries the `taskwire.` namespace, and its `message.key` equals the code.
+Compare against the exported constants rather than literals:
+
+| Where | Old code | New code |
+|---|---|---|
+| `error.code` | `dispatch_failed` | `taskwire.dispatch_failed` (`DISPATCH_FAILED`) |
+| `error.code` | `not_executed` | `taskwire.not_executed` (`NOT_EXECUTED`) |
+| `error.code` | `dialog_timeout` | `taskwire.dialog_timeout` (`DIALOG_TIMEOUT`) |
+| `error.code` | `interrupted` | `taskwire.interrupted` (`INTERRUPTED`) |
+| `error.code` | `http_status` | `taskwire.http_status` (`HTTP_STATUS`) |
+| `error.code` of an exception that ended the operation | its class name, e.g. `ValueError` | `taskwire.unhandled_exception` (`UNHANDLED_EXCEPTION`), class name in `message.params.exception` as `value_error` |
+| `error.code` of a deferred viewset call the executor failed around without a code | `failed` | `taskwire.failed` (`FAILED`) |
+| `error.code` of a deferred viewset call the executor failed around | `action_failed` | `fastapi-viewsets.action_failed`, from fastapi-viewsets 0.12.0 |
+| `OperationFailed.code` of a `cancelled` operation | `failed` | `taskwire.cancelled` (`CANCELLED`) |
+| `OperationFailed.code` of a `failed` document without an `error` | `failed` | `taskwire.failed` (`FAILED`) |
+| REST `detail` | `not_found` | `taskwire.not_found` |
+| REST `detail` | `requested` | `taskwire.requested` |
+| REST `detail` | `already_terminal` | `taskwire.already_terminal` |
+| REST `detail` | `holds_an_uncollected_result` | `taskwire.holds_an_uncollected_result` |
+| REST `detail` | `no_uncollected_result` | `taskwire.no_uncollected_result` |
+| REST `detail` | `already_answered` | `taskwire.already_answered` |
+| REST `detail` | `cancelled` | `taskwire.cancelled` |
+| REST `422` of a dialog reply | `detail` only | `detail`, `code` `taskwire.invalid_reply`, `params.reason` |
+
+```ts
+import { DIALOG_TIMEOUT, OperationFailed } from 'taskwire';
+
+if (raised instanceof OperationFailed && raised.code === DIALOG_TIMEOUT) { /* offer a retry */ }
+```
+
+The translation keys of these messages change with them: `taskwire.dispatch_failed` stays, and an
+application that rendered an exception's class adds `taskwire.unhandled_exception`, interpolating
+`exception`. Codes an application passes to `fail()` are written as given; prefix them with the
+application's own namespace (see [Error codes](./error-codes.md)).
+
+### Wire version 2
+
+`WIRE_VERSION` is `2`, and every envelope, snapshot, register and `watch` reply carries `"v": 2`.
+Upgrade every process that writes into a shared store and the browser bundle together: a 0.3 reader
+does not know the namespaced codes.
+
+### Peer dependencies
+
+The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.12.0`, and
+`taskwire/muxws` and `taskwire/fastapi-viewsets` the optional npm peer
+`@dynamicforms/fastapi-viewsets` ^0.12.0.
+
 ## Upgrading to v0.3.0 (from v0.2.x)
 
 ### `TaskwireProgressDialog` is gone

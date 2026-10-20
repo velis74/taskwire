@@ -118,13 +118,15 @@ closed handle by definition, so its ✕ is `hide()` on one.
 `answer()`, `cancel()`, `collect()` and `dismiss()` **resolve quietly on 404, 409 and 410** — another
 tab getting there first is the normal outcome of a namespace-wide question, not a fault, and so is
 an operation that ended before the call arrived: while its tombstone is readable the server names
-which of those it was (`409 already_terminal`, `410` for a withdrawn dialog, `409
-no_uncollected_result` for a second collect), and afterwards the token is simply unknown. Everything
+which of those it was (`409 taskwire.already_terminal`, `410` for a withdrawn dialog, `409
+taskwire.no_uncollected_result` for a second collect), and afterwards the token is simply unknown. Everything
 else rejects, including a 422 (a malformed reply), a 500 and a transport failure.
 
 Awaiting a handle: a `run()` handle settles with **the request's** own promise (`await run(fn)` is
 `await fn(...)`), and a `track()` handle settles on the operation's own terminal document — `done`
-resolves, `failed` and `cancelled` reject with `OperationFailed` carrying `progress.error`.
+resolves, `failed` and `cancelled` reject with `OperationFailed` carrying `progress.error`'s `code` and
+`retryable`; a `cancelled` operation gives `code` `taskwire.cancelled`, a `failed` document without an
+`error` `taskwire.failed` ([Error codes](../guide/error-codes.md)).
 
 That document is readable at its own address for `tombstone_ttl` after the operation has left the
 register, so the ordinary end of an operation is something a handle **reads**, on every transport
@@ -282,7 +284,7 @@ execution passed to the body instead of bound: `execution.reporter` is the opera
 `dispatchError` and `pendingError` are predicates over the error the body threw. `callFromCarried()`
 turns carried values back into a `Call`. `trackFetch` wraps a WHATWG `fetch` handler
 `(request, execution) => Promise<Response>`: a request carrying a token runs inside a receipt and an
-execution, a status of 400 or more ends its operation `http_status`, and requests under
+execution, a status of 400 or more ends its operation `taskwire.http_status`, and requests under
 `excludePrefix` (default `DEFAULT_BASE_PATH`) pass through.
 
 `store.commit()` answers with `{ rev, cancelled }` — both of a write's outcomes at once, so a
@@ -472,3 +474,9 @@ closed vocabularies they validate against (`PROGRESS_STATES`, `DIALOG_STATES`, `
 `INPUT_TYPES`, `ACTIVE_STATES`, `TERMINAL_STATES`) and `WIRE_VERSION`. They are exported because a
 program that speaks the protocol without using the client still has to parse it; the client itself
 puts every incoming document through the same pair, so nothing reaches a handle unvalidated.
+
+`ERROR_NAMESPACE` (`'taskwire'`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`'fastapi-viewsets'`) are the
+namespaces of [Error codes](../guide/error-codes.md). `DISPATCH_FAILED`, `NOT_EXECUTED`,
+`DIALOG_TIMEOUT`, `INTERRUPTED`, `HTTP_STATUS`, `UNHANDLED_EXCEPTION`, `FAILED` and `CANCELLED` are
+taskwire's codes, and `exceptionName(name)` is the snake case of a class name in
+`taskwire.unhandled_exception`'s `message.params.exception`.

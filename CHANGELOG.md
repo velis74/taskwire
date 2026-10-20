@@ -6,6 +6,59 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-20
+
+### Added
+
+- `ERROR_NAMESPACE` (`taskwire`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`fastapi-viewsets`), exported
+  from `taskwire` in Python and TypeScript: the namespaces of the error codes taskwire declares and
+  forwards. The Error codes guide documents the code grammar, every code taskwire writes and mapping
+  namespaces to translation keys.
+- Code constants exported from `taskwire` in both languages: `DISPATCH_FAILED`, `NOT_EXECUTED`,
+  `DIALOG_TIMEOUT`, `INTERRUPTED`, `HTTP_STATUS`, `UNHANDLED_EXCEPTION`, `FAILED` and `CANCELLED`.
+  The TypeScript `DISPATCH_FAILED`, `NOT_EXECUTED` and `HTTP_STATUS` hold the namespaced codes.
+- `exception_name()` / `exceptionName()`: the snake case of a class name, the same in both languages,
+  and `unhandled_exception_error()` (Python).
+- `taskwire.rest.NOT_FOUND`, `REQUESTED`, `ALREADY_TERMINAL`, `HOLDS_AN_UNCOLLECTED_RESULT`,
+  `NO_UNCOLLECTED_RESULT` and `ALREADY_ANSWERED`: the REST `detail` codes.
+- The `422` of an invalid dialog reply carries `code` `taskwire.invalid_reply` (`INVALID_REPLY`) and
+  `params.reason` with what failed; `detail` keeps the English text.
+
+### Changed
+
+- **Breaking:** every error code taskwire writes carries the `taskwire.` namespace, in store
+  documents, pushes, REST responses and the conformance fixtures. `message.key` of each equals its
+  code:
+
+  | Old | New |
+  |---|---|
+  | `dispatch_failed` | `taskwire.dispatch_failed` |
+  | `not_executed` | `taskwire.not_executed` |
+  | `dialog_timeout` | `taskwire.dialog_timeout` |
+  | `interrupted` | `taskwire.interrupted` |
+  | `http_status` | `taskwire.http_status` |
+  | `failed` (`TaskwireMiddleware.on_transition()`, executor error without a code) | `taskwire.failed` |
+  | the exception's class name, e.g. `ValueError` | `taskwire.unhandled_exception`, `message.params.exception: "value_error"` |
+
+- **Breaking:** the REST `detail` codes carry the namespace: `not_found`, `requested`,
+  `already_terminal`, `holds_an_uncollected_result`, `no_uncollected_result`, `already_answered` and
+  `cancelled` are `taskwire.not_found` and so on.
+- **Breaking:** `WIRE_VERSION` is `2`. Envelopes, snapshots, registers and the `watch` reply carry
+  `"v": 2`.
+- `OperationFailed.code` of a `cancelled` operation is `taskwire.cancelled`, of a `failed` document
+  without an `error` `taskwire.failed`; both were `failed`.
+- The `error.code` `TaskwireMiddleware` writes for a deferred viewset call the executor failed around
+  is fastapi-viewsets' code, verbatim: `fastapi-viewsets.action_failed`.
+- The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.12.0`; the
+  optional npm peer `@dynamicforms/fastapi-viewsets` is ^0.12.0.
+
+### Fixed
+
+- `register_taskwire_rest`'s endpoints answer an error with the body `taskwire.rest` builds. The
+  `409` and `410` of a dialog reply carry the settled `dialog` (TW-DLG-010), over REST and over
+  muxws; previously the body held `detail` only.
+- The OpenAPI schema of the six endpoints declares each error status with `ErrorBody`.
+
 ## [0.3.2] - 2026-10-19
 
 ### Fixed

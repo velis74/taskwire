@@ -17,7 +17,15 @@ from typing import Any
 from ..calls import Call, call_token, execute_call, receive_call, status_error
 from ..delivery import Client
 from ..headers import CONNECTION_HEADER_BYTES as CONNECTION_HEADER
-from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
+from ..rest import (
+    collect_result,
+    dismiss_result,
+    get_operations,
+    get_snapshot,
+    NOT_FOUND,
+    reply_to_dialog,
+    request_cancel,
+)
 from ..settings import configured, settings
 
 
@@ -54,7 +62,7 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
         )
 
         if not path.startswith(mount):
-            status, payload = 404, {"detail": "not_found"}
+            status, payload = 404, {"detail": NOT_FOUND}
         elif scope["method"] == "POST":
             rest = path[len(mount) :].strip("/").split("/")
             if len(rest) == 3 and rest[1] == "dialogs":
@@ -66,9 +74,9 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
             elif len(rest) == 2 and rest[1] == "dismiss":
                 status, payload = await dismiss_result(client, rest[0])
             else:
-                status, payload = 404, {"detail": "not_found"}
+                status, payload = 404, {"detail": NOT_FOUND}
         elif scope["method"] != "GET":
-            status, payload = 404, {"detail": "not_found"}
+            status, payload = 404, {"detail": NOT_FOUND}
         else:
             rest = path[len(mount) :].strip("/")
             # The register is the collection and lives at the collection's own URL (TW-REST-004), so
@@ -116,7 +124,7 @@ def track_calls(
     namespace resolver returns one: `session_resolver`, else the configured one, called with the ASGI
     scope. The request runs inside `receive_call()` and `execute_call()`, so the application reports
     through `taskwire.progress` and hands work to another process with `taskwire.calls.hand_off()`.
-    A response status of 400 or more ends the operation `failed` with `http_status`. `result_kind`,
+    A response status of 400 or more ends the operation `failed` with `taskwire.http_status`. `result_kind`,
     called with the scope, fixes the operation's result kind; without it the operation is private.
     Requests under `exclude_prefix` (default: `settings.rest_prefix`, taskwire's own endpoints) and
     every other scope type pass through untouched.

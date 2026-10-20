@@ -216,7 +216,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
 
         listing = http.get("/taskwire", headers=headers)
         assert listing.status_code == 200
-        assert listing.json()["v"] == 1
+        assert listing.json()["v"] == 2
         assert [entry["token"] for entry in listing.json()["operations"]] == [token]
 
         snapshot = http.get(f"/taskwire/{token}", headers=headers)

@@ -40,6 +40,8 @@ from typing import Any
 import httpx
 import muxws
 
+from taskwire import DIALOG_TIMEOUT
+
 SESSION_COOKIE = "taskwire_demo_session"
 
 EXPORT_JOB = "export"
@@ -365,7 +367,7 @@ async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes
     progress = (remains or {}).get("progress") or {}
     check(
         "a reader arriving after the end learns the state and the reason",
-        progress.get("state") == "failed" and (progress.get("error") or {}).get("code") == "dialog_timeout",
+        progress.get("state") == "failed" and (progress.get("error") or {}).get("code") == DIALOG_TIMEOUT,
         json.dumps(progress)[:200],
     )
     check(

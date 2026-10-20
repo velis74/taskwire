@@ -27,7 +27,6 @@ from fastapi_viewsets.events import (  # noqa: E402
 )
 from fastapi_viewsets.events.store import get_store  # noqa: E402
 from fastapi_viewsets.events.viewset import register_events  # noqa: E402
-from fastapi_viewsets.exceptions import df_viewset_exception_handler, DfViewSetError  # noqa: E402
 from fastapi_viewsets.mux_ws.server import process_command  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
@@ -130,12 +129,14 @@ def _isolated():
     taskwire.reset_configuration()
 
 
+REFUSED = f"{taskwire.ERROR_NAMESPACE_FASTAPI_VIEWSETS}.event_topic_refused"
+
+
 class Application:
     def __init__(self) -> None:
         router = APIRouter()
         register_events(router)
         self.app = FastAPI()
-        self.app.add_exception_handler(DfViewSetError, df_viewset_exception_handler)
         self.app.include_router(router)
 
     async def command(self, path: str, payload: Any, peer: Any, session: str) -> FakeStream:
@@ -204,7 +205,7 @@ async def test_a_namespace_topic_admits_its_own_namespace_only(application) -> N
     assert await application.subscribe(peer, OTHER_NS, namespace_topic(NS)) == 403
 
     answers = await application.poll_rest(OTHER_NS, {namespace_topic(NS): None})
-    assert answers[namespace_topic(NS)]["error"] == "event_topic_refused"
+    assert answers[namespace_topic(NS)]["error"]["detail_code"] == REFUSED
     answers = await application.poll_rest(NS, {namespace_topic(NS): None})
     assert "error" not in answers[namespace_topic(NS)]
 
@@ -224,9 +225,9 @@ async def test_a_connection_topic_admits_its_own_socket_only(application) -> Non
     assert await application.subscribe(impostor, OTHER_NS, topic) == 403
 
     polled = await application.command("/events/poll", {"cursors": {topic: None}}, sibling, NS)
-    assert polled.payload["topics"][topic]["error"] == "event_topic_refused"
+    assert polled.payload["topics"][topic]["error"]["detail_code"] == REFUSED
     answers = await application.poll_rest(NS, {topic: None})
-    assert answers[topic]["error"] == "event_topic_refused"
+    assert answers[topic]["error"]["detail_code"] == REFUSED
 
 
 async def test_an_authorizer_the_application_lists_does_not_open_a_taskwire_topic() -> None:

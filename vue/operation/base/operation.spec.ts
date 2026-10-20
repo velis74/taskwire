@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { DialogRequest, Progress } from '../../wire/wire';
+import { type DialogRequest, ERROR_NAMESPACE, type Progress } from '../../wire/wire';
 
-import { Operation, type OperationHost } from './operation';
+import { Operation, OperationFailed, type OperationHost } from './operation';
 
 function progress(overrides: Partial<Progress> = {}): Progress {
   return {
@@ -56,6 +56,20 @@ function hostWith(replies: unknown[] = []): OperationHost & { calls: unknown[] }
     dismiss: async () => undefined,
   };
 }
+
+describe('OperationFailed (TW-PROG-005)', () => {
+  it("carries the document's error verbatim", () => {
+    const error = { code: 'acme.import_failed', message: { text: 'boom' }, retryable: true };
+    const failed = new OperationFailed('t', progress({ state: 'failed', error }));
+    expect([failed.code, failed.retryable, failed.message]).toEqual(['acme.import_failed', true, 'boom']);
+  });
+
+  it('names a cancelled operation taskwire.cancelled, and a failed one without an error taskwire.failed', () => {
+    const cancelled = new OperationFailed('t', progress({ state: 'cancelled' }));
+    expect([cancelled.code, cancelled.retryable]).toEqual([`${ERROR_NAMESPACE}.cancelled`, false]);
+    expect(new OperationFailed('t', progress({ state: 'failed' })).code).toBe('taskwire.failed');
+  });
+});
 
 describe('Operation.dialog (M3b, TW-TS-006)', () => {
   it('hangs on its own entry and is the oldest OPEN question', () => {

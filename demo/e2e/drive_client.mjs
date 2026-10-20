@@ -852,7 +852,7 @@ async function phaseHold(h) {
   ledger.check(
     'hold.record_survives_the_register',
     'what it left behind is readable at its own address, and names the deadline that ended it',
-    ended !== null && ended.state === 'failed' && ended.error?.code === 'dialog_timeout',
+    ended !== null && ended.state === 'failed' && ended.error?.code === 'taskwire.dialog_timeout',
     ended === null ? 'nothing was left at the address' : `it reads ${ended.state} / ${ended.error?.code}`,
   );
 
@@ -893,12 +893,12 @@ async function phaseHold(h) {
 
   // What the record is for, and the one thing an absence cannot do. This client did not exist while
   // the operation ran: it starts at `track()`, on a token that is already over, and TW-RET-004 is
-  // what lets it be told `failed` and `dialog_timeout` instead of that there is nothing there.
+  // what lets it be told `failed` and `taskwire.dialog_timeout` instead of that there is nothing there.
   const late = await lateReader(h, token);
   ledger.check(
     'hold.late_reader_learns_why',
     'a client that starts watching only after the operation ended still learns the state and the reason',
-    late !== null && late.state === 'failed' && late.error?.code === 'dialog_timeout',
+    late !== null && late.state === 'failed' && late.error?.code === 'taskwire.dialog_timeout',
     late === null ? 'it never read a document at all' : `it read ${late.state} / ${late.error?.code}`,
   );
 

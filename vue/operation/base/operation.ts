@@ -29,7 +29,15 @@
  * anywhere in this client (TW-TS-006).
  */
 
-import { type DialogRequest, isTerminal, type Progress, type Result, type Text } from '../../wire/wire';
+import {
+  type DialogRequest,
+  CANCELLED,
+  FAILED,
+  isTerminal,
+  type Progress,
+  type Result,
+  type Text,
+} from '../../wire/wire';
 
 /**
  * The disappearance of a document that was there a moment ago.
@@ -49,8 +57,13 @@ export class OperationGone extends Error {
   }
 }
 
-/** The operation failed on the server; `progress.error` is carried through verbatim (TW-PROG-005). */
+/**
+ * The operation ended `failed` or `cancelled`; `progress.error` is carried through verbatim
+ * (TW-PROG-005).
+ */
 export class OperationFailed extends Error {
+  /** `progress.error.code`; `taskwire.cancelled` for a `cancelled` operation, `taskwire.failed` for a
+   * `failed` document without an `error`. */
   readonly code: string;
 
   readonly retryable: boolean;
@@ -60,7 +73,7 @@ export class OperationFailed extends Error {
     super(error?.message?.text ?? `taskwire: operation ${token} failed`);
     Object.setPrototypeOf(this, OperationFailed.prototype);
     this.name = 'OperationFailed';
-    this.code = error?.code ?? 'failed';
+    this.code = error?.code ?? (progress.state === 'cancelled' ? CANCELLED : FAILED);
     this.retryable = error?.retryable ?? false;
   }
 }
@@ -361,8 +374,8 @@ export class Operation<T> implements PromiseLike<T> {
    * the way out; the terminal `cancelled` state is what confirms it, and it arrives as an ordinary
    * document on whichever wire is attached.
    *
-   * The two `409`s are named by the endpoint and both are ordinary: `already_terminal`, and
-   * `holds_an_uncollected_result` - an operation whose work is over has nothing left to interrupt,
+   * The two `409`s are named by the endpoint and both are ordinary: `taskwire.already_terminal`, and
+   * `taskwire.holds_an_uncollected_result` - an operation whose work is over has nothing left to interrupt,
    * and the affordance on such an entry is `dismiss()` rather than this (TW-CANCEL-010).
    */
   async cancel(): Promise<void> {
@@ -384,7 +397,7 @@ export class Operation<T> implements PromiseLike<T> {
    * this one carries it.
    *
    * Rejects when this handle holds no result at all: there is nothing to take, and the endpoint
-   * would answer the same `409` (`no_uncollected_result`). A rejection on a call issued *with* a
+   * would answer the same `409` (`taskwire.no_uncollected_result`). A rejection on a call issued *with* a
    * result in hand is another reader having released it first, and the value that reader released is
    * the value in hand - so the caller is given it rather than an error nothing can act on.
    */

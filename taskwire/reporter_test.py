@@ -441,7 +441,8 @@ async def test_operation_writes_exactly_one_terminal_state():
     assert len(terminal) == 1
     assert ProgressState(terminal[0].state) is ProgressState.FAILED
     assert terminal[0].error is not None
-    assert terminal[0].error.code == "RuntimeError"
+    assert terminal[0].error.code == "taskwire.unhandled_exception"
+    assert terminal[0].error.message.params == {"exception": "runtime_error"}
     assert terminal[0].error.message.text == "boom"
     assert "Traceback" not in str(terminal[0].error.to_dict())  # TW-PROG-005: no stack trace
 
@@ -812,7 +813,7 @@ async def test_reporter_fail_writes_an_error_without_a_stack_trace():
     reporter_ref: list = []
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
         reporter_ref.append(reporter)
-        await reporter.fail("dispatch_failed", Text(key="taskwire.dispatch_failed"), retryable=True)
+        await reporter.fail("taskwire.dispatch_failed", Text(key="taskwire.dispatch_failed"), retryable=True)
         snapshot = await store.snapshot(make_key("ns", token))
         assert snapshot is not None
         assert ProgressState(snapshot.progress.state) is ProgressState.FAILED
@@ -890,7 +891,7 @@ async def test_mark_failed_accepts_an_error_document_as_well_as_an_exception():
         await mark_failed(
             token,
             session="ns",
-            error=taskwire.Error(code="dispatch_failed", message=Text(key="x"), retryable=True),
+            error=taskwire.Error(code="taskwire.dispatch_failed", message=Text(key="x"), retryable=True),
             store=store,
         )
     finally:
@@ -898,7 +899,7 @@ async def test_mark_failed_accepts_an_error_document_as_well_as_an_exception():
 
     terminal = [e for e in seen if e.body.get("state") == "failed"]
     assert terminal, "the terminal envelope is the notification; the document is already gone"
-    assert terminal[-1].body["error"]["code"] == "dispatch_failed"
+    assert terminal[-1].body["error"]["code"] == "taskwire.dispatch_failed"
     assert terminal[-1].body["error"]["retryable"] is True
 
 

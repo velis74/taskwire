@@ -22,7 +22,7 @@
  * `WIRE_VERSION` is the protocol's and moves only on a breaking wire change (TW-CORE-011); this one
  * tracks the implementation and moves whenever the package is published.
  */
-export const VERSION = '0.3.2';
+export const VERSION = '0.4.0';
 
 // §5.5 - the client
 export { configure_taskwire, resetTaskwireConfig, taskwireConfig, type TaskwireUiConfig } from './client/config';
@@ -98,13 +98,10 @@ export {
   type CallReceipt,
   callToken,
   type CarriedCall,
-  DISPATCH_FAILED,
   executeCall,
   type ExecuteOptions,
   type HeadersLike,
-  HTTP_STATUS,
   IDEMPOTENCY_KEY_HEADER,
-  NOT_EXECUTED,
   receiveCall,
   type ReceiveOptions,
   SAFE_METHODS,
@@ -165,6 +162,14 @@ export {
   ACTIVE_STATES,
   type Aggregate,
   type Button,
+  CANCELLED,
+  DIALOG_TIMEOUT,
+  DISPATCH_FAILED,
+  FAILED,
+  HTTP_STATUS,
+  INTERRUPTED,
+  NOT_EXECUTED,
+  UNHANDLED_EXCEPTION,
   DIALOG_STATES,
   type DialogAnswer,
   type DialogReply,
@@ -173,6 +178,9 @@ export {
   ENVELOPE_KINDS,
   type Envelope,
   type EnvelopeKind,
+  ERROR_NAMESPACE,
+  ERROR_NAMESPACE_FASTAPI_VIEWSETS,
+  exceptionName,
   INPUT_TYPES,
   type InputField,
   type InputType,

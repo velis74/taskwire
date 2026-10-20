@@ -46,7 +46,7 @@ from ..delivery import (  # noqa: F401 - CONNECTION_TAG is re-exported
     OperationRef,
     OVERRIDES_TAG,
 )
-from ..models import Envelope, EnvelopeKind, Progress
+from ..models import Envelope, EnvelopeKind, Progress, WIRE_VERSION
 from ..reader import unwatch_namespace, watch_namespace
 from ..settings import configured, settings
 from ..transport import TaskwireTransport
@@ -168,7 +168,7 @@ def handle_watch(peer: Any, message: dict[str, Any]) -> dict[str, Any]:
     `false` suppresses, `true` revives, absent defers to `push_filter`, and `{}` returns everything
     to the predicate. Idempotent and last-writer-wins **per connection**.
 
-    Answers `{"v": 1, "status": int, "connection": str}` (TW-DEL-022): status `0` accepted, `1`
+    Answers `{"v": WIRE_VERSION, "status": int, "connection": str}` (TW-DEL-022): status `0` accepted, `1`
     rejected for exceeding `max_overrides`, `2` malformed. A rejected declaration still carries the
     connection id, since the socket is unchanged - and a client may send `{"overrides": {}}` purely
     to obtain that id, which is what a reconnecting client does (TW-REG-020). An empty declaration is
@@ -184,15 +184,15 @@ def handle_watch(peer: Any, message: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(declared, dict) or not all(
         isinstance(token, str) and isinstance(value, bool) for token, value in declared.items()
     ):
-        return {"v": 1, "status": 2, "connection": identity}
+        return {"v": WIRE_VERSION, "status": 2, "connection": identity}
 
     if len(declared) > settings.max_overrides:
         # TW-DEL-008: rejected rather than truncated, leaving the previous map in force. A truncated
         # map is one the user asked for and did not get, with no way to tell which half survived.
-        return {"v": 1, "status": 1, "connection": identity}
+        return {"v": WIRE_VERSION, "status": 1, "connection": identity}
 
     peer.tags[OVERRIDES_TAG] = dict(declared)
-    return {"v": 1, "status": 0, "connection": identity}
+    return {"v": WIRE_VERSION, "status": 0, "connection": identity}
 
 
 def prune_override(peers: list[Any], token: str) -> None:
@@ -269,7 +269,7 @@ async def serve_peer(peer: Any, session: str) -> StreamHandler:
 
         # TW-CORE-007: the wire vocabulary is closed. An unknown kind is answered rather than
         # ignored, so a client learns immediately instead of waiting on a stream nobody will end.
-        await stream.reply({"v": 1, "status": 2, "detail": f"unknown kind {kind!r}"})
+        await stream.reply({"v": WIRE_VERSION, "status": 2, "detail": f"unknown kind {kind!r}"})
 
     # TW-BP-004: this process now holds a connection for `session`, so its reader subscribes to that
     # namespace's channel. A no-op in a single-process deployment, and the difference between a

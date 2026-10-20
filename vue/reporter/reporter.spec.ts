@@ -526,7 +526,11 @@ describe('operation()', () => {
     terminal = terminalCommits(named);
     expect(terminal).toHaveLength(1);
     expect(terminal[0].state).toBe('failed');
-    expect(terminal[0].error?.message).toEqual({ text: 'boom' });
+    expect(terminal[0].error?.message).toEqual({
+      key: 'taskwire.unhandled_exception',
+      params: { exception: 'error' },
+      text: 'boom',
+    });
 
     // And the trap this form carries, asserted rather than described: `Symbol.asyncDispose` is
     // handed no arguments, so a block that throws WITHOUT calling `failed()` ends `done`. That is
@@ -573,7 +577,11 @@ describe('operation()', () => {
     terminal = terminalCommits(failing);
     expect(terminal).toHaveLength(1);
     expect(terminal[0].state).toBe('failed');
-    expect(terminal[0].error).toEqual({ code: 'ImportFailed', message: { text: 'boom' }, retryable: false });
+    expect(terminal[0].error).toEqual({
+      code: 'taskwire.unhandled_exception',
+      message: { key: 'taskwire.unhandled_exception', params: { exception: 'import_failed' }, text: 'boom' },
+      retryable: false,
+    });
     // TW-PROG-005: no stack trace on a document that reaches a browser.
     expect(Object.keys(terminal[0].error!)).toEqual(['code', 'message', 'retryable']);
 
@@ -706,7 +714,7 @@ describe('operation()', () => {
       ns: NS,
       store: second,
       token,
-      error: { code: 'dispatch_failed', message: { key: 'taskwire.dispatch_failed' }, retryable: true },
+      error: { code: 'taskwire.dispatch_failed', message: { key: 'taskwire.dispatch_failed' }, retryable: true },
     });
     expect(second.commitCount).toBe(0);
   });
@@ -842,7 +850,7 @@ describe('failing loudly', () => {
     const store = new RecordingStore();
     const token = new_token();
     await operation(options(store, token), async (reporter) => {
-      await reporter.fail('dispatch_failed', { key: 'taskwire.dispatch_failed' }, true);
+      await reporter.fail('taskwire.dispatch_failed', { key: 'taskwire.dispatch_failed' }, true);
       const stored = await store.snapshot(key(token));
       expect(stored?.progress.state).toBe('failed');
       expect(Object.keys(stored!.progress.error!).sort()).toEqual(['code', 'message', 'retryable']);

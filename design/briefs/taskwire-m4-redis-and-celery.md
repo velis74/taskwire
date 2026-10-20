@@ -19,7 +19,7 @@ the same in-process reader M1 built - which remains the only caller of `transpor
 inside the task, plus the documented wiring for `celery_viewset`. **Done when** a real Celery worker
 reports progress and completes a dialog round trip against a real Redis, the worker-side
 `operation()` entry is what binds the reporter (verified by a test asserting the web-side middleware
-alone is *not* sufficient), a dispatch failure is written as `code: "dispatch_failed"` with
+alone is *not* sufficient), a dispatch failure is written as `code: "taskwire.dispatch_failed"` with
 `retryable: true`, and the missing-reader diagnostic fires when the reader was never started.
 
 ## 2. Prerequisites
@@ -232,7 +232,7 @@ Reproduced verbatim from the spec. These are the acceptance criteria, not backgr
   there (TW-AMB-008).
 - **TW-CELERY-004** In a Celery deployment **exactly one process owns the terminal write, and it is
   the worker.** The web side writes `queued` and - only if dispatch itself failed - `failed`. That
-  dispatch failure MUST be written as `code: "dispatch_failed"` with `retryable: true`: an
+  dispatch failure MUST be written as `code: "taskwire.dispatch_failed"` with `retryable: true`: an
   unreachable broker is transient, so a frontend may legitimately offer a retry.
 - **TW-CELERY-005** The web-side middleware MUST NOT open `operation()` for a Celery-dispatching
   action; command middleware never runs in the worker, so the contextvar would be unbound there and
@@ -256,11 +256,11 @@ Reproduced verbatim from the spec. These are the acceptance criteria, not backgr
   high-volume interactive flows want a workflow engine, which taskwire deliberately does not
   implement; and that the author intends to research whether an asyncio loop inside a Celery worker
   is viable before committing to an answer. A future rule may close this; none of the current ones
-  claims to. *(The prose is M9's; the behaviour this milestone owes is the `dialog_timeout` failure
+  claims to. *(The prose is M9's; the behaviour this milestone owes is the `taskwire.dialog_timeout` failure
   write below.)*
 - **TW-DLG-006** The consequence MUST be stated plainly in the docs rather than softened: **an
   unanswered dialog blocks its worker until Celery's own execution timeout kills the task**, at which
-  point the operation becomes `failed` with `code: "dialog_timeout"` and `retryable: true`, and its
+  point the operation becomes `failed` with `code: "taskwire.dialog_timeout"` and `retryable: true`, and its
   open dialogs are withdrawn (TW-STORE-004).
 - **TW-CELERY-011** The command token MUST travel as the `X-Taskwire-Token` **header**, never a
   query parameter, and the connection id - when the client has one - as `X-Taskwire-Connection`
@@ -443,14 +443,14 @@ async def await_dialog(self, key: str, did: str) -> DialogReply:
     the stored value. There is no exception to this and no promotion path - an operation that was
     private when the web process enqueued it stays private in the worker, and one that declared a
     kind keeps that kind even if the worker would have chosen another.
-22. **Dispatch failure is `code: "dispatch_failed"`, `retryable: True`** (TW-CELERY-004). The web
+22. **Dispatch failure is `code: "taskwire.dispatch_failed"`, `retryable: True`** (TW-CELERY-004). The web
     side writes it through `mark_failed()` when `apply_async` itself raises - an unreachable broker
     is transient, and a frontend that offers a retry button on it is behaving correctly. Do not
     prefix the code with the distribution name; the reserved codes in §3.2 of the spec are bare
     strings, and TW-TXT-002's prefixing convention governs `Text` catalogue keys, not error codes.
-23. **A worker killed while blocked in `ask()` writes `dialog_timeout`** (TW-DLG-006). Celery raises
+23. **A worker killed while blocked in `ask()` writes `taskwire.dialog_timeout`** (TW-DLG-006). Celery raises
     `SoftTimeLimitExceeded` inside the task; the worker-side entry must map it to `failed` with
-    `code: "dialog_timeout"` and `retryable: True` **when the operation was in `waiting_input` on an
+    `code: "taskwire.dialog_timeout"` and `retryable: True` **when the operation was in `waiting_input` on an
     open dialog**, and to an ordinary `failed` otherwise, and must let the terminal write withdraw
     the open dialogs on the way out (TW-CANCEL-011, TW-STORE-004). This is the one place the removed
     dialog timeout leaves a visible trace, and it is a diagnosis of a death, not a deadline.
@@ -578,13 +578,13 @@ Celery (`taskwire/contrib/celery_test.py`, skipped when `celery` is absent):
     then a worker `operation(result_kind="acme.report")` leaves it **null**, so a private operation
     cannot be promoted from the worker (TW-CELERY-009, TW-PROG-006).
 32. `test_dispatch_failure_writes_failed_from_the_web_side` - `mark_failed` produces
-    `code == "dispatch_failed"` and `retryable is True`, and the failure is observable on the
+    `code == "taskwire.dispatch_failed"` and `retryable is True`, and the failure is observable on the
     terminal envelope (TW-CELERY-004).
 33. `test_soft_time_limit_while_blocked_on_a_dialog_writes_dialog_timeout` - a task blocked in
-    `ask()` killed by `SoftTimeLimitExceeded` writes `failed` with `code == "dialog_timeout"` and
+    `ask()` killed by `SoftTimeLimitExceeded` writes `failed` with `code == "taskwire.dialog_timeout"` and
     `retryable is True`, and its open dialogs come back `cancelled` (TW-DLG-006, TW-STORE-004). Its
     twin, `test_soft_time_limit_elsewhere_is_an_ordinary_failure`, asserts the code is **not**
-    `dialog_timeout` when no dialog was open.
+    `taskwire.dialog_timeout` when no dialog was open.
 34. `test_sync_worker_completes_a_dialog_round_trip` - end to end against real Redis: the task calls
     `ask()` under `run_until_complete` with `nest_asyncio` applied, a separate task resolves the
     dialog after a delay long enough to span several internal `BLPOP` bounds, the worker wakes and
@@ -610,13 +610,13 @@ Celery (`taskwire/contrib/celery_test.py`, skipped when `celery` is absent):
 - [ ] `grep -rniE "\bSCAN\b|\bKEYS\b" taskwire/contrib/redis.py` finds no Redis command usage
       outside `migrate` (`KEYS[1]` inside a Lua string is fine).
 - [ ] `grep -rniE "terminal_ttl|durable_ttl|dialog_timeout\b|lifetime" taskwire/contrib/ --include="*.py" | grep -v _test`
-      returns nothing except the `code: "dialog_timeout"` constant in the Celery error path.
+      returns nothing except the `code: "taskwire.dialog_timeout"` constant in the Celery error path.
 - [ ] Manual: a Celery worker against real Redis drives a 30-second operation whose bar updates in a
       browser through polling alone, and a dialog asked by that worker is answered from the browser
       an hour later and the worker continues.
 - [ ] An operation the worker started with no `result_kind` is in no register, including the starting
       tab's server-side one, and is still readable by token.
-- [ ] Killing the broker before dispatch leaves the operation `failed` with `code: "dispatch_failed"`
+- [ ] Killing the broker before dispatch leaves the operation `failed` with `code: "taskwire.dispatch_failed"`
       and `retryable: true` on the terminal envelope.
 - [ ] Starting the app without `start_taskwire_reader()` logs the warning naming that call, and
       the app still works (degraded to polling) - the failure degrades, it does not break.

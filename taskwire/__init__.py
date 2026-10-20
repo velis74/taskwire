@@ -12,7 +12,7 @@ outside. Nothing in the core imports a framework, a driver or a UI library (TW-C
 
 from __future__ import annotations
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 from .ambient import ask, current_reporter, progress
 from .calls import Call, call_token, end_call, execute_call, hand_off, receive_call
@@ -29,14 +29,24 @@ from .headers import CONNECTION_HEADER, TOKEN_HEADER
 from .models import (
     Aggregate,
     Button,
+    CANCELLED,
+    DIALOG_TIMEOUT,
     DialogAnswer,
     DialogReply,
     DialogRequest,
     DialogState,
+    DISPATCH_FAILED,
     Envelope,
     EnvelopeKind,
     Error,
+    ERROR_NAMESPACE,
+    ERROR_NAMESPACE_FASTAPI_VIEWSETS,
+    exception_name,
+    FAILED,
+    HTTP_STATUS,
     Input,
+    INTERRUPTED,
+    NOT_EXECUTED,
     OperationSummary,
     Progress,
     ProgressState,
@@ -46,6 +56,8 @@ from .models import (
     Snapshot,
     t,
     Text,
+    UNHANDLED_EXCEPTION,
+    unhandled_exception_error,
 )
 from .reader import check_taskwire_readers, start_taskwire_reader, stop_taskwire_reader
 from .register import aggregate, build_register
@@ -87,6 +99,18 @@ __all__ = [
     "Envelope",
     "EnvelopeKind",
     "Error",
+    "ERROR_NAMESPACE",
+    "CANCELLED",
+    "DIALOG_TIMEOUT",
+    "DISPATCH_FAILED",
+    "FAILED",
+    "HTTP_STATUS",
+    "INTERRUPTED",
+    "NOT_EXECUTED",
+    "UNHANDLED_EXCEPTION",
+    "exception_name",
+    "unhandled_exception_error",
+    "ERROR_NAMESPACE_FASTAPI_VIEWSETS",
     "InertReporter",
     "Input",
     "LocalTransport",

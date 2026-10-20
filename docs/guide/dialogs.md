@@ -26,8 +26,8 @@ answer a library can invent on a user's behalf.
 executor's own time limit ends the work — the `soft_time_limit` of a [Celery
 task](../api/python.md#the-celery-worker-entry), the `TimeLimits` of a [deferred viewset
 action](./fastapi-viewsets.md#deferred-actions) — at which point the operation becomes `failed` with
-code `dialog_timeout` and `retryable: true`, and its open dialogs are withdrawn. That code is written
-only when a question was actually open: work ended while doing the work reports `interrupted` or
+code `taskwire.dialog_timeout` and `retryable: true`, and its open dialogs are withdrawn. That code is written
+only when a question was actually open: work ended while doing the work reports `taskwire.interrupted` or
 what its own exception names, because telling a reader to answer a question nobody asked is worse
 than telling them nothing. taskwire solves the general problem of a blocked worker nowhere; if you
 need a deadline, implement one at whatever level suits your application, as the demo does with

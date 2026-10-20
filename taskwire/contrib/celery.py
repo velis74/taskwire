@@ -6,7 +6,7 @@ Imports Celery; nothing in `taskwire/` outside `contrib` may (TW-CORE-006).
 
 **In a Celery deployment the worker owns the terminal write of an operation it runs**
 (TW-CELERY-004, TW-INV-009). The web side writes `queued`, and `failed` only when the broker did not
-accept the task: `dispatch_failed` with `retryable: true`, because an unreachable broker is transient
+accept the task: `taskwire.dispatch_failed` with `retryable: true`, because an unreachable broker is transient
 and a frontend may legitimately offer a retry.
 
 The web side must **not** open `operation()` for a task it dispatches (TW-CELERY-005): the block would
@@ -25,7 +25,7 @@ Either way the task body is a `taskwire_task`.
 
 A dialog has no deadline (TW-DLG-005), so **an unanswered question holds its worker until Celery's
 own execution timeout kills the task** (TW-CELERY-010). At that point this module writes `failed`
-with `code: "dialog_timeout"` and `retryable: true`, and withdraws the operation's open dialogs.
+with `code: "taskwire.dialog_timeout"` and `retryable: true`, and withdraws the operation's open dialogs.
 
 What you can do about it today, none of which is a solution:
 
@@ -114,12 +114,12 @@ def taskwire_task(
                     #
                     # Named rather than committed: the exception is on its way out of `operation()`,
                     # whose exit makes the one terminal write this operation gets (TW-API-001). When
-                    # it is not a question, nothing is named and the exception's own class is what
-                    # the exit derives the code from, as it does for every other failure.
+                    # it is not a question, nothing is named and the exit writes
+                    # `taskwire.unhandled_exception` with the exception's class, as for every other failure.
                     if reporter.asking:
                         reporter.name_error(
                             DIALOG_TIMEOUT,
-                            Text(key="taskwire.dialog_timeout"),
+                            Text(key=DIALOG_TIMEOUT),
                             True,  # noqa: FBT003 - positional to match `name_error(code, message, retryable)`
                         )
                     raise
@@ -165,7 +165,7 @@ async def dispatch(
         await mark_failed(
             token,
             session=session,
-            error=Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True),
+            error=Error(code=DISPATCH_FAILED, message=Text(key=DISPATCH_FAILED), retryable=True),
         )
         raise broker_failure
 

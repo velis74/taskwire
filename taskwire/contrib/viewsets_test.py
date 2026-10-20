@@ -130,7 +130,7 @@ def test_the_collection_lives_at_the_base_path(http: TestClient) -> None:
     assert [row["token"] for row in body["operations"]] == [started]
     assert body["aggregate"]["data"]["total"] == 1
     assert body["poll_after_ms"] > 0
-    assert body["v"] == 1
+    assert body["v"] == 2
 
     # TW-REG-011: there is no percentage on the aggregate and no rule may add one. Two operations'
     # self-reported percentages are not commensurable, so any figure across them is invented.
@@ -178,7 +178,7 @@ def test_a_snapshot_is_the_whole_state_in_one_document(http: TestClient) -> None
     assert body["progress"]["result_kind"] == "report"
     assert body["cancel_requested"] is False
     assert body["dialogs"] == []
-    assert body["v"] == 1
+    assert body["v"] == 2
 
 
 def test_cancel_is_acknowledged_and_never_claimed_as_done(http: TestClient) -> None:
@@ -191,7 +191,7 @@ def test_cancel_is_acknowledged_and_never_claimed_as_done(http: TestClient) -> N
 
     accepted = http.post(f"/taskwire/{token}/cancel", headers=HEADERS)
     assert accepted.status_code == 202
-    assert accepted.json()["detail"] == "requested"
+    assert accepted.json()["detail"] == "taskwire.requested"
 
     assert http.get(f"/taskwire/{token}", headers=HEADERS).json()["cancel_requested"] is True
     assert http.post(f"/taskwire/{token}/cancel", headers={USER_HEADER: "bob"}).status_code == 404
@@ -416,6 +416,62 @@ def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
 
     second = command(http, "POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
     assert second.status == 409, "the store arbitrated, and the second answer lost"
+    assert second.payload["detail"] == "taskwire.already_answered"
+    assert second.payload["dialog"]["reply"]["button"] == "yes", "the loser is told who won (TW-DLG-010)"
+
+
+def _asking(http: TestClient, store: taskwire.MemoryStore) -> str:
+    token = http.post("/start", headers=HEADERS).json()["token"]
+    question = taskwire.DialogRequest(id="ask-1", dialog_id="acme.overwrite", buttons=[taskwire.Button(id="yes")])
+    run(store.put_dialog(taskwire.key("ns:alice", token), question, 3600))
+    return token
+
+
+def test_the_loser_of_a_dialog_reply_is_shown_the_winning_reply(http: TestClient, store: taskwire.MemoryStore) -> None:
+    """TW-DLG-010: the `409` body carries the dialog in its settled state with the winning reply."""
+    token = _asking(http, store)
+    url = f"/taskwire/{token}/dialogs/ask-1"
+    assert http.post(url, json={"button": "yes", "values": {"note": "first"}}, headers=HEADERS).status_code == 204
+
+    lost = http.post(url, json={"button": "yes", "values": {}}, headers=HEADERS)
+    assert lost.status_code == 409
+    body = lost.json()
+    assert body["detail"] == "taskwire.already_answered"
+    assert (body["dialog"]["state"], body["dialog"]["reply"]["values"]) == ("answered", {"note": "first"})
+
+
+def test_a_reply_to_a_withdrawn_dialog_is_410_with_the_dialog(http: TestClient, store: taskwire.MemoryStore) -> None:
+    """The `410` body names the withdrawal and carries the dialog, as `taskwire.rest` builds it."""
+    token = _asking(http, store)
+    run(store.withdraw_dialogs(taskwire.key("ns:alice", token)))
+
+    gone = http.post(f"/taskwire/{token}/dialogs/ask-1", json={"button": "yes", "values": {}}, headers=HEADERS)
+    assert gone.status_code == 410
+    assert gone.json()["detail"] == "taskwire.cancelled"
+    assert gone.json()["dialog"]["state"] == "cancelled"
+
+    unknown = http.post(f"/taskwire/{token}/dialogs/ask-2", json={"button": "yes", "values": {}}, headers=HEADERS)
+    assert (unknown.status_code, unknown.json()) == (404, {"detail": "taskwire.not_found"})
+
+
+def test_an_invalid_reply_is_422_with_a_code_and_what_failed(http: TestClient, store: taskwire.MemoryStore) -> None:
+    """TW-DLG-015: `taskwire.invalid_reply`, with `params` naming the failure and `detail` in English."""
+    token = _asking(http, store)
+
+    wrong = http.post(f"/taskwire/{token}/dialogs/ask-1", json={"button": "maybe", "values": {}}, headers=HEADERS)
+    assert wrong.status_code == 422
+    assert wrong.json() == {
+        "detail": "button 'maybe' is not one of this dialog's buttons",
+        "code": "taskwire.invalid_reply",
+        "params": {"reason": "unknown_button", "button": "maybe"},
+    }
+
+
+def test_the_schema_declares_every_error_answer_of_a_dialog_reply(http: TestClient) -> None:
+    """Each error status of the reply is documented with `ErrorBody`."""
+    responses = http.get("/openapi.json").json()["paths"]["/taskwire/{token}/dialogs/{did}"]["post"]["responses"]
+    for status in ("404", "409", "410", "422"):
+        assert responses[status]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ErrorBody"}
 
 
 # ------------------------------------------------------------------ tracked viewset calls (TW-CALL-*)
@@ -927,7 +983,10 @@ def test_on_transition_ends_what_the_executor_ended_outside_the_execution(store:
     assert [d.state for d in run(store.snapshot(taskwire.key("ns:alice", asking))).dialogs] == ["cancelled"]
     assert (_ended(store, unsent).error.code, _ended(store, unsent).error.retryable) == (DISPATCH_FAILED, True)
     assert _ended(store, started).state == "running", "a started call is not ended by not_run"
-    assert (_ended(store, broken).error.code, _ended(store, broken).error.retryable) == ("action_failed", False)
+    assert (_ended(store, broken).error.code, _ended(store, broken).error.retryable) == (
+        f"{taskwire.ERROR_NAMESPACE_FASTAPI_VIEWSETS}.action_failed",
+        False,
+    ), "the executor's code, forwarded verbatim"
     assert _ended(store, nested).state == "running"
     assert _ended(store, sent).state == "queued"
 

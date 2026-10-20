@@ -52,9 +52,9 @@ the operation `failed`:
 
 | The call ended | Error |
 |---|---|
-| with one of `dispatch_errors` | `dispatch_failed`, `retryable: true` |
+| with one of `dispatch_errors` | `taskwire.dispatch_failed`, `retryable: true` |
 | with one of `pending_errors` | none; the operation stays `queued` until another process executes it or `active_ttl` expires it |
-| in any other way, a normal return included | `not_executed`, `retryable: false` |
+| in any other way, a normal return included | `taskwire.not_executed`, `retryable: false` |
 
 A receipt for a token whose operation already ended drops that document first: the call executes
 anew, and its operation starts again from `queued`.
@@ -71,7 +71,7 @@ async with execute_call(call):
 
 When the block completes, `execute_call` exits without a terminal write and the operation stays
 `running`. The worker's `operation()` continues the same document and ends it. When the block raises,
-the operation ends `dispatch_failed`. Outside an execution `hand_off()` yields `{}`, and the task runs
+the operation ends `taskwire.dispatch_failed`. Outside an execution `hand_off()` yields `{}`, and the task runs
 unreported.
 
 The process that receives the work pushes to no socket of its own. `configure_executor()` configures
@@ -104,8 +104,8 @@ operation. It returns whether it wrote, and logs a store failure instead of rais
 
 | Code | Meaning | `retryable` |
 |---|---|---|
-| `interrupted` | the executor ended the work after it started; `message.params.reason` names how | `true` |
-| `dialog_timeout` | the same, while the work held an open question | `true` |
+| `taskwire.interrupted` | the executor ended the work after it started; `message.params.reason` names how | `true` |
+| `taskwire.dialog_timeout` | the same, while the work held an open question | `true` |
 
 ## Adapters
 
@@ -125,7 +125,7 @@ app = track_calls(app, result_kind=lambda scope: "acme.export" if scope["path"] 
 The ASGI and WSGI adapters call the namespace resolver with the ASGI scope or the WSGI environ — the
 configured `session_resolver`, or the `session_resolver` passed to `track_calls`. Each request runs
 inside a receipt and an execution. A response status of 400 or more ends the operation `failed` with
-`code: "http_status"` and `message.params.status`; it is `retryable` for 502, 503 and 504. Requests
+`code: "taskwire.http_status"` and `message.params.status`; it is `retryable` for 502, 503 and 504. Requests
 under `settings.rest_prefix` — taskwire's own endpoints — pass through untouched. The WSGI adapter
 ends the operation when the server closes the response iterable, so a streamed body reports while it
 streams.

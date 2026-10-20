@@ -582,7 +582,7 @@ asked for. It raises.
 failure map into the progress API" question: `{"code": "import.bad_encoding", "message": {Text},
 "retryable": false}`. `code` is a stable machine string; `message` is a `Text`; nothing else is
 promised, and stack traces must never go in here. Two codes are reserved because taskwire itself
-writes them: `dispatch_failed`, when the task never reached a broker, and `dialog_timeout`, when a
+writes them: `taskwire.dispatch_failed`, when the task never reached a broker, and `taskwire.dialog_timeout`, when a
 worker blocked on a question was killed by Celery's own execution timeout. Both carry
 `retryable: true`, because both describe a transient condition rather than a wrong request, and a
 frontend may legitimately offer the button.
@@ -857,7 +857,7 @@ question it was showing got resolved (possibly in another tab) and close it.
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "token": "b1e2...-uuid",
   "rev": 1754385271041,
   "progress": { ... },
@@ -938,7 +938,7 @@ register read *is* the delivery.
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "operations": [ { ...OperationSummary } ],
   "aggregate": { ...Aggregate },
   "server_time": "2026-08-05T09:14:32.000Z",
@@ -1004,7 +1004,7 @@ differ.
 ### `Envelope` - what a transport pushes
 
 ```json
-{ "v": 1, "token": "b1e2...", "rev": 1754385271041, "kind": "progress", "body": { ...Progress } }
+{ "v": 2, "token": "b1e2...", "rev": 1754385271041, "kind": "progress", "body": { ...Progress } }
 ```
 
 `kind` is one of `progress`, `dialog.open`, `dialog.close`, `cancel`, `snapshot`. `body` is the
@@ -2365,7 +2365,7 @@ way a library default never could be.
 **And the cost has to be stated plainly rather than mitigated into invisibility:**
 
 > **An unanswered dialog blocks its worker until Celery's own execution timeout kills the task**, at
-> which point the operation becomes `failed` with `code: "dialog_timeout"` and `retryable: true`, and
+> which point the operation becomes `failed` with `code: "taskwire.dialog_timeout"` and `retryable: true`, and
 > its open questions are withdrawn.
 
 That is a real hazard and the mitigations around it are real but partial: any tab of the namespace
@@ -2670,7 +2670,7 @@ suppress between polls.
 Its reply is the one place a connection id is handed out, and the reply is three fields:
 
 ```json
-{ "v": 1, "status": 0, "connection": "c7f3a1" }
+{ "v": 2, "status": 0, "connection": "c7f3a1" }
 ```
 
 `status` is a small integer - `0` accepted, `1` rejected for exceeding `max_overrides`, `2`
@@ -4382,8 +4382,8 @@ CI job verifying that a copy is current: a corpus that exists twice is a corpus 
 and the whole reason it exists is that two independent implementations diverge silently unless
 something structurally prevents it.
 
-**Versioning convention, shared with muxws.** The wire format carries an integer version - `"v": 1` in
-every taskwire envelope, snapshot **and register payload**; muxws carries the same integer in the
+**Versioning convention, shared with muxws.** The wire format carries an integer version - `"v": 2` in
+every taskwire envelope, snapshot **and register payload**; muxws carries its own integer in the
 generation component of its `muxws.v1.<codec>` subprotocol, which is the lowest-level place it has to
 put one - bumped only on a breaking wire change and never on an implementation change. The
 register payload is on that list deliberately: it is the document a polling client reads on every
@@ -4470,13 +4470,13 @@ class TaskwireMiddleware(Middleware):
             # The task never reached a worker, so no worker will ever write a terminal state.
             # This is the single exception to "the worker owns the terminal write".
             await taskwire.mark_failed(token, session=ns, error=Error(
-                code="dispatch_failed", message=t("taskwire.dispatch_failed"), retryable=True))
+                code="taskwire.dispatch_failed", message=t("taskwire.dispatch_failed"), retryable=True))
             raise
 ```
 
 `retryable=True` on that error is a decision rather than an inherited default: an unreachable broker
-is transient, so a frontend may legitimately offer the user a Retry button, and `dispatch_failed` is
-the stable code it keys that button off. The other reserved code, `dialog_timeout`, is written when
+is transient, so a frontend may legitimately offer the user a Retry button, and `taskwire.dispatch_failed` is
+the stable code it keys that button off. The other reserved code, `taskwire.dialog_timeout`, is written when
 Celery kills a worker that was blocked on a question, and carries `retryable: true` for the same
 reason - re-running is a reasonable thing to offer, and the second attempt may find somebody at the
 screen.
@@ -4975,7 +4975,7 @@ A user clicks **Export**, in one of the three tabs they have open.
     with it. A programmer who wants a deadline implements one where they know the right behaviour.
     The consequence is stated rather than softened: an unanswered dialog blocks its worker until
     Celery's execution timeout kills the task, at which point the operation is `failed` with
-    `code: "dialog_timeout"` and `retryable: true`, and **the general problem of a blocked worker is
+    `code: "taskwire.dialog_timeout"` and `retryable: true`, and **the general problem of a blocked worker is
     deliberately unsolved** - the intended next step is research into whether an asyncio loop inside a
     Celery worker is viable, not another rule. First answer wins, arbitrated by the store.
     Unanswered dialogs live in the snapshot, which is what makes re-delivery idempotent - and what
@@ -5018,7 +5018,7 @@ A user clicks **Export**, in one of the three tabs they have open.
 20. `data`, dialog `params` and `result` are capped at 16 KiB encoded; over-cap raises at call time
     and is never truncated.
 21. In a Celery deployment the worker owns the terminal write. The web side writes `queued` and, only
-    if dispatch itself failed, `failed` with `code: "dispatch_failed"` and `retryable: true` - an
+    if dispatch itself failed, `failed` with `code: "taskwire.dispatch_failed"` and `retryable: true` - an
     unreachable broker is transient, so a frontend may offer a retry. The web side also owns the
     one-time writes of `result_kind` and `origin_connection`, because it is the only process that sees
     the request, its action configuration and its headers, and there is **no** exception: neither
@@ -5503,7 +5503,7 @@ from the worker reaching a polling HTTP client - which requires the worker-side 
 exist, and this test is the one that would have caught its absence; a full dialog round trip where the
 worker blocks, the test client answers over REST, and the worker's `ask()` returns the right value; a
 worker killed while blocked on an unanswered question leaving the operation `failed` with
-`code: "dialog_timeout"` and its question `cancelled`; a cancel waking a dialog-blocked worker;
+`code: "taskwire.dialog_timeout"` and its question `cancelled`; a cancel waking a dialog-blocked worker;
 **a worker that writes a `Result` and exits while its operation stays in `waiting_input`, asserted
 against the worker pool rather than against the document** - that is the assertion that catches an
 implementation that read "parked until collected" as an `ask()`; and an operation with a 90-second
@@ -5652,7 +5652,7 @@ and both; a `null` percent versus an absent one; every `state` value; a dialog w
 `watch` document with an empty `overrides` map and one carrying both a `false` and a `true` entry, and
 the `watch` reply in each of its three statuses; timestamps in UTC with `Z`; a `rev` seeded from
 wall-clock milliseconds (large enough to matter in JS - assert the implementation stays inside
-`Number.MAX_SAFE_INTEGER`); a `Snapshot` and a `Register` each carrying `"v": 1`, since a document
+`Number.MAX_SAFE_INTEGER`); a `Snapshot` and a `Register` each carrying `"v": 2`, since a document
 without it must fail to parse; a progress document with `result_kind` / `origin_connection` / `result`
 present and one with all three absent (an M1 writer's output must still parse for an M7 reader, and
 vice versa); a `Result` of each shipped `kind` plus one carrying an application's own kind string, in
