@@ -131,7 +131,10 @@ export interface Text {
  * The namespace of the error codes taskwire declares outside the wire format: `taskwire.<code>`.
  *
  * A namespaced code splits at its last `.` into the namespace and the code. The reserved codes of an
- * operation document's `error.code` are values of the wire format and carry no namespace.
+ * operation document's `error.code` (`dispatch_failed`, `dialog_timeout`, `interrupted`, `not_executed`,
+ * `http_status`, and `failed`, which the Python `TaskwireMiddleware.on_transition()` writes for a
+ * deferred call the executor failed around when the executor's error carries no `code`) are values of
+ * the wire format and carry no namespace.
  */
 export const ERROR_NAMESPACE = 'taskwire';
 

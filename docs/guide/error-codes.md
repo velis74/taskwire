@@ -40,10 +40,11 @@ read and write. Its reserved codes carry no namespace:
 | `dialog_timeout` | an execution limit ended the work while it held an open question | `true` |
 | `interrupted` | the executor ended the work after it started; `message.params.reason` names how | `true` |
 | `http_status` | a tracked call was answered with a status of 400 or more; `message.params.status` | `true` for 502, 503 and 504 |
+| `failed` | `TaskwireMiddleware.on_transition()` ends a deferred viewset call the executor failed around, and the executor's error carries no `code` | `false` |
 
 Python exports them as `DISPATCH_FAILED`, `NOT_EXECUTED`, `DIALOG_TIMEOUT`, `INTERRUPTED` and
 `HTTP_STATUS` from `taskwire.calls`; TypeScript exports `DISPATCH_FAILED`, `NOT_EXECUTED` and
-`HTTP_STATUS` from `taskwire`.
+`HTTP_STATUS` from `taskwire`. `failed` has no exported constant.
 
 Every other `error.code` is written as given:
 
@@ -52,7 +53,8 @@ Every other `error.code` is written as given:
 - the class name of an exception that ends `operation()` (Python) or an operation scope
   (TypeScript), such as `ValueError`;
 - for a deferred viewset call the executor failed around, the `code` of fastapi-viewsets' error, such
-  as `fastapi-viewsets.action_failed` (see [fastapi-viewsets integration](./fastapi-viewsets.md)).
+  as `fastapi-viewsets.action_failed` (see [fastapi-viewsets integration](./fastapi-viewsets.md)), and
+  the reserved `failed` when that error carries no `code`.
 
 taskwire never prefixes, validates or rewrites a code the application passes. Prefixing it with the
 application's own namespace is the application's job, so that `acme.import_failed` and a reserved
