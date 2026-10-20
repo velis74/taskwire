@@ -157,7 +157,29 @@ def test_a_foreign_token_is_not_found_rather_than_forbidden(http: TestClient) ->
     """
     token = http.post("/start", headers={USER_HEADER: "alice"}).json()["token"]
 
-    assert http.get(f"/taskwire/{token}", headers={USER_HEADER: "alice"}).status_code == 200
+    first = http.get(f"/taskwire/{token}", headers={USER_HEADER: "alice"})
+    if first.status_code != 200:
+        import sys
+        import threading
+
+        from fastapi_viewsets.conf import settings as vs
+
+        print("DIAG body", first.json(), file=sys.stderr)
+        print("DIAG configured", taskwire.configured.store, taskwire.configured.session_resolver, file=sys.stderr)
+        print("DIAG processors", vs.viewsets_context_processors, file=sys.stderr)
+        print("DIAG middleware", vs.viewsets_command_middleware, file=sys.stderr)
+        print("DIAG threads", [t.name for t in threading.enumerate()], file=sys.stderr)
+        print(  # noqa: E501
+            "DIAG second",
+            http.get(f"/taskwire/{token}", headers={USER_HEADER: "alice"}).status_code,
+            file=sys.stderr,  # noqa: E501
+        )
+        print(
+            "DIAG routes",
+            [(getattr(r, "path", None), getattr(r, "methods", None)) for r in http.app.routes],
+            file=sys.stderr,
+        )
+    assert first.status_code == 200
     assert http.get(f"/taskwire/{token}", headers={USER_HEADER: "bob"}).status_code == 404
     assert http.get(f"/taskwire/{taskwire.new_token()}", headers=HEADERS).status_code == 404
     # Malformed, and rejected before the store is touched (TW-REST-006), so scanning the token space
