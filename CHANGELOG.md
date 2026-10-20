@@ -46,7 +46,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `OperationFailed.code` of a `cancelled` operation is `taskwire.cancelled`, of a `failed` document
   without an `error` `taskwire.failed`; both were `failed`.
 - The `error.code` `TaskwireMiddleware` writes for a deferred viewset call the executor failed around
-  is fastapi-viewsets' code, verbatim: `fastapi-viewsets.action_failed` from fastapi-viewsets 0.12.0.
+  is fastapi-viewsets' code, verbatim: `fastapi-viewsets.action_failed`.
+- The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.12.0`; the
+  optional npm peer `@dynamicforms/fastapi-viewsets` is ^0.12.0.
 
 ## [0.3.2] - 2026-10-19
 

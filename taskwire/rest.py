@@ -54,6 +54,10 @@ NO_UNCOLLECTED_RESULT = f"{ERROR_NAMESPACE}.no_uncollected_result"
 ALREADY_ANSWERED = f"{ERROR_NAMESPACE}.already_answered"
 """`409` on a dialog reply: another reply won (TW-DLG-010)."""
 
+INVALID_REPLY = f"{ERROR_NAMESPACE}.invalid_reply"
+"""`422` on a dialog reply the dialog cannot take, rejected before the store is touched (TW-DLG-015).
+The body is `{"detail": <English text>, "code": INVALID_REPLY, "params": {"reason": ..., ...}}`."""
+
 REQUESTED = f"{ERROR_NAMESPACE}.requested"
 """`202` on cancel: the cancel was requested (TW-REST-009)."""
 
@@ -136,37 +140,50 @@ async def get_snapshot(client: Client, token: str) -> Response:
     return 200, snapshot.to_dict()
 
 
-def _validate_reply(dialog: Any, body: dict[str, Any]) -> str | None:
+def _validate_reply(dialog: Any, body: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """TW-DLG-015: validate **before** touching the store, and reject with 422.
 
+    Returns the English text and the `params` of `taskwire.invalid_reply`, or None for a valid reply.
     Validating afterwards would mean the arbiter had already flipped the dialog to `answered` on a
     reply the operation cannot use - and first-answer-wins makes that irreversible: the tab that
     could have answered correctly gets a 409.
     """
     button = body.get("button")
     if not isinstance(button, str):
-        return "button is required"
+        return "button is required", {"reason": "button_required"}
     if button not in {b.id for b in dialog.buttons}:
-        return f"button {button!r} is not one of this dialog's buttons"
+        return f"button {button!r} is not one of this dialog's buttons", {"reason": "unknown_button", "button": button}
 
     values = body.get("values") or {}
     if not isinstance(values, dict):
-        return "values must be an object"
+        return "values must be an object", {"reason": "values_not_an_object"}
     for field in dialog.inputs:
         if field.required and values.get(field.name) is None:
-            return f"input {field.name!r} is required"
+            return f"input {field.name!r} is required", {"reason": "input_required", "input": field.name}
         given = values.get(field.name)
         if given is None:
             continue
         if field.type not in INPUT_TYPES:
-            return f"input {field.name!r} declares an unknown type {field.type!r}"
-        if field.type == "number" and not isinstance(given, (int, float)):
-            return f"input {field.name!r} must be a number"
-        if field.type == "boolean" and not isinstance(given, bool):
-            return f"input {field.name!r} must be a boolean"
-        if field.type in {"string", "date"} and not isinstance(given, str):
-            return f"input {field.name!r} must be a string"
+            return (
+                f"input {field.name!r} declares an unknown type {field.type!r}",
+                {"reason": "unknown_input_type", "input": field.name, "type": field.type},
+            )
+        expected = _EXPECTED_TYPE.get(field.type)
+        if expected is not None and not isinstance(given, expected[1]):
+            return (
+                f"input {field.name!r} must be a {expected[0]}",
+                {"reason": "wrong_input_type", "input": field.name, "expected": expected[0]},
+            )
     return None
+
+
+_EXPECTED_TYPE: dict[str, tuple[str, type | tuple[type, ...]]] = {
+    "number": ("number", (int, float)),
+    "boolean": ("boolean", bool),
+    "string": ("string", str),
+    "date": ("string", str),
+}
+"""The JSON type a value of each input type must have: its name in the error and the Python types."""
 
 
 async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, Any]) -> Response:
@@ -180,7 +197,7 @@ async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, 
     | unknown token or `did` | `404` | and never 403 (TW-SEC-002) |
     | another tab answered first | `409` | body carries the dialog and the WINNING reply (TW-DLG-010) |
     | the dialog was withdrawn | `410` | the operation ended or was cancelled under it |
-    | malformed reply | `422` | rejected before the store is touched (TW-DLG-015) |
+    | malformed reply | `422` | `taskwire.invalid_reply`, rejected before the store is touched (TW-DLG-015) |
 
     A losing client must close its dialog **quietly** on the 409 and surface nothing - no error, no
     toast, no stack trace. A second tab answering first is a normal outcome of a namespace-wide
@@ -202,7 +219,8 @@ async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, 
 
     problem = _validate_reply(dialog, body or {})
     if problem is not None:
-        return 422, {"detail": problem}
+        text, params = problem
+        return 422, {"detail": text, "code": INVALID_REPLY, "params": params}
 
     reply = DialogReply(button=body["button"], values=body.get("values") or {})
     resolution = await store.resolve_dialog(key, did, reply)

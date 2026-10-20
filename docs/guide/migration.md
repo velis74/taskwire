@@ -53,6 +53,12 @@ application's own namespace (see [Error codes](./error-codes.md)).
 Upgrade every process that writes into a shared store and the browser bundle together: a 0.3 reader
 does not know the namespaced codes.
 
+### Peer dependencies
+
+The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.12.0`, and
+`taskwire/muxws` and `taskwire/fastapi-viewsets` the optional npm peer
+`@dynamicforms/fastapi-viewsets` ^0.12.0.
+
 ## Upgrading to v0.3.0 (from v0.2.x)
 
 ### `TaskwireProgressDialog` is gone

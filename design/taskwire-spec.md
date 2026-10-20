@@ -1247,7 +1247,7 @@ bind the adapters.
   writes `queued` (TW-CALL-003) and `failed` only for work that was not handed over (TW-CALL-005); an
   executing call hands its operation over (TW-CALL-007).
 - **TW-CALL-101** **`taskwire.contrib.viewsets.TaskwireMiddleware` binds TW-CALL-003..005 and
-  TW-CALL-008..010 to fastapi-viewsets ≥ 0.11.0, and imports nothing of the executor behind it.**
+  TW-CALL-008..010 to fastapi-viewsets ≥ 0.12.0, and imports nothing of the executor behind it.**
   Its `__call__`, in the command middleware chain, receives the call with `ActionDispatchError` as a
   dispatch error and `ActionOutcomeUnknownError` and `ActionInterruptedError` as pending ones: the
   caller stopped waiting, or the executor ended an execution that started, and in both cases the
