@@ -297,6 +297,18 @@ def _eventually(http: TestClient, token: str, predicate: Callable[[dict], bool],
         if snapshot is not None and predicate(snapshot):
             return snapshot
         time.sleep(0.1)
+    import sys
+    import threading
+
+    from fastapi_viewsets.conf import settings as vs
+
+    response = http.get(f"/taskwire/{token}")
+    print(  # noqa: E501
+        "DIAG worker", response.status_code if response else None, response.text if response else None, file=sys.stderr
+    )
+    print("DIAG configured", taskwire.configured.store, taskwire.configured.session_resolver, file=sys.stderr)
+    print("DIAG processors", vs.viewsets_context_processors, file=sys.stderr)
+    print("DIAG threads", [t.name for t in threading.enumerate()], file=sys.stderr)
     pytest.fail(f"{token} never reached the expected state: {json.dumps(snapshot)}")
 
 
