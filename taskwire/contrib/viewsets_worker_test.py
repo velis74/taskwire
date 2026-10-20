@@ -201,7 +201,6 @@ def http(worker: Any, redis_url: str, key: str, celery_app: Any) -> Iterator[Tes
         start_result_reader,
         stop_result_reader,
     )
-    from fastapi_viewsets.exceptions import df_viewset_exception_handler, DfViewSetError
 
     from taskwire.contrib.redis_store import RedisStore
     from taskwire.contrib.viewsets import register_taskwire_rest, taskwire_context_processor, TaskwireMiddleware
@@ -255,7 +254,6 @@ def http(worker: Any, redis_url: str, key: str, celery_app: Any) -> Iterator[Tes
         celery_viewset_client(celery_app, key, redis_client=reader_client, result_timeout=30)(Jobs)
     )
     app = FastAPI(lifespan=lifespan)
-    app.add_exception_handler(DfViewSetError, df_viewset_exception_handler)
     app.include_router(router)
     try:
         with TestClient(app) as client:
@@ -329,7 +327,7 @@ def test_a_soft_time_limit_on_an_open_question_ends_it_dialog_timeout(http: Test
     _eventually(http, token, lambda s: any(d["state"] == "open" for d in s["dialogs"]))
     assert _detail(response()) == (504, INTERRUPTED_CODE, "time_limit")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
-    assert _error(ended) == ("failed", "dialog_timeout", None, True)
+    assert _error(ended) == ("failed", "taskwire.dialog_timeout", None, True)
     assert [d["state"] for d in ended["dialogs"]] == ["cancelled"]
 
 
@@ -338,7 +336,7 @@ def test_a_hard_time_limit_ends_the_operation_interrupted(http: TestClient) -> N
     _eventually(http, token, lambda s: s["progress"]["percent"] == 30)
     assert _detail(response()) == (504, INTERRUPTED_CODE, "time_limit")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
-    assert _error(ended) == ("failed", "interrupted", {"reason": "time_limit"}, True)
+    assert _error(ended) == ("failed", "taskwire.interrupted", {"reason": "time_limit"}, True)
 
 
 def test_a_hard_time_limit_on_an_open_question_ends_it_dialog_timeout(http: TestClient) -> None:
@@ -346,7 +344,7 @@ def test_a_hard_time_limit_on_an_open_question_ends_it_dialog_timeout(http: Test
     _eventually(http, token, lambda s: any(d["state"] == "open" for d in s["dialogs"]))
     assert _detail(response()) == (504, INTERRUPTED_CODE, "time_limit")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
-    assert _error(ended) == ("failed", "dialog_timeout", None, True)
+    assert _error(ended) == ("failed", "taskwire.dialog_timeout", None, True)
     assert [d["state"] for d in ended["dialogs"]] == ["cancelled"]
 
 
@@ -368,7 +366,7 @@ def test_a_terminated_execution_ends_the_operation_interrupted(http: TestClient,
     _terminate(celery_app, key, "waits")
     assert _detail(response()) == (503, INTERRUPTED_CODE, "terminated")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
-    assert _error(ended) == ("failed", "interrupted", {"reason": "terminated"}, True)
+    assert _error(ended) == ("failed", "taskwire.interrupted", {"reason": "terminated"}, True)
 
 
 def test_a_terminated_execution_on_an_open_question_ends_it_dialog_timeout(
@@ -379,7 +377,7 @@ def test_a_terminated_execution_on_an_open_question_ends_it_dialog_timeout(
     _terminate(celery_app, key, "asks_until_terminated")
     assert _detail(response()) == (503, INTERRUPTED_CODE, "terminated")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
-    assert _error(ended) == ("failed", "dialog_timeout", None, True)
+    assert _error(ended) == ("failed", "taskwire.dialog_timeout", None, True)
     assert [d["state"] for d in ended["dialogs"]] == ["cancelled"]
 
 

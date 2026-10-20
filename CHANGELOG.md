@@ -12,16 +12,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `ERROR_NAMESPACE` (`taskwire`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`fastapi-viewsets`), exported
   from `taskwire` in Python and TypeScript: the namespaces of the error codes taskwire declares and
-  forwards. The Error codes guide documents the code grammar, the codes of the operation document
-  and mapping namespaces to translation keys.
+  forwards. The Error codes guide documents the code grammar, every code taskwire writes and mapping
+  namespaces to translation keys.
+- Code constants exported from `taskwire` in both languages: `DISPATCH_FAILED`, `NOT_EXECUTED`,
+  `DIALOG_TIMEOUT`, `INTERRUPTED`, `HTTP_STATUS`, `UNHANDLED_EXCEPTION`, `FAILED` and `CANCELLED`.
+  The TypeScript `DISPATCH_FAILED`, `NOT_EXECUTED` and `HTTP_STATUS` hold the namespaced codes.
+- `exception_name()` / `exceptionName()`: the snake case of a class name, the same in both languages,
+  and `unhandled_exception_error()` (Python).
+- `taskwire.rest.NOT_FOUND`, `REQUESTED`, `ALREADY_TERMINAL`, `HOLDS_AN_UNCOLLECTED_RESULT`,
+  `NO_UNCOLLECTED_RESULT` and `ALREADY_ANSWERED`: the REST `detail` codes.
 
 ### Changed
 
-- `OperationFailed.code` of a terminal document without an `error`, such as a `cancelled`
-  operation, is `taskwire.failed` instead of `failed`.
+- **Breaking:** every error code taskwire writes carries the `taskwire.` namespace, in store
+  documents, pushes, REST responses and the conformance fixtures. `message.key` of each equals its
+  code:
+
+  | Old | New |
+  |---|---|
+  | `dispatch_failed` | `taskwire.dispatch_failed` |
+  | `not_executed` | `taskwire.not_executed` |
+  | `dialog_timeout` | `taskwire.dialog_timeout` |
+  | `interrupted` | `taskwire.interrupted` |
+  | `http_status` | `taskwire.http_status` |
+  | `failed` (`TaskwireMiddleware.on_transition()`, executor error without a code) | `taskwire.failed` |
+  | the exception's class name, e.g. `ValueError` | `taskwire.unhandled_exception`, `message.params.exception: "value_error"` |
+
+- **Breaking:** the REST `detail` codes carry the namespace: `not_found`, `requested`,
+  `already_terminal`, `holds_an_uncollected_result`, `no_uncollected_result`, `already_answered` and
+  `cancelled` are `taskwire.not_found` and so on.
+- **Breaking:** `WIRE_VERSION` is `2`. Envelopes, snapshots, registers and the `watch` reply carry
+  `"v": 2`.
+- `OperationFailed.code` of a `cancelled` operation is `taskwire.cancelled`, of a `failed` document
+  without an `error` `taskwire.failed`; both were `failed`.
 - The `error.code` `TaskwireMiddleware` writes for a deferred viewset call the executor failed around
-  is fastapi-viewsets' code, verbatim: `fastapi-viewsets.action_failed` with a fastapi-viewsets
-  release that namespaces its codes, `action_failed` before it.
+  is fastapi-viewsets' code, verbatim: `fastapi-viewsets.action_failed` from fastapi-viewsets 0.12.0.
 
 ## [0.3.2] - 2026-10-19
 

@@ -30,6 +30,7 @@ from .models import (
     DialogReply,
     DialogRequest,
     DialogState,
+    DISPATCH_FAILED,
     Envelope,
     EnvelopeKind,
     Error,
@@ -342,7 +343,7 @@ async def test_terminal_commit_leaves_the_register_and_stays_readable(make_store
     assert listed == ["ending", "running"], listed
 
     failing = _progress(state=ProgressState.FAILED)
-    failing.error = Error(code="import_failed", message=Text(text="boom"), retryable=False)
+    failing.error = Error(code="acme.import_failed", message=Text(text="boom"), retryable=False)
     await store.commit(ending, failing, 60)
 
     listed = sorted(snapshot.token for snapshot in await store.list_operations(NS))
@@ -352,7 +353,7 @@ async def test_terminal_commit_leaves_the_register_and_stays_readable(make_store
     assert tombstone is not None, "the terminal document is readable at its own address"
     assert ProgressState(tombstone.progress.state) is ProgressState.FAILED
     assert tombstone.progress.error is not None
-    assert tombstone.progress.error.code == "import_failed"
+    assert tombstone.progress.error.code == "acme.import_failed"
 
 
 async def test_terminal_document_can_still_be_dropped(make_store: StoreFactory) -> None:
@@ -370,13 +371,13 @@ async def test_error_survives_a_round_trip(make_store: StoreFactory) -> None:
     store = make_store()
     k = make_key(NS, "failing")
     progress = _progress(state=ProgressState.FAILED)
-    progress.error = Error(code="dispatch_failed", message=Text(key="taskwire.dispatch_failed"), retryable=True)
+    progress.error = Error(code=DISPATCH_FAILED, message=Text(key=DISPATCH_FAILED), retryable=True)
     await store.commit(k, progress, 60)
 
     snapshot = await store.snapshot(k)
     assert snapshot is not None
     assert snapshot.progress.error is not None
-    assert snapshot.progress.error.code == "dispatch_failed"
+    assert snapshot.progress.error.code == DISPATCH_FAILED
     assert snapshot.progress.error.retryable is True
     assert "Traceback" not in str(snapshot.progress.error.message.to_dict())
 

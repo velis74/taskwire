@@ -310,7 +310,7 @@ async def test_watch_reply_shape_for_all_three_statuses() -> None:
     tag_peer(peer, "acct-42")
 
     accepted = handle_watch(peer, {"overrides": {"tok": False}})
-    assert accepted["v"] == 1
+    assert accepted["v"] == 2
     assert accepted["status"] == 0
     assert isinstance(accepted["connection"], str)
 

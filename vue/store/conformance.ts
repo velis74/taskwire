@@ -24,6 +24,7 @@
  */
 
 import {
+  DISPATCH_FAILED,
   type Envelope,
   type Progress,
   type ProgressState,
@@ -412,7 +413,10 @@ export async function terminalCommitLeavesTheRegisterAndStaysReadable(makeStore:
 
   await store.commit(
     ending,
-    sampleProgress({ state: 'failed', error: { code: 'import_failed', message: { text: 'boom' }, retryable: false } }),
+    sampleProgress({
+      state: 'failed',
+      error: { code: 'acme.import_failed', message: { text: 'boom' }, retryable: false },
+    }),
     60,
   );
 
@@ -421,7 +425,7 @@ export async function terminalCommitLeavesTheRegisterAndStaysReadable(makeStore:
   const tombstone = await store.snapshot(ending);
   ok(tombstone !== null, 'the terminal document is readable at its own address');
   equal(tombstone.progress.state, 'failed', 'and it carries which of the three terminal states this was');
-  equal(tombstone.progress.error?.code, 'import_failed', 'along with the reason the absence cannot carry');
+  equal(tombstone.progress.error?.code, 'acme.import_failed', 'along with the reason the absence cannot carry');
 }
 
 /** TW-REG-007's store-side half (`test_terminal_document_can_still_be_dropped`). */
@@ -443,14 +447,14 @@ export async function errorSurvivesARoundTrip(makeStore: StoreFactory): Promise<
   const k = makeKey(NS, 'failing');
   const progress = sampleProgress({
     state: 'failed',
-    error: { code: 'dispatch_failed', message: { key: 'taskwire.dispatch_failed' }, retryable: true },
+    error: { code: DISPATCH_FAILED, message: { key: DISPATCH_FAILED }, retryable: true },
   });
   await store.commit(k, progress, 60);
 
   const snapshot = await store.snapshot(k);
   ok(snapshot !== null, 'the failed document is readable');
   ok(snapshot.progress.error !== null && snapshot.progress.error !== undefined, 'the error survived');
-  equal(snapshot.progress.error.code, 'dispatch_failed', 'the code survived');
+  equal(snapshot.progress.error.code, DISPATCH_FAILED, 'the code survived');
   equal(snapshot.progress.error.retryable, true, 'the retryable flag survived');
   ok(
     !JSON.stringify(snapshot.progress.error.message).includes('Traceback'),

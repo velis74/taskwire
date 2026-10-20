@@ -1,0 +1,18 @@
+{
+  "cases": [
+    ["ValueError", "value_error"],
+    ["KeyError", "key_error"],
+    ["HTTPError", "http_error"],
+    ["HTTPServerError", "http_server_error"],
+    ["IOError", "io_error"],
+    ["SoftTimeLimitExceeded", "soft_time_limit_exceeded"],
+    ["OAuth2Error", "o_auth2_error"],
+    ["Error2FA", "error2_fa"],
+    ["URLParseError", "url_parse_error"],
+    ["already_snake", "already_snake"],
+    ["_PrivateError", "private_error"],
+    ["Weird$Name", "weird_name"],
+    ["X", "x"],
+    ["", "error"]
+  ]
+}

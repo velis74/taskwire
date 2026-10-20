@@ -130,7 +130,7 @@ def test_the_collection_lives_at_the_base_path(http: TestClient) -> None:
     assert [row["token"] for row in body["operations"]] == [started]
     assert body["aggregate"]["data"]["total"] == 1
     assert body["poll_after_ms"] > 0
-    assert body["v"] == 1
+    assert body["v"] == 2
 
     # TW-REG-011: there is no percentage on the aggregate and no rule may add one. Two operations'
     # self-reported percentages are not commensurable, so any figure across them is invented.
@@ -178,7 +178,7 @@ def test_a_snapshot_is_the_whole_state_in_one_document(http: TestClient) -> None
     assert body["progress"]["result_kind"] == "report"
     assert body["cancel_requested"] is False
     assert body["dialogs"] == []
-    assert body["v"] == 1
+    assert body["v"] == 2
 
 
 def test_cancel_is_acknowledged_and_never_claimed_as_done(http: TestClient) -> None:
@@ -191,7 +191,7 @@ def test_cancel_is_acknowledged_and_never_claimed_as_done(http: TestClient) -> N
 
     accepted = http.post(f"/taskwire/{token}/cancel", headers=HEADERS)
     assert accepted.status_code == 202
-    assert accepted.json()["detail"] == "requested"
+    assert accepted.json()["detail"] == "taskwire.requested"
 
     assert http.get(f"/taskwire/{token}", headers=HEADERS).json()["cancel_requested"] is True
     assert http.post(f"/taskwire/{token}/cancel", headers={USER_HEADER: "bob"}).status_code == 404

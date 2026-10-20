@@ -64,10 +64,10 @@ describe('OperationFailed (TW-PROG-005)', () => {
     expect([failed.code, failed.retryable, failed.message]).toEqual(['acme.import_failed', true, 'boom']);
   });
 
-  it('names a document without an error taskwire.failed', () => {
-    const failed = new OperationFailed('t', progress({ state: 'cancelled' }));
-    expect([failed.code, failed.retryable]).toEqual([`${ERROR_NAMESPACE}.failed`, false]);
-    expect(failed.code).toBe('taskwire.failed');
+  it('names a cancelled operation taskwire.cancelled, and a failed one without an error taskwire.failed', () => {
+    const cancelled = new OperationFailed('t', progress({ state: 'cancelled' }));
+    expect([cancelled.code, cancelled.retryable]).toEqual([`${ERROR_NAMESPACE}.cancelled`, false]);
+    expect(new OperationFailed('t', progress({ state: 'failed' })).code).toBe('taskwire.failed');
   });
 });
 

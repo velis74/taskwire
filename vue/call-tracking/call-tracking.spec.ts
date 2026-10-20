@@ -3,18 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { Taskwire } from '../client/taskwire';
 import { new_token } from '../reporter/operation-scope';
 import { key as storeKey, MemoryStore } from '../store/store';
+import { DISPATCH_FAILED, HTTP_STATUS, NOT_EXECUTED } from '../wire/wire';
 
-import {
-  type Call,
-  callFromCarried,
-  callToken,
-  DISPATCH_FAILED,
-  executeCall,
-  HTTP_STATUS,
-  NOT_EXECUTED,
-  receiveCall,
-  trackFetch,
-} from './call-tracking';
+import { type Call, callFromCarried, callToken, executeCall, receiveCall, trackFetch } from './call-tracking';
 
 const NS = 'ns:alice';
 

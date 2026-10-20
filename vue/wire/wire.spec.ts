@@ -18,6 +18,7 @@ import { REPO_ROOT } from '../test-helpers/sources';
 import {
   ACTIVE_STATES,
   type Aggregate,
+  exceptionName,
   DIALOG_STATES,
   ENVELOPE_KINDS,
   INPUT_TYPES,
@@ -152,9 +153,9 @@ function document(name: string): WireObject {
   return fixture.document as WireObject;
 }
 
-/** The first (and only) register row of `register-v1-with-aggregate.json`, raw. */
+/** The first (and only) register row of `register-v2-with-aggregate.json`, raw. */
 function registerRow(): WireObject {
-  return (document('register-v1-with-aggregate.json').operations as WireObject[])[0];
+  return (document('register-v2-with-aggregate.json').operations as WireObject[])[0];
 }
 
 /** Every `(key, value)` pair anywhere inside a wire document. */
@@ -233,7 +234,7 @@ describe('the golden corpus', () => {
     versioned.forEach((fixture) => {
       expect((fixture.document as WireObject).v, `${fixture.name}: must carry the wire version`).toBe(WIRE_VERSION);
     });
-    expect(WIRE_VERSION).toBe(1);
+    expect(WIRE_VERSION).toBe(2);
   });
 
   it('keeps every rev inside a JavaScript-comparable range', () => {
@@ -271,7 +272,7 @@ describe('the golden corpus', () => {
     FIXTURES.filter((fixture) => fixture.kind === 'aggregate').forEach((fixture) => {
       expect(Object.keys(fixture.document as WireObject)).not.toContain('percent');
     });
-    const register = parseRegister(document('register-v1-with-aggregate.json'));
+    const register = parseRegister(document('register-v2-with-aggregate.json'));
     expect(register.aggregate).not.toBeNull();
     expect(Object.keys(register.aggregate as object)).not.toContain('percent');
     expect(Object.keys(serializeAggregate(register.aggregate!) as object)).not.toContain('percent');
@@ -329,7 +330,7 @@ describe('absent and null are the same thing (TW-CORE-010)', () => {
   });
 
   it('defaults poll_after_ms, v and origin_session the same way for absent and null', () => {
-    const snapshot = document('snapshot-v1-wall-clock-rev.json');
+    const snapshot = document('snapshot-v2-wall-clock-rev.json');
     const nulled = { ...snapshot, v: null, poll_after_ms: null };
     const stripped = { ...snapshot };
     delete stripped.v;
@@ -597,5 +598,14 @@ describe('timestamps', () => {
     const progress = parseProgress({ state: 'queued', origin_session: 'ns' });
     expect(progress.createdAt).toBe('2026-08-11T09:15:04.317Z');
     expect(progress.updatedAt).toBe('2026-08-11T09:15:04.317Z');
+  });
+});
+
+describe('exceptionName()', () => {
+  it("follows the cases Python's exception_name() follows, acronyms included", () => {
+    const { cases } = JSON.parse(readFileSync(join(REPO_ROOT, 'conformance', 'exception-names.json'), 'utf8')) as {
+      cases: [string, string][];
+    };
+    expect(cases.map(([name]) => exceptionName(name))).toEqual(cases.map(([, snake]) => snake));
   });
 });

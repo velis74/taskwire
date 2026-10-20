@@ -30,13 +30,19 @@ def test_python_and_npm_versions_match():
     )
 
 
-def test_python_and_npm_export_the_same_error_namespaces():
-    """Both packages export one set of `ERROR_NAMESPACE*` constants, with the same values."""
+def test_python_and_npm_export_the_same_error_namespaces_and_codes():
+    """Both packages export one set of `ERROR_NAMESPACE*` constants and reserved codes, with the same
+    values, and the npm half builds every code from `ERROR_NAMESPACE`."""
     wire = (REPO_ROOT / "vue" / "wire" / "wire.ts").read_text(encoding="utf-8")
     index = (REPO_ROOT / "vue" / "index.ts").read_text(encoding="utf-8")
     npm = dict(re.findall(r"^export const (ERROR_NAMESPACE\w*) = '([^']*)';", wire, re.MULTILINE))
-    python = {name: getattr(taskwire, name) for name in taskwire.__all__ if name.startswith("ERROR_NAMESPACE")}
-    assert python == npm == {"ERROR_NAMESPACE": "taskwire", "ERROR_NAMESPACE_FASTAPI_VIEWSETS": "fastapi-viewsets"}
+    built = re.findall(r"^export const ([A-Z_]+) = `\$\{ERROR_NAMESPACE\}\.([a-z_]+)`;", wire, re.MULTILINE)
+    npm.update((name, f"{npm['ERROR_NAMESPACE']}.{code}") for name, code in built)
+    codes = ["CANCELLED", "DIALOG_TIMEOUT", "DISPATCH_FAILED", "FAILED", "HTTP_STATUS", "INTERRUPTED", "NOT_EXECUTED"]
+    names = ["ERROR_NAMESPACE", "ERROR_NAMESPACE_FASTAPI_VIEWSETS", *codes, "UNHANDLED_EXCEPTION"]
+    assert npm == {name: getattr(taskwire, name) for name in names}
+    assert taskwire.ERROR_NAMESPACE == "taskwire"
+    assert all(getattr(taskwire, name).startswith("taskwire.") for name in [*codes, "UNHANDLED_EXCEPTION"])
     assert all(re.search(rf"^  {name},$", index, re.MULTILINE) for name in npm), "vue/index.ts re-exports each one"
 
 

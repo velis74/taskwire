@@ -22,7 +22,7 @@ import asyncio
 
 from typing import Any
 
-from taskwire import Button, OperationCancelled, Reporter, Result, t
+from taskwire import Button, DIALOG_TIMEOUT, OperationCancelled, Reporter, Result, t
 
 from .market import blotter_rows, build_book, SECTORS, SYMBOLS, total_trades
 
@@ -245,7 +245,7 @@ async def hold_the_line(reporter: Reporter) -> None:
 
     **Start it, watch the question arrive, and then leave it alone.** Fifteen seconds later the
     question disappears from every tab of the namespace and the operation leaves the register,
-    `failed` with code `dialog_timeout` and `retryable: true`; a tab that was part-way through
+    `failed` with code `taskwire.dialog_timeout` and `retryable: true`; a tab that was part-way through
     answering gets 410 for as long as the terminal document is readable and 404 once it has expired,
     and closes its modal without a word either way (TW-DLG-011).
 
@@ -254,7 +254,7 @@ async def hold_the_line(reporter: Reporter) -> None:
     around the call, by the application. Here that is `asyncio.wait_for`, because the demo is a
     single asyncio process with no executor of its own. In a deployment it is the executor's own
     time limit ending the work instead, which taskwire renders as `failed` with code
-    `dialog_timeout` and `retryable: true` (TW-DLG-006). What happens to the operation is the
+    `taskwire.dialog_timeout` and `retryable: true` (TW-DLG-006). What happens to the operation is the
     same in both: one terminal write, which withdraws every open dialog in the same step
     (TW-CANCEL-011), so no question is ever left on screen pointing at a worker that is gone.
 
@@ -307,8 +307,8 @@ async def hold_the_line(reporter: Reporter) -> None:
         # with the same document. `asyncio.TimeoutError` is only a distinct class from the builtin
         # before Python 3.11; both are named here so `wait_for` is caught on every supported version.
         reporter.name_error(
-            "dialog_timeout",
-            t("taskwire.dialog_timeout", text=f"Nobody answered within {HOLD_DEADLINE:.0f} s."),
+            DIALOG_TIMEOUT,
+            t(DIALOG_TIMEOUT, text=f"Nobody answered within {HOLD_DEADLINE:.0f} s."),
             True,
         )
         raise

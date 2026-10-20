@@ -109,7 +109,7 @@ adapters to things outside the process, never a capability the core lacks.
   with the client and MUST NOT be pushed to a client.
 - **TW-CORE-010** All timestamps MUST be RFC 3339 UTC with a `Z` suffix. All identifiers are strings.
   Absent optional fields MAY be omitted or `null` interchangeably; parsers MUST treat them the same.
-- **TW-CORE-011** `Envelope.v` MUST be the integer `1`. It is bumped only on a breaking wire change,
+- **TW-CORE-011** `Envelope.v` MUST be the integer `2`. It is bumped only on a breaking wire change,
   never on an implementation change; package semver tracks the implementation and says nothing about
   the wire.
 - **TW-CORE-012** `Snapshot` and `Register` MUST each carry a required `"v"` with the same integer,
@@ -404,12 +404,12 @@ adapters to things outside the process, never a capability the core lacks.
   programmer who wants a deadline implements one at whatever level suits them.
 - **TW-DLG-006** The consequence MUST be stated plainly in the docs rather than softened: **an
   unanswered dialog blocks its worker until the executor's own time limit ends the work**, at which
-  point the operation becomes `failed` with `code: "dialog_timeout"` and `retryable: true`, and its
+  point the operation becomes `failed` with `code: "taskwire.dialog_timeout"` and `retryable: true`, and its
   open dialogs are withdrawn (TW-STORE-004). taskwire does not solve the general problem of a blocked
   worker (TW-CELERY-010).
 
-  `dialog_timeout` MUST be written only when the operation was holding an open question. Work ended
-  while doing the work reports `interrupted` (TW-CALL-008) or the error its own exception names,
+  `taskwire.dialog_timeout` MUST be written only when the operation was holding an open question. Work ended
+  while doing the work reports `taskwire.interrupted` (TW-CALL-008) or the error its own exception names,
   because a code telling a reader to answer a question nobody asked is worse than none. Where the
   limit raises into the work, the condition MUST be answerable without a store read - the operation
   knows whether it is waiting - since it is read at the moment the work is being ended. Where the
@@ -862,14 +862,14 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   | `GET {prefix}` | `200` `Register` | — |
   | `GET {prefix}/{token}` | `200` `Snapshot`, terminal ones included until the tombstone expires | `404` unknown, expired, or another namespace's |
   | `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410`, `422` per §6.2 |
-  | `POST {prefix}/{token}/cancel` | `202` requested | `404` unknown token; `409` `already_terminal`, or `holds_an_uncollected_result` |
-  | `POST {prefix}/{token}/collect` | `204` result released | `404` unknown token; `409` `no_uncollected_result` |
-  | `POST {prefix}/{token}/dismiss` | `204` (idempotent) | `404` malformed token or no namespace; `409` `no_uncollected_result` |
+  | `POST {prefix}/{token}/cancel` | `202` requested | `404` unknown token; `409` `taskwire.already_terminal`, or `taskwire.holds_an_uncollected_result` |
+  | `POST {prefix}/{token}/collect` | `204` result released | `404` unknown token; `409` `taskwire.no_uncollected_result` |
+  | `POST {prefix}/{token}/dismiss` | `204` (idempotent) | `404` malformed token or no namespace; `409` `taskwire.no_uncollected_result` |
 
   The failure columns turn on the tombstone. While the terminal document is readable
   (TW-RET-004) the endpoints answer about a token they still know: a cancel on a finished operation
-  is `409 already_terminal` rather than `404`, a reply to a dialog the terminal write withdrew is the
-  `410` of §6.2, and a second collect is `409 no_uncollected_result` — the token is known and there
+  is `409 taskwire.already_terminal` rather than `404`, a reply to a dialog the terminal write withdrew is the
+  `410` of §6.2, and a second collect is `409 taskwire.no_uncollected_result` — the token is known and there
   is nothing left to hand back, which is not the same answer as "unknown token". A second dismiss
   stays `204`: an operation that has already ended is exactly the state a dismissing caller asked
   for, and dismiss is idempotent for the same reason on a tombstone as on an unknown token. Once the
@@ -982,7 +982,7 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   answering `status: 1` (TW-DEL-022).
 - **TW-DEL-009** The override map MUST live in per-connection memory (`peer.tags` under muxws), MUST
   die with the socket, and MUST NOT be persisted anywhere on either side.
-- **TW-DEL-022** The `watch` handler MUST answer `{"v": 1, "status": int, "connection": str}`, plus
+- **TW-DEL-022** The `watch` handler MUST answer `{"v": 2, "status": int, "connection": str}`, plus
   `"topics"` under TW-EVT-005, where
   `status` is `0` accepted, `1` rejected for exceeding `max_overrides`, `2` malformed, and
   `connection` is the opaque connection id of the socket it was applied to. A rejected declaration
@@ -1047,7 +1047,7 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   there (TW-AMB-008).
 - **TW-CELERY-004** In a Celery deployment **the worker owns the terminal write of every operation
   it runs.** The web side writes `queued`, and `failed` only for an operation that never reached
-  `running`. A dispatch failure MUST be written as `code: "dispatch_failed"` with `retryable: true`:
+  `running`. A dispatch failure MUST be written as `code: "taskwire.dispatch_failed"` with `retryable: true`:
   an unreachable broker is transient, so a frontend may legitimately offer a retry. For a tracked
   call the web side's writes follow TW-CALL-003 and TW-CALL-005.
 - **TW-CELERY-005** `dispatch()` applies TW-CALL-010: it writes `queued`, and `failed` only when the
@@ -1201,22 +1201,22 @@ bind the adapters.
   execution MUST open no operation and yield `None`: the work belongs to the outer call's operation.
   A store failure on entry MUST leave the work to run unreported; a failure of the terminal write
   MUST be logged and MUST NOT replace the work's own outcome. An exception in `timeout_errors` ending
-  the work while the operation holds an open question MUST end it `dialog_timeout` (TW-DLG-006).
+  the work while the operation holds an open question MUST end it `taskwire.dialog_timeout` (TW-DLG-006).
 - **TW-CALL-005** **A received call that ends — returns or raises — while its operation is still
   `queued` and no execution was entered for it in the receiving context MUST end that operation
-  `failed`:** `dispatch_failed` with `retryable: true` when the call ended with one of the receipt's
-  `dispatch_errors`, and `not_executed` with `retryable: false` otherwise, a normal return included.
+  `failed`:** `taskwire.dispatch_failed` with `retryable: true` when the call ended with one of the receipt's
+  `dispatch_errors`, and `taskwire.not_executed` with `retryable: false` otherwise, a normal return included.
   A call that ended with one of the receipt's `pending_errors` MUST leave the operation as it is: the
   work may still execute elsewhere, and `active_ttl` expires the document otherwise. An operation in
   any other state MUST be left as it is.
 - **TW-CALL-006** **An execution whose framework answers a failed call with a status instead of an
-  exception MUST end `failed` for a status of 400 or more**, with `code: "http_status"`,
+  exception MUST end `failed` for a status of 400 or more**, with `code: "taskwire.http_status"`,
   `message.params: {"status": status}` and `retryable: true` for 502, 503 and 504 only.
 - **TW-CALL-007** **An execution MAY hand its operation to another process** (`hand_off()` /
   `CallExecution.handOff(send)`), which receives the token and the namespace as plain strings
   (TW-CELERY-003). When the hand-off completes, the execution's exit MUST write no state; the
   receiving process's `operation()` continues the same document and writes its terminal state. When
-  the hand-off raises, the operation MUST end `dispatch_failed` with `retryable: true`. Work executing
+  the hand-off raises, the operation MUST end `taskwire.dispatch_failed` with `retryable: true`. Work executing
   under a call MUST NOT open `operation()` for the call's own token: the two blocks would write two
   completions.
 - **TW-CALL-008** **An execution that ends without writing its terminal state - the executor ended it
@@ -1224,17 +1224,18 @@ bind the adapters.
   process that observes the end** (`end_call`). It writes `failed`, withdrawing the open dialogs in
   the same step (TW-CANCEL-011), only for an operation that is `queued`, `running` or
   `waiting_input` without a parked result: a terminal operation and one holding a result MUST be
-  left as they are. The error is `dialog_timeout` (`retryable: true`) when a dialog is open
+  left as they are. The error is `taskwire.dialog_timeout` (`retryable: true`) when a dialog is open
   (TW-DLG-006), and otherwise the observer's own: for an interrupted execution the reserved code
-  `interrupted` with `message.params: {"reason": reason}` when the executor names one, and
+  `taskwire.interrupted` with `message.params: {"reason": reason}` when the executor names one, and
   `retryable: true`. Work the executor ends with an exception raised into it (a soft time limit)
-  MUST end the same way from its own exit: `dialog_timeout` with an open question, `interrupted`
+  MUST end the same way from its own exit: `taskwire.dialog_timeout` with an open question, `taskwire.interrupted`
   otherwise. A store failure MUST be logged and MUST NOT be raised.
 
-  > `interrupted` is retryable for the reason `dispatch_failed` and `dialog_timeout` are: the call
-  > failed for a reason outside its own logic, and the same interruption reaches an HTTP caller as a
-  > 503 or 504, which TW-CALL-006 marks retryable. Whether a retry is safe after partial work is the
-  > application's question, as it is for `dialog_timeout`.
+  > `taskwire.interrupted` is retryable for the reason `taskwire.dispatch_failed` and
+  > `taskwire.dialog_timeout` are: the call failed for a reason outside its own logic, and the same
+  > interruption reaches an HTTP caller as a 503 or 504, which TW-CALL-006 marks retryable. Whether a
+  > retry is safe after partial work is the application's question, as it is for
+  > `taskwire.dialog_timeout`.
 - **TW-CALL-009** **A process that executes work handed to it by another process MUST NOT push to a
   socket** (`configure_executor`). Its transport MUST be `NullTransport`, or one whose
   `crosses_processes` is True, which carries each envelope to the processes that deliver it
@@ -1279,16 +1280,16 @@ bind the adapters.
 
   - `execute()` MUST close the operation before the action returns, and therefore before the result
     is sent to the caller, so no client can observe the result before the terminal state. An
-    `ActionInterruptedError` ending the execution MUST end it `dialog_timeout` with an open question
-    and `interrupted` with the error's `reason` otherwise (TW-CALL-008). In a process
+    `ActionInterruptedError` ending the execution MUST end it `taskwire.dialog_timeout` with an open question
+    and `taskwire.interrupted` with the error's `reason` otherwise (TW-CALL-008). In a process
     `executor_started()` ran in, an execution that ends because the process exits (`SystemExit` or
     `KeyboardInterrupt` from `call_next()`) MUST write no terminal state: fastapi-viewsets reports
     that end to `on_transition()` (from the supervisor of a prefork pool child, from the exiting
     process itself otherwise), and a write from the exiting execution would race it.
   - `executor_started()` MUST apply TW-CALL-009 to the process (`configure_executor()`).
   - `on_transition()` MUST end the operation of the call (TW-CALL-008) by the transition's kind:
-    `interrupted` with `interrupted` and the error's `reason`, or `dialog_timeout` with an open
-    question; `not_run` with `dispatch_failed` (`retryable: true`) for an operation still `queued`;
+    `interrupted` with `taskwire.interrupted` and the error's `reason`, or `dialog_timeout` with an open
+    question; `not_run` with `taskwire.dispatch_failed` (`retryable: true`) for an operation still `queued`;
     `failed` with the error's code (`fastapi-viewsets.action_failed`, `retryable: false`); `dispatched` with nothing.
     A transition of a call dispatched inside another execution (`parent`) MUST write nothing.
 
@@ -1336,10 +1337,30 @@ taskwire MUST NOT attempt to validate. **TW-TXT-003** The dual form MUST NOT app
 | `created_at` | RFC 3339 Z | yes | – | |
 | `updated_at` | RFC 3339 Z | yes | – | |
 
-`Error`: `{"code": string, "message": Text, "retryable": boolean}`. Reserved codes:
-`dispatch_failed` (TW-CELERY-004, TW-CALL-005), `dialog_timeout` (TW-DLG-006) and `interrupted`
-(TW-CALL-008, `message.params.reason`), all `retryable: true`; `not_executed` (TW-CALL-005),
-`retryable: false`; `http_status` (TW-CALL-006), `retryable: true` for 502, 503 and 504 only.
+`Error`: `{"code": string, "message": Text, "retryable": boolean}`. A code is `<namespace>.<code>`
+and splits at its last `.`; taskwire's namespace is `ERROR_NAMESPACE`, `"taskwire"`, and every code
+it writes is built from it, with `message.key` equal to the code. Reserved codes:
+
+| Code | Written when | `retryable` |
+|---|---|---|
+| `taskwire.dispatch_failed` | TW-CELERY-004, TW-CALL-005 | `true` |
+| `taskwire.dialog_timeout` | TW-DLG-006 | `true` |
+| `taskwire.interrupted` | TW-CALL-008; `message.params.reason` | `true` |
+| `taskwire.not_executed` | TW-CALL-005 | `false` |
+| `taskwire.http_status` | TW-CALL-006; `message.params.status` | `true` for 502, 503 and 504 only |
+| `taskwire.unhandled_exception` | an exception ended the operation (TW-PROG-012); `message.params.exception` is its class name in snake case | `false` |
+| `taskwire.failed` | TW-CALL-105, for an executor error without a `code` | `false` |
+
+The snake case of a class name, identical in both languages (`exception_name()` / `exceptionName()`,
+cases in `conformance/exception-names.json`): `_` between an uppercase letter and an uppercase
+letter followed by a lowercase one, then `_` between a lowercase letter or digit and an uppercase
+letter, then every run of characters outside `A-Z`, `a-z`, `0-9` as one `_`, leading and trailing
+`_` removed, lowercased; an empty result is `error`. `HTTPError` is `http_error`.
+
+`taskwire.cancelled` is never written into a document: it is the TypeScript `OperationFailed.code`
+of a `cancelled` operation and the `detail` of a `410` dialog reply (§6.2). Any other code is the
+application's (`fail()`) or forwarded verbatim (TW-CALL-105), and taskwire neither validates nor
+rewrites it.
 
 ### 3.3 `Result`
 
@@ -1387,7 +1408,7 @@ Python `DialogAnswer` (the return of `ask()`): `button: str`, `values: dict`. Th
 
 | Field | Type | Req | Meaning |
 |---|---|---|---|
-| `v` | integer | yes | `1` — same value and same bump rule as `Envelope.v` (TW-CORE-012) |
+| `v` | integer | yes | `2` — same value and same bump rule as `Envelope.v` (TW-CORE-012) |
 | `token` | uuid string | yes | address |
 | `rev` | integer | yes | revision of the progress document (§2.2) |
 | `progress` | `Progress` | yes | |
@@ -1412,7 +1433,7 @@ Python `DialogAnswer` (the return of `ask()`): `button: str`, `values: dict`. Th
 
 | Field | Type | Req | Meaning |
 |---|---|---|---|
-| `v` | integer | yes | `1` (TW-CORE-012) |
+| `v` | integer | yes | `2` (TW-CORE-012) |
 | `operations` | `OperationSummary[]` | yes | `needs_attention` first, then `created_at` ascending (TW-REG-005) |
 | `aggregate` | `Aggregate` \| null | yes | `null` when the register is empty (TW-REG-017) |
 | `server_time` | RFC 3339 Z | yes | |
@@ -1437,7 +1458,7 @@ longer exists.
 
 | Field | Type | Req | Meaning |
 |---|---|---|---|
-| `v` | integer | yes | `1` |
+| `v` | integer | yes | `2` |
 | `token` | uuid string | yes | an **address**, not a subscription key |
 | `rev` | integer | yes | gates progress only (TW-REV-006) |
 | `kind` | string | yes | `progress` \| `dialog.open` \| `dialog.close` \| `cancel` \| `snapshot` |
@@ -2016,31 +2037,34 @@ function use_register(options?: TaskwireOptions):
 | `ConnectionLost` (muxws) | a peer dies mid-fan-out | `MuxwsTransport` swallows it, counts a dropped push, continues. |
 
 There is no `DialogTimeout`: dialogs have no deadline (TW-DLG-005). Work ended by its executor's time
-limit while blocked on a question produces `failed` with `code: "dialog_timeout"` and
+limit while blocked on a question produces `failed` with `code: "taskwire.dialog_timeout"` and
 `retryable: true` — an error code, not an exception taskwire raises.
 
 ### 6.2 `DialogResolution` → HTTP
 
-| Outcome | Status | Meaning | Client behaviour |
-|---|---|---|---|
-| button not in `buttons`, or `values` fail `inputs` | `422` | rejected before the store is touched | reject `answer()` — a client bug |
-| `ACCEPTED` | `204` | the store arbitrated in your favour — the only trustworthy signal | close the dialog |
-| `NOT_FOUND` | `404` | unknown token, unknown dialog, or another namespace's | resolve `answer()` quietly, close |
-| `ALREADY_ANSWERED` | `409` | another tab won; **body carries the dialog with the winning reply** | resolve `answer()` quietly, apply the reply, close; never an error or toast |
-| `CANCELLED` | `410` | the question was withdrawn — the operation was cancelled, failed or ended, and its tombstone still says so (TW-RET-004) | resolve `answer()` quietly, close |
+| Outcome | Status | `detail` | Meaning | Client behaviour |
+|---|---|---|---|---|
+| button not in `buttons`, or `values` fail `inputs` | `422` | English text naming the problem | rejected before the store is touched | reject `answer()` — a client bug |
+| `ACCEPTED` | `204` | no body | the store arbitrated in your favour — the only trustworthy signal | close the dialog |
+| `NOT_FOUND` | `404` | `taskwire.not_found` | unknown token, unknown dialog, or another namespace's | resolve `answer()` quietly, close |
+| `ALREADY_ANSWERED` | `409` | `taskwire.already_answered` | another tab won; **body carries the dialog with the winning reply** | resolve `answer()` quietly, apply the reply, close; never an error or toast |
+| `CANCELLED` | `410` | `taskwire.cancelled` | the question was withdrawn — the operation was cancelled, failed or ended, and its tombstone still says so (TW-RET-004) | resolve `answer()` quietly, close |
+
+The `DialogResolution` values are the store port's (§5.1) and carry no namespace; the `detail` of a
+response is a namespaced code built from `ERROR_NAMESPACE`.
 
 ### 6.3 Other HTTP statuses
 
-| Endpoint | Status | Meaning |
-|---|---|---|
-| `GET {prefix}/{token}` | `200` | including a terminal document, for `tombstone_ttl` after it left the register |
-| `GET {prefix}/{token}` | `404` | unknown, expired, or another namespace's — indistinguishable by design |
-| `POST .../cancel` | `202` | requested, not confirmed |
-| `POST .../cancel` | `409` | already terminal, or holding an uncollected result (TW-CANCEL-010) |
-| `POST .../collect` | `204` | result released; `result_released` fired |
-| `POST .../collect` | `409` | there is no uncollected result — collect is not idempotent, and a collected operation answers this rather than `404` for as long as its tombstone lives |
-| `POST .../dismiss` | `204` | result released and discarded, or the operation has already ended, or the token is unknown (idempotent) |
-| `POST .../dismiss` | `409` | `queued`, `running`, or blocked on a dialog — dismiss is not cancel |
+| Endpoint | Status | `detail` | Meaning |
+|---|---|---|---|
+| `GET {prefix}/{token}` | `200` | — | including a terminal document, for `tombstone_ttl` after it left the register |
+| `GET {prefix}` / `GET {prefix}/{token}` | `404` | `taskwire.not_found` | unknown, expired, or another namespace's — indistinguishable by design |
+| `POST .../cancel` | `202` | `taskwire.requested` | requested, not confirmed |
+| `POST .../cancel` | `409` | `taskwire.already_terminal`, `taskwire.holds_an_uncollected_result` | already terminal, or holding an uncollected result (TW-CANCEL-010) |
+| `POST .../collect` | `204` | no body | result released; `result_released` fired |
+| `POST .../collect` | `409` | `taskwire.no_uncollected_result` | there is no uncollected result — collect is not idempotent, and a collected operation answers this rather than `404` for as long as its tombstone lives |
+| `POST .../dismiss` | `204` | no body | result released and discarded, or the operation has already ended, or the token is unknown (idempotent) |
+| `POST .../dismiss` | `409` | `taskwire.no_uncollected_result` | `queued`, `running`, or blocked on a dialog — dismiss is not cancel |
 
 ---
 

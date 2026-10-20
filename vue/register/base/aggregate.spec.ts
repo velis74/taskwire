@@ -324,7 +324,7 @@ describe('the aggregate (TW-REG-009..017)', () => {
 
   it('the client recomputation and the server agree on the same input', () => {
     // TW-REG-016: the same published rules on both sides, and no arbitration between the figures.
-    const published = parseRegister(fixture('register-v1-with-aggregate'));
+    const published = parseRegister(fixture('register-v2-with-aggregate'));
     const computed = aggregate(published.operations.map((summary) => summary.snapshot));
 
     expect(computed?.state).toBe(published.aggregate?.state);

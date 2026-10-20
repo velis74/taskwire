@@ -89,7 +89,7 @@ leaves nothing behind to read.
 They differ in exactly one way, for that same reason:
 
 - **dismiss is idempotent** — dismissing twice is harmless, so a second call answers `204` again;
-- **collect is not** — a second call answers `409 no_uncollected_result`. The token is known and
+- **collect is not** — a second call answers `409 taskwire.no_uncollected_result`. The token is known and
   there is nothing left to hand back, which is a different answer from "no such token", and it is
   the tombstone that lets the endpoint tell them apart.
 

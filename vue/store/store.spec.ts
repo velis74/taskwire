@@ -113,7 +113,7 @@ describe('MemoryStore writes', () => {
       k,
       running({
         state: 'failed',
-        error: { code: 'dispatch_failed', message: { key: 'taskwire.dispatch_failed' }, retryable: true },
+        error: { code: 'taskwire.dispatch_failed', message: { key: 'taskwire.dispatch_failed' }, retryable: true },
       }),
       60,
     );
@@ -123,7 +123,7 @@ describe('MemoryStore writes', () => {
     // The state is what the register and every footer key off; an error erased by a cleanup write
     // would leave a `failed` operation with nothing to show for it.
     expect(snapshot?.progress.state).toBe('failed');
-    expect(snapshot?.progress.error?.code).toBe('dispatch_failed');
+    expect(snapshot?.progress.error?.code).toBe('taskwire.dispatch_failed');
     expect(snapshot?.progress.label?.text).toBe('tidying up');
   });
 
@@ -249,7 +249,7 @@ describe('MemoryStore writes', () => {
     await store.commit(k, running(), 60);
 
     const snapshot = await store.snapshot(k);
-    expect(snapshot?.v).toBe(1);
+    expect(snapshot?.v).toBe(2);
     expect(snapshot?.pollAfterMs).toBe(5000);
     expect(snapshot?.token).toBe('tok');
     expect(snapshot?.serverTime).toBe('1970-01-12T13:46:40.000Z');

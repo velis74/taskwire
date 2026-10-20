@@ -208,7 +208,7 @@ async def test_dismiss_is_idempotent_and_collect_is_not(configured_store):
     # and there is nothing left to hand back, rather than the token being unknown (TW-RET-004).
     status, payload = await collect_result(Client(session=NS), other)
     assert status == 409, "collect is not"
-    assert payload["detail"] == "no_uncollected_result"
+    assert payload["detail"] == "taskwire.no_uncollected_result"
 
 
 @pytest.mark.usefixtures("_unthrottled")
@@ -244,7 +244,7 @@ async def test_a_parked_result_refuses_a_cancel_with_409(configured_store):
 
     status, payload = await request_cancel(Client(session=NS), token)
     assert status == 409, payload
-    assert payload["detail"] == "holds_an_uncollected_result"
+    assert payload["detail"] == "taskwire.holds_an_uncollected_result"
 
 
 @pytest.mark.usefixtures("_unthrottled")

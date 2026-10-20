@@ -242,7 +242,7 @@ async def test_the_register_is_the_prefix_itself(counting_store):
     status, payload = await asgi_get(application, PREFIX)
 
     assert status == 200
-    assert payload["v"] == 1
+    assert payload["v"] == 2
     assert "operations" in payload, "this is a Register, not a Snapshot"
     assert "aggregate" in payload, "this is a Register, not a Snapshot"
     assert len(payload["operations"]) == 1
@@ -358,7 +358,7 @@ async def test_unknown_token_returns_404(store):
 
     status, payload = await get_snapshot(client, UNCLAIMED_TOKEN)
     assert status == 404
-    assert payload == {"detail": "not_found"}
+    assert payload == {"detail": "taskwire.not_found"}
 
     # Nothing was created by asking: a second ask is still 404 and the register is still empty.
     again_status, _again = await get_snapshot(client, UNCLAIMED_TOKEN)
@@ -393,15 +393,15 @@ async def test_session_resolver_returning_none_is_404(counting_store):
     assert register_status == 404
     assert token_status not in (401, 403)
     assert register_status not in (401, 403)
-    assert token_payload == {"detail": "not_found"}
-    assert register_payload == {"detail": "not_found"}
+    assert token_payload == {"detail": "taskwire.not_found"}
+    assert register_payload == {"detail": "taskwire.not_found"}
     assert counting_store.reads == 0, "TW-SEC-001: no code path reaches the store without a namespace"
 
     # The handlers say the same thing when called directly, so the answer is the layer's and not the
     # adapter's alone.
     opted_out = Client(session=None)  # type: ignore[arg-type]
-    assert await get_snapshot(opted_out, UNCLAIMED_TOKEN) == (404, {"detail": "not_found"})
-    assert await get_operations(opted_out) == (404, {"detail": "not_found"})
+    assert await get_snapshot(opted_out, UNCLAIMED_TOKEN) == (404, {"detail": "taskwire.not_found"})
+    assert await get_operations(opted_out) == (404, {"detail": "taskwire.not_found"})
     assert counting_store.reads == 0
 
 
@@ -468,7 +468,7 @@ async def test_register_entry_carries_the_whole_snapshot(store):
     assert embedded == direct, "the register entry must be the per-token GET, not a summary of it"
 
     # Everything a row needs is present without a second request.
-    assert embedded["v"] == 1
+    assert embedded["v"] == 2
     assert embedded["token"] == token
     assert isinstance(embedded["rev"], int)
     assert embedded["progress"]["percent"] == 61.5

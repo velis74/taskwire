@@ -31,11 +31,13 @@
 
 import { key as storeKey } from '../store/store';
 import {
+  exceptionName,
   nowIso,
   type Progress,
   type ProgressState,
   type TaskwireError,
   type Text,
+  UNHANDLED_EXCEPTION,
   type WireObject,
 } from '../wire/wire';
 
@@ -143,9 +145,13 @@ function terminalFor(raised: unknown): { state: TerminalState; error?: TaskwireE
 
 /** TW-PROG-005: `{code, message, retryable}` and nothing else - no stack trace reaches a browser. */
 function errorFor(raised: unknown): TaskwireError {
-  const code = raised instanceof Error && raised.name !== '' ? raised.name : 'Error';
+  const name = raised instanceof Error && raised.name !== '' ? raised.name : 'Error';
   const text = raised instanceof Error ? raised.message : String(raised);
-  return { code, message: { text: text === '' ? code : text }, retryable: false };
+  return {
+    code: UNHANDLED_EXCEPTION,
+    message: { key: UNHANDLED_EXCEPTION, params: { exception: exceptionName(name) }, text: text === '' ? name : text },
+    retryable: false,
+  };
 }
 
 /**

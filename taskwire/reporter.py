@@ -48,6 +48,7 @@ from .models import (
     ProgressState,
     Result,
     Text,
+    unhandled_exception_error,
 )
 from .settings import configured, settings
 from .store import CANCELLED_BUTTON, key as make_key
@@ -464,9 +465,9 @@ class Reporter:
     def name_error(self, code: str, message: Text, retryable: bool = False) -> None:
         """Decide what the terminal write will say, without making that write.
 
-        For an exception on its way out of `operation()`, where the code derived from the exception's
-        class would be less true than one the caller already knows: TW-DLG-006's `dialog_timeout` is
-        the case, and the class name there is whatever the worker's execution limit happens to raise.
+        For an exception on its way out of `operation()`, where `taskwire.unhandled_exception` would be
+        less true than a code the caller already knows: TW-DLG-006's `taskwire.dialog_timeout` is the
+        case, and the exception there is whatever the worker's execution limit happens to raise.
 
         `fail()` is the wrong tool for that: it commits, and the exit then commits a second terminal
         state over it - two completions where TW-API-001 allows exactly one, and a terminal envelope
@@ -530,7 +531,7 @@ class Reporter:
 
         The consequence (TW-DLG-006): **an unanswered dialog blocks its worker** until Celery's own
         execution timeout kills the task, at which point the operation becomes `failed` with code
-        `dialog_timeout` and `retryable: true` and its open dialogs are withdrawn. The general
+        `taskwire.dialog_timeout` and `retryable: true` and its open dialogs are withdrawn. The general
         problem of a blocked worker is deliberately unsolved.
 
         `ask()` MUST NOT be called while holding a database transaction (TW-DLG-017). It waits for a
@@ -929,7 +930,7 @@ class OperationScope:
         # An error the operation named for itself outranks one derived from the exception's class
         # (`name_error`). The class is the more specific fact only when nobody knew better: a worker
         # killed while holding a question raises whatever its execution limit raises, and
-        # `dialog_timeout` with `retryable: true` is what the reader can act on (TW-DLG-006,
+        # `taskwire.dialog_timeout` with `retryable: true` is what the reader can act on (TW-DLG-006,
         # TW-PROG-005).
         if error is not None and reporter._progress.error is None:
             reporter._progress.error = error
@@ -1040,11 +1041,7 @@ def _terminal_for(exc_type: Any, exc: Any) -> tuple[ProgressState, Error | None]
         return ProgressState.DONE, None
     if issubclass(exc_type, OperationCancelled):
         return ProgressState.CANCELLED, None
-    return ProgressState.FAILED, Error(
-        code=exc_type.__name__,
-        message=Text(text=str(exc) or exc_type.__name__),
-        retryable=False,
-    )
+    return ProgressState.FAILED, unhandled_exception_error(exc_type, exc)
 
 
 def operation(
@@ -1161,11 +1158,7 @@ async def mark_failed(
     if snapshot.dialogs:
         await store.withdraw_dialogs(k)
     progress = snapshot.progress
-    progress.error = (
-        error
-        if isinstance(error, Error)
-        else Error(code=type(error).__name__, message=Text(text=str(error)), retryable=False)
-    )
+    progress.error = error if isinstance(error, Error) else unhandled_exception_error(type(error), error)
     progress.updated_at = now_iso()
     progress.state = ProgressState.FAILED
     written = await store.commit(k, progress, settings.tombstone_ttl)

@@ -339,7 +339,7 @@ async def test_a_terminal_operation_refuses_a_cancel_with_409(configured_store):
         pass
     status, payload = await request_cancel(Client(session=NS), token)
     assert status == 409, "already terminal, and the tombstone says so"
-    assert payload["detail"] == "already_terminal"
+    assert payload["detail"] == "taskwire.already_terminal"
 
 
 @pytest.mark.usefixtures("_unthrottled")

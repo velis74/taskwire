@@ -18,7 +18,18 @@ from dataclasses import replace
 from typing import Any
 
 from .delivery import Client
-from .models import DialogReply, DialogState, Envelope, EnvelopeKind, INPUT_TYPES, now_iso, ProgressState
+from .models import (
+    CANCELLED,
+    DialogReply,
+    DialogState,
+    Envelope,
+    EnvelopeKind,
+    ERROR_NAMESPACE,
+    INPUT_TYPES,
+    now_iso,
+    ProgressState,
+    WIRE_VERSION,
+)
 from .register import build_register, CEILING_POLL_MS, poll_after_ms
 from .settings import configured, settings
 from .store import DialogResolution, key as make_key
@@ -26,6 +37,27 @@ from .store import DialogResolution, key as make_key
 logger = logging.getLogger("taskwire.rest")
 
 Response = tuple[int, dict[str, Any] | None]
+
+NOT_FOUND = f"{ERROR_NAMESPACE}.not_found"
+"""`404`: an unknown or foreign token, or an unknown dialog (TW-SEC-002)."""
+
+ALREADY_TERMINAL = f"{ERROR_NAMESPACE}.already_terminal"
+"""`409` on cancel: the operation has ended (TW-RET-004)."""
+
+HOLDS_AN_UNCOLLECTED_RESULT = f"{ERROR_NAMESPACE}.holds_an_uncollected_result"
+"""`409` on cancel: the operation's work is over and its result is parked (TW-CANCEL-010)."""
+
+NO_UNCOLLECTED_RESULT = f"{ERROR_NAMESPACE}.no_uncollected_result"
+"""`409` on collect, or on dismiss of an operation that has not ended: there is no result to release
+(TW-REST-008)."""
+
+ALREADY_ANSWERED = f"{ERROR_NAMESPACE}.already_answered"
+"""`409` on a dialog reply: another reply won (TW-DLG-010)."""
+
+REQUESTED = f"{ERROR_NAMESPACE}.requested"
+"""`202` on cancel: the cancel was requested (TW-REST-009)."""
+
+_RESOLUTION_DETAIL = {DialogResolution.ALREADY_ANSWERED: ALREADY_ANSWERED, DialogResolution.CANCELLED: CANCELLED}
 
 
 def _is_uuid(token: str) -> bool:
@@ -47,7 +79,7 @@ def _not_found() -> Response:
     A 403 would confirm that the token exists in somebody's namespace, which turns the endpoint into
     an oracle for enumerating other people's operations.
     """
-    return 404, {"detail": "not_found"}
+    return 404, {"detail": NOT_FOUND}
 
 
 async def get_operations(client: Client) -> Response:
@@ -65,7 +97,7 @@ async def get_operations(client: Client) -> Response:
     store = configured.store
     if store is None:
         return 200, {
-            "v": 1,
+            "v": WIRE_VERSION,
             "operations": [],
             "aggregate": None,
             "server_time": now_iso(),
@@ -182,7 +214,7 @@ async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, 
     # The loser is told who won, so it can render the answer rather than merely closing (TW-DLG-010).
     after = await store.snapshot(key)
     settled = next((d for d in (after.dialogs if after else []) if d.id == did), None)
-    payload = {"detail": resolution.value, "dialog": settled.to_dict() if settled else None}
+    payload = {"detail": _RESOLUTION_DETAIL[resolution], "dialog": settled.to_dict() if settled else None}
     if resolution is DialogResolution.CANCELLED or (
         settled is not None and DialogState(settled.state) is DialogState.CANCELLED
     ):
@@ -215,16 +247,16 @@ async def request_cancel(client: Client, token: str) -> Response:
 
     progress = snapshot.progress
     if progress.is_terminal:
-        return 409, {"detail": "already_terminal"}
+        return 409, {"detail": ALREADY_TERMINAL}
     if progress.result is not None:
-        return 409, {"detail": "holds_an_uncollected_result"}
+        return 409, {"detail": HOLDS_AN_UNCOLLECTED_RESULT}
 
     rev = await store.request_cancel(key)
     await store.publish(
         client.session,
         Envelope(token=token, rev=rev, kind=EnvelopeKind.CANCEL, body={}),
     )
-    return 202, {"detail": "requested"}
+    return 202, {"detail": REQUESTED}
 
 
 async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
@@ -256,11 +288,11 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
         # worker is not a collectable result (TW-REST-008).
         if idempotent and snapshot.progress.is_terminal:
             return 204, None
-        return 409, {"detail": "no_uncollected_result"}
+        return 409, {"detail": NO_UNCOLLECTED_RESULT}
 
     released = await store.release_result(key)
     if released is None:
-        return (204, None) if idempotent else (409, {"detail": "no_uncollected_result"})
+        return (204, None) if idempotent else (409, {"detail": NO_UNCOLLECTED_RESULT})
 
     # TW-RES-010: the release is what ends the operation, so this is where `done` is written. One
     # write and one envelope: it takes the entry out of the register (TW-REG-007) and leaves the

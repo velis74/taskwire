@@ -78,7 +78,7 @@ from ..calls import (
 from ..decorators import declared_result_kind
 from ..delivery import Client
 from ..headers import CONNECTION_HEADER, TOKEN_HEADER  # noqa: F401 - re-exported
-from ..models import Error, Text
+from ..models import Error, FAILED, Text
 from ..rest import collect_result, dismiss_result, get_operations, get_snapshot, reply_to_dialog, request_cancel
 from ..settings import configure_executor, configured, settings
 from . import schema
@@ -132,7 +132,7 @@ def _unwrap(status: int, payload: dict[str, Any] | None) -> dict[str, Any]:
     other people's operations.
     """
     if status >= 400:
-        raise HTTPException(status_code=status, detail=(payload or {}).get("detail", "error"))
+        raise HTTPException(status_code=status, detail=(payload or {}).get("detail"))
     return payload or {}
 
 
@@ -299,23 +299,24 @@ class TaskwireMiddleware(Middleware):
 
     - `__call__` receives the call: `queued` before the rest of the chain, and `failed` when the chain
       ends with the operation still `queued` and the action not executed in this process -
-      `dispatch_failed` for `ActionDispatchError`, `not_executed` otherwise, and nothing for an
-      `ActionOutcomeUnknownError` or an `ActionInterruptedError`, whose operation the executor's
-      process ends.
+      `taskwire.dispatch_failed` for `ActionDispatchError`, `taskwire.not_executed` otherwise, and
+      nothing for an `ActionOutcomeUnknownError` or an `ActionInterruptedError`, whose operation the
+      executor's process ends.
     - `execute()` executes it: in the FastAPI process for an in-process action, in the executor's
       process for a deferred action. An action dispatched from inside another action's execution
       (`ActionExecution.parent`) reports into nothing of its own. An exception in `timeout_errors`
       (default `ActionInterruptedError`) that ends an execution holding an open question ends it
-      `dialog_timeout` (TW-DLG-006); an `ActionInterruptedError` otherwise ends it `interrupted`. In an
-      executor's process, an execution that ends because the process exits (`SystemExit`,
+      `taskwire.dialog_timeout` (TW-DLG-006); an `ActionInterruptedError` otherwise ends it
+      `taskwire.interrupted`. In an executor's process, an execution that ends because the process exits (`SystemExit`,
       `KeyboardInterrupt`) writes no terminal state: fastapi-viewsets reports that end to
       `on_transition()`.
     - `executor_started()` configures the executor's process with `taskwire.configure_executor()`
       (TW-CALL-009).
     - `on_transition()` ends the operation of a deferred call that the executor ended outside its
-      execution: `interrupted` (or `dialog_timeout` with an open question), `dispatch_failed` for a
-      call still `queued` that will not run, and `failed` with the executor's error code for a failure
-      around the execution.
+      execution: `taskwire.interrupted` (or `taskwire.dialog_timeout` with an open question),
+      `taskwire.dispatch_failed` for a call still `queued` that will not run, and `failed` with the
+      executor's error code, or `taskwire.failed` for an error without one, for a failure around the
+      execution.
 
     `@action_configuration({TaskwireMiddleware: False})` leaves an action untracked, and
     `{TaskwireMiddleware: {"result_kind": kind}}` declares its result kind; without one the kind is the
@@ -382,12 +383,13 @@ class TaskwireMiddleware(Middleware):
         elif transition.kind == "not_run":
             await end_call(
                 call,
-                Error(code=DISPATCH_FAILED, message=Text(key="taskwire.dispatch_failed"), retryable=True),
+                Error(code=DISPATCH_FAILED, message=Text(key=DISPATCH_FAILED), retryable=True),
                 queued_only=True,
             )
         elif transition.kind == "failed":
-            code = getattr(error, "code", None) or "failed"
-            await end_call(call, Error(code=code, message=Text(text=str(getattr(error, "detail", code)))))
+            code = getattr(error, "code", None)
+            text = str(getattr(error, "detail", code or FAILED))
+            await end_call(call, Error(code=code or FAILED, message=Text(key=None if code else FAILED, text=text)))
 
 
 def _reason(error: BaseException | None) -> str | None:

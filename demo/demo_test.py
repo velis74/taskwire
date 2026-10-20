@@ -229,7 +229,7 @@ def test_an_unanswered_question_dies_with_the_worker_that_asked_it(http: TestCli
     # Nobody answers, which is the whole test.
     ended = _wait(http, token, lambda s: s["progress"]["state"] == "failed")
     assert ended is not None, "the deadline must end the operation"
-    assert ended["progress"]["error"]["code"] == "dialog_timeout"
+    assert ended["progress"]["error"]["code"] == "taskwire.dialog_timeout"
     assert all(d["state"] == "cancelled" for d in ended["dialogs"]), "the question went with it"
     assert http.get("/taskwire").json()["operations"] == []
 

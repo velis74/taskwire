@@ -334,6 +334,7 @@ async def test_reply_endpoint_status_matrix(configured_store):
     status, payload = await reply_to_dialog(client, token, did, {"button": "cancel"})
     assert status == 409
     assert payload is not None
+    assert payload["detail"] == "taskwire.already_answered"
     assert payload["dialog"]["state"] == "answered"
     assert payload["dialog"]["reply"]["button"] == "ok", "the loser is shown the winning reply"
 
@@ -352,6 +353,7 @@ async def test_reply_to_a_withdrawn_dialog_is_410(configured_store):
 
     status, payload = await reply_to_dialog(Client(session=NS), token, did, {"button": "ok"})
     assert status == 410, payload
+    assert payload["detail"] == "taskwire.cancelled"
 
     with pytest.raises(OperationCancelled):
         await task

@@ -14,11 +14,15 @@ from taskwire import (
     Client, OperationRef, Commit,
     Call, call_token, receive_call, execute_call, hand_off,
     ERROR_NAMESPACE, ERROR_NAMESPACE_FASTAPI_VIEWSETS,
+    DISPATCH_FAILED, NOT_EXECUTED, DIALOG_TIMEOUT, INTERRUPTED, HTTP_STATUS,
+    UNHANDLED_EXCEPTION, FAILED, CANCELLED, exception_name, unhandled_exception_error,
 )
 ```
 
 `ERROR_NAMESPACE` (`"taskwire"`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`"fastapi-viewsets"`) are the
-namespaces of [Error codes](../guide/error-codes.md).
+namespaces of [Error codes](../guide/error-codes.md), and the code constants are taskwire's codes.
+`unhandled_exception_error(exc_type, exc)` is the `Error` an exception ends an operation with;
+`exception_name(name)` is the snake case of a class name it puts in `message.params.exception`.
 
 ### `configure(...)`
 
@@ -207,8 +211,8 @@ takes; `Call.from_carried(mapping)` reverses it and returns `None` for a missing
 `receive_call(call)` is an async and a sync context manager yielding `call`. Entry drops a terminal
 document under the token and calls `mark_queued` with the call's `connection` and `result_kind`. Exit,
 when the operation is still `queued` and no `execute_call` was entered for the call in the same
-context, writes `failed`: `DISPATCH_FAILED` (`"dispatch_failed"`, `retryable: true`) for an exception
-in `dispatch_errors`, nothing for one in `pending_errors`, and `NOT_EXECUTED` (`"not_executed"`,
+context, writes `failed`: `DISPATCH_FAILED` (`"taskwire.dispatch_failed"`, `retryable: true`) for an exception
+in `dispatch_errors`, nothing for one in `pending_errors`, and `NOT_EXECUTED` (`"taskwire.not_executed"`,
 `retryable: false`) otherwise. A receipt nested in one for the same token writes nothing.
 
 `execute_call(call)` is an async and a sync context manager yielding the `Reporter`. It enters
@@ -219,18 +223,18 @@ inside another execution, or for `call=None`, it opens nothing and yields `None`
 exits without an exception.
 
 `hand_off()` yields the executing call's `carried()` (`{}` outside an execution). A clean exit leaves
-the terminal write to the process that receives the values; an exception names `dispatch_failed`.
+the terminal write to the process that receives the values; an exception names `taskwire.dispatch_failed`.
 
 `end_call(call, error)` ends the operation of a call whose execution ended without a terminal write,
 from the process that observed the end: `failed` with `error` for an operation that is `queued`,
 `running` or `waiting_input` without a parked result, with its open dialogs withdrawn. With a dialog
 open the error is `asking_error` when given; with `queued_only` only a `queued` operation is written.
-Returns whether it wrote. `interrupted_error(reason)` is `INTERRUPTED` (`"interrupted"`,
+Returns whether it wrote. `interrupted_error(reason)` is `INTERRUPTED` (`"taskwire.interrupted"`,
 `message.params == {"reason": reason}` when given, `retryable: true`); `dialog_timeout_error()` is
-`DIALOG_TIMEOUT` (`"dialog_timeout"`, `retryable: true`).
+`DIALOG_TIMEOUT` (`"taskwire.dialog_timeout"`, `retryable: true`).
 
 `status_error(status)` is the `Error` of TW-CALL-006: `None` below 400, else `HTTP_STATUS`
-(`"http_status"`) with `message.params == {"status": status}`, retryable for 502, 503 and 504.
+(`"taskwire.http_status"`) with `message.params == {"status": status}`, retryable for 502, 503 and 504.
 
 Store failures on any of these writes are logged and never raised.
 
@@ -292,9 +296,9 @@ from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_proce
 | Hook | What it does |
 |---|---|
 | `__call__` | runs the rest of the command chain inside `receive_call`, with `ActionDispatchError` as a dispatch error and `ActionOutcomeUnknownError` and `ActionInterruptedError` as pending ones |
-| `execute()` | runs the action inside `execute_call`, where the action executes, and passes an execution with a `parent` straight through. An `ActionInterruptedError` ends the operation `dialog_timeout` with an open question, else `interrupted` with the error's `reason`. In an executor's process an execution that ends because the process exits writes no terminal state; `on_transition()` ends it |
+| `execute()` | runs the action inside `execute_call`, where the action executes, and passes an execution with a `parent` straight through. An `ActionInterruptedError` ends the operation `taskwire.dialog_timeout` with an open question, else `taskwire.interrupted` with the error's `reason`. In an executor's process an execution that ends because the process exits writes no terminal state; `on_transition()` ends it |
 | `executor_started()` | `taskwire.configure_executor()` |
-| `on_transition(transition)` | `end_call` for a call the executor ended outside its execution: `interrupted` (or `dialog_timeout` with an open question), `not_run` as `dispatch_failed` when still `queued`, `failed` with the error's code; nothing for `dispatched` or a call with a `parent` |
+| `on_transition(transition)` | `end_call` for a call the executor ended outside its execution: `taskwire.interrupted` (or `taskwire.dialog_timeout` with an open question), `not_run` as `taskwire.dispatch_failed` when still `queued`, `failed` with the error's code; nothing for `dispatched` or a call with a `parent` |
 
 `timeout_errors` defaults to `(ActionInterruptedError,)`.
 
@@ -354,9 +358,10 @@ def import_rows(self, reporter, *, rows): ...
 
 `taskwire_task` decorates the body and passes the reporter **by keyword**, so the parameter must be
 named `reporter`; `token` and `session` arrive as task kwargs. It closes the operation before Celery
-publishes the task's result. On a soft time limit it names `dialog_timeout` **only when the operation
-was holding an open question** — `reporter.asking` answers that with no store read. Otherwise the
-exception's own class names the error.
+publishes the task's result. On a soft time limit it names `taskwire.dialog_timeout` **only when the
+operation was holding an open question** — `reporter.asking` answers that with no store read.
+Otherwise the operation ends `taskwire.unhandled_exception` with `message.params.exception`
+`soft_time_limit_exceeded`.
 
 Celery's `task_prerun` / `task_postrun` signals are not used: `postrun` fires after the result has
 been pushed, so a client could see the answer while the operation still read `running`.
@@ -491,9 +496,9 @@ A dialog has no deadline at all.
 | `GET {prefix}` | `200` `Register` | — |
 | `GET {prefix}/{token}` | `200` `Snapshot`, terminal ones included | `404` unknown, foreign, or a tombstone that has expired |
 | `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410` withdrawn, `422` |
-| `POST {prefix}/{token}/cancel` | `202` | `404`; `409` `already_terminal` or `holds_an_uncollected_result` |
-| `POST {prefix}/{token}/collect` | `204` | `404`; `409` `no_uncollected_result` |
-| `POST {prefix}/{token}/dismiss` | `204` (idempotent, unknown tokens included) | `404` malformed token; `409` `no_uncollected_result` |
+| `POST {prefix}/{token}/cancel` | `202` | `404`; `409` `taskwire.already_terminal` or `taskwire.holds_an_uncollected_result` |
+| `POST {prefix}/{token}/collect` | `204` | `404`; `409` `taskwire.no_uncollected_result` |
+| `POST {prefix}/{token}/dismiss` | `204` (idempotent, unknown tokens included) | `404` malformed token; `409` `taskwire.no_uncollected_result` |
 
 Unknown and foreign tokens both return **404, never 403** — a 403 would confirm the token exists in
 somebody's namespace.
@@ -501,6 +506,6 @@ somebody's namespace.
 While the tombstone is readable these endpoints answer about a token they still know, which is what
 separates "this operation has ended" from "no such token": a cancel on a finished operation is `409
 already_terminal`, a reply to a dialog its terminal write withdrew is `410`, and a second collect is
-`409 no_uncollected_result`. A second dismiss stays `204` — an operation that has already ended is
+`409 taskwire.no_uncollected_result`. A second dismiss stays `204` — an operation that has already ended is
 the state a dismissing caller asked for. Once the tombstone expires the token is unknown again:
 cancel and collect answer `404`, and dismiss still answers `204`.

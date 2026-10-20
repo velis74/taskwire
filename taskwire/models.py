@@ -18,13 +18,14 @@ a percentage gets added back by someone reading `percent: float | None` as an in
 from __future__ import annotations
 
 import json
+import re
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-WIRE_VERSION = 1
+WIRE_VERSION = 2
 """TW-CORE-011: bumped only on a breaking wire change, never on an implementation change. Package
 semver tracks the implementation and says nothing about this number."""
 
@@ -141,18 +142,74 @@ def t(key: str | None = None, *, text: str | None = None, **params: Any) -> Text
 
 
 ERROR_NAMESPACE = "taskwire"
-"""The namespace of the error codes taskwire declares outside the wire format: `taskwire.<code>`.
-
-A namespaced code splits at its last `.` into the namespace and the code. The reserved codes of an
-operation document's `error.code` (`dispatch_failed`, `dialog_timeout`, `interrupted`, `not_executed`,
-`http_status`, and `failed`, which `TaskwireMiddleware.on_transition()` writes for a deferred call the
-executor failed around when the executor's error carries no `code`) are values of the wire format and
-carry no namespace.
-"""
+"""The namespace of every error code taskwire declares: `taskwire.<code>`. A namespaced code splits at
+its last `.` into the namespace and the code."""
 
 ERROR_NAMESPACE_FASTAPI_VIEWSETS = "fastapi-viewsets"
 """The namespace of the fastapi-viewsets codes `TaskwireMiddleware` writes into `error.code` verbatim:
 the `code` of the executor's error for a deferred call that failed around its execution."""
+
+DISPATCH_FAILED = f"{ERROR_NAMESPACE}.dispatch_failed"
+"""The work could not be handed to the process that executes it. `retryable: true` (TW-CALL-005,
+TW-CELERY-004)."""
+
+NOT_EXECUTED = f"{ERROR_NAMESPACE}.not_executed"
+"""A tracked call ended before anything executed it. `retryable: false` (TW-CALL-005)."""
+
+DIALOG_TIMEOUT = f"{ERROR_NAMESPACE}.dialog_timeout"
+"""An execution limit ended the work while it held an open question. `retryable: true` (TW-DLG-006)."""
+
+INTERRUPTED = f"{ERROR_NAMESPACE}.interrupted"
+"""The executor ended the work after it started, with no open question: a time limit, a termination, the
+loss of the executing process. `message.params.reason` names which when the executor says. `retryable:
+true` (TW-CALL-008)."""
+
+HTTP_STATUS = f"{ERROR_NAMESPACE}.http_status"
+"""The call was answered with an error status and no exception; `message.params.status` (TW-CALL-006)."""
+
+UNHANDLED_EXCEPTION = f"{ERROR_NAMESPACE}.unhandled_exception"
+"""An exception ended the operation; `message.params.exception` is its class name in snake case
+(`exception_name()`). `retryable: false`."""
+
+FAILED = f"{ERROR_NAMESPACE}.failed"
+"""`TaskwireMiddleware.on_transition()` ended a deferred call the executor failed around, and the
+executor's error carries no `code`. `retryable: false`."""
+
+CANCELLED = f"{ERROR_NAMESPACE}.cancelled"
+"""A cancellation: the `OperationFailed.code` of a `cancelled` operation (TypeScript), and the `detail`
+of a `410` reply to a dialog the operation withdrew. Never written into a document: a `cancelled`
+operation carries no `error`."""
+
+_ACRONYM_BOUNDARY = re.compile(r"([A-Z])([A-Z][a-z])")
+_WORD_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
+_SEPARATORS = re.compile(r"[^A-Za-z0-9]+")
+
+
+def exception_name(name: str) -> str:
+    """A class name in snake case, the rule TypeScript's `exceptionName()` applies too.
+
+    In order: `_` between an uppercase letter and an uppercase letter followed by a lowercase one
+    (`HTTPError` -> `HTTP_Error`); `_` between a lowercase letter or digit and an uppercase letter
+    (`ValueError` -> `Value_Error`); every run of characters outside `A-Z`, `a-z`, `0-9` becomes one
+    `_`; leading and trailing `_` are removed; the result is lowercased. An empty result is `error`.
+    """
+    name = _ACRONYM_BOUNDARY.sub(r"\1_\2", name)
+    name = _WORD_BOUNDARY.sub(r"\1_\2", name)
+    return _SEPARATORS.sub("_", name).strip("_").lower() or "error"
+
+
+def unhandled_exception_error(exc_type: type[BaseException], exc: BaseException | None) -> Error:
+    """The error of an operation an exception ended: `taskwire.unhandled_exception`, with the class name
+    in `message.params.exception` and the exception's text, or its class name, as `message.text`."""
+    return Error(
+        code=UNHANDLED_EXCEPTION,
+        message=Text(
+            key=UNHANDLED_EXCEPTION,
+            params={"exception": exception_name(exc_type.__name__)},
+            text=(str(exc) if exc is not None else "") or exc_type.__name__,
+        ),
+        retryable=False,
+    )
 
 
 @dataclass(frozen=True)

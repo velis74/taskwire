@@ -28,6 +28,7 @@ from taskwire.models import (
     Aggregate,
     DialogRequest,
     DialogState,
+    DISPATCH_FAILED,
     Envelope,
     EnvelopeKind,
     Error,
@@ -180,7 +181,7 @@ def test_wire_fixtures_roundtrip() -> None:
         assert_nothing_lost(document, serialized, path.name)
 
         if kind in VERSIONED_KINDS:
-            assert document["v"] == WIRE_VERSION == 1, f"{path.name}: must carry the wire version"
+            assert document["v"] == WIRE_VERSION == 2, f"{path.name}: must carry the wire version"
 
         for key, value in walk(document):
             if key == "state" and kind == "progress":
@@ -444,7 +445,7 @@ def test_error_carries_no_stack_trace() -> None:
     This document reaches a browser. A field that could hold a traceback is the whole of the risk,
     so assert the shape is closed rather than that one particular name is missing.
     """
-    error = Error(code="dispatch_failed", message=Text(key="taskwire.error.dispatch_failed"), retryable=True)
+    error = Error(code=DISPATCH_FAILED, message=Text(key=DISPATCH_FAILED), retryable=True)
     assert {f.name for f in fields(Error)} == {"code", "message", "retryable"}
     assert set(error.to_dict()) == {"code", "message", "retryable"}
 
@@ -576,3 +577,26 @@ def test_progress_delivery_false_is_not_confused_with_absent():
         {"token": "t", "snapshot": _SNAPSHOT, "origin_session": "ns", "progress_delivery": False}
     )
     assert summary.progress_delivery is False
+
+
+def test_exception_name_follows_the_shared_cases() -> None:
+    """`exception_name()` gives what TypeScript's `exceptionName()` gives, acronyms included."""
+    from taskwire.models import exception_name
+
+    cases = json.loads((WIRE_DIR.parent / "exception-names.json").read_text(encoding="utf-8"))["cases"]
+    assert [exception_name(name) for name, _ in cases] == [snake for _, snake in cases]
+
+
+def test_an_exception_is_an_unhandled_exception_with_its_name() -> None:
+    from taskwire.models import UNHANDLED_EXCEPTION, unhandled_exception_error
+
+    class HTTPServerError(Exception):
+        pass
+
+    error = unhandled_exception_error(HTTPServerError, HTTPServerError("boom"))
+    assert error.to_dict() == {
+        "code": "taskwire.unhandled_exception",
+        "message": {"key": UNHANDLED_EXCEPTION, "params": {"exception": "http_server_error"}, "text": "boom"},
+        "retryable": False,
+    }
+    assert unhandled_exception_error(ValueError, ValueError()).message.text == "ValueError"

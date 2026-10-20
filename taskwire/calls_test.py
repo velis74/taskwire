@@ -242,7 +242,8 @@ def test_wsgi_an_exception_ends_the_call_failed_and_propagates(store: taskwire.M
     with pytest.raises(RuntimeError):
         wsgi.track_calls(app)({"REQUEST_METHOD": "POST", "HTTP_X_TASKWIRE_TOKEN": key}, lambda *_: None)
 
-    assert _progress(store, key).error.code == "RuntimeError"
+    error = _progress(store, key).error
+    assert (error.code, error.message.params) == ("taskwire.unhandled_exception", {"exception": "runtime_error"})
 
 
 def test_a_call_without_a_namespace_is_untracked(store: taskwire.MemoryStore) -> None:

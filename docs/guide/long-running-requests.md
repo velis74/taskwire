@@ -82,7 +82,7 @@ track_viewset_calls()
 
 `store` is a `RedisStore` shared with the web process. An action that reports nothing still shows
 the dialog after the delay, with an indeterminate bar. An action its time limit ends is `failed`
-with `interrupted`, or `dialog_timeout` while it asks (see
+with `taskwire.interrupted`, or `taskwire.dialog_timeout` while it asks (see
 [Deferred actions](./fastapi-viewsets.md#deferred-actions)).
 
 ## The frontend with fastapi-viewsets

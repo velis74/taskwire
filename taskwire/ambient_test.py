@@ -168,7 +168,8 @@ async def test_a_raising_operation_ends_failed_and_reraises():
 
     terminal = [e for e in seen if e.body.get("state") == ProgressState.FAILED.value]
     assert terminal, "the terminal envelope is the notification; the document is already gone"
-    assert terminal[-1].body["error"]["code"] == "ValueError"
+    error = terminal[-1].body["error"]
+    assert (error["code"], error["message"]["params"]) == ("taskwire.unhandled_exception", {"exception": "value_error"})
     assert "Traceback" not in str(terminal[-1].body["error"])
 
 
