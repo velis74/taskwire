@@ -118,7 +118,7 @@ NEVER return to it.** There is no `expired` state - a dialog has no deadline to 
   programmer who wants a deadline implements one at whatever level suits them.
 - **TW-DLG-006** The consequence MUST be stated plainly in the docs rather than softened: **an
   unanswered dialog blocks its worker until Celery's own execution timeout kills the task**, at which
-  point the operation becomes `failed` with `code: "dialog_timeout"` and `retryable: true`, and its
+  point the operation becomes `failed` with `code: "taskwire.dialog_timeout"` and `retryable: true`, and its
   open dialogs are withdrawn (TW-STORE-004). The general problem of a blocked worker is
   **deliberately unsolved** (TW-CELERY-010). *(The Celery half of that write is **M4**'s; the
   sentence in `docs/guide/dialogs.md` is this milestone's.)*
@@ -424,7 +424,7 @@ Wire fixtures (read in place, `models_test.py`):
       it is open, and vanishes from that register again when it is answered (test 28).
 <!-- markdownlint-disable-next-line MD013 -->
 - [ ] `grep -rniE "timeout_at|dialog_timeout|DialogTimeout|expire_dialog|expired|timed_out" taskwire/ --include='*.py' | grep -v _test`
-      returns nothing except the `code: "dialog_timeout"` constant reserved for M4's Celery path.
+      returns nothing except the `code: "taskwire.dialog_timeout"` constant reserved for M4's Celery path.
 - [ ] `grep -rn "dialog_id" taskwire/ --include='*.py' | grep -v _test` shows it used only as a
       payload field - never as a dict key, a path segment or a store argument.
 - [ ] `docs/guide/dialogs.md` states, as prominently as the spec does: never `ask()` inside a
@@ -436,7 +436,7 @@ Wire fixtures (read in place, `models_test.py`):
 
 `RedisStore`'s Lua scripts and `BLPOP`-based `await_dialog` (**M4** - the conformance suite written
 here is what M4's implementation must pass unchanged), together with the Celery error path that
-writes `failed` with `code: "dialog_timeout"` when the worker's execution timeout fires while it is
+writes `failed` with `code: "taskwire.dialog_timeout"` when the worker's execution timeout fires while it is
 blocked here (**M4**). The cancel path: flipping an open dialog to `cancelled` on a cancel request,
 the wakeup sentinel, and `ask()` raising `OperationCancelled` whatever `raise_on_cancel` says
 (**M6**; TW-DLG-012 and TW-CANCEL-007). Model the `cancelled` dialog state and its table row now, and

@@ -396,7 +396,7 @@ async def test_required_inputs_are_validated_before_the_store(configured_store):
         return status, payload["code"], payload["params"]
 
     assert await refused({}) == (422, "taskwire.invalid_reply", {"reason": "button_required"})
-    assert await refused({"button": "ok", "values": []}) == (
+    assert await refused({"button": "ok", "values": "x"}) == (
         422,
         "taskwire.invalid_reply",
         {"reason": "values_not_an_object"},

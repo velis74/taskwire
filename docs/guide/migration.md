@@ -35,6 +35,7 @@ Compare against the exported constants rather than literals:
 | REST `detail` | `no_uncollected_result` | `taskwire.no_uncollected_result` |
 | REST `detail` | `already_answered` | `taskwire.already_answered` |
 | REST `detail` | `cancelled` | `taskwire.cancelled` |
+| REST `422` of a dialog reply | `detail` only | `detail`, `code` `taskwire.invalid_reply`, `params.reason` |
 
 ```ts
 import { DIALOG_TIMEOUT, OperationFailed } from 'taskwire';

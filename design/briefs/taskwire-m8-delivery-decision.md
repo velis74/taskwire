@@ -32,7 +32,7 @@ entire milestone is one optional request header and one field on `OperationSumma
 
 Both of the spec gaps this brief used to be blocked on are answered: `settings.max_overrides`
 defaults to **64** and is configurable (TW-DEL-008), and the `watch` reply is
-`{"v": 1, "status": int, "connection": str}` with `status` `0` accepted, `1` rejected for exceeding
+`{"v": 2, "status": int, "connection": str}` with `status` `0` accepted, `1` rejected for exceeding
 `max_overrides`, `2` malformed (TW-DEL-022). Nothing in this milestone is blocked.
 
 ## 3. Files to create or modify
@@ -74,7 +74,7 @@ defaults to **64** and is configurable (TW-DEL-008), and the `watch` reply is
   answering `status: 1` (TW-DEL-022).
 - **TW-DEL-009** The override map MUST live in per-connection memory (`peer.tags` under muxws), MUST
   die with the socket, and MUST NOT be persisted anywhere on either side.
-- **TW-DEL-022** The `watch` handler MUST answer `{"v": 1, "status": int, "connection": str}`, where
+- **TW-DEL-022** The `watch` handler MUST answer `{"v": 2, "status": int, "connection": str}`, where
   `status` is `0` accepted, `1` rejected for exceeding `max_overrides`, `2` malformed, and
   `connection` is the opaque connection id of the socket it was applied to. A rejected declaration
   MUST still carry the connection id, since the socket is unchanged. A client MAY send
@@ -219,7 +219,7 @@ class Client:
 ```
 
 Client-originated document (never pushed, §3.9): `{"kind": "watch", "overrides": {token: boolean}}`.
-Its acknowledgement (not an `Envelope`): `{"v": 1, "status": 0 | 1 | 2, "connection": "<id>"}`.
+Its acknowledgement (not an `Envelope`): `{"v": 2, "status": 0 | 1 | 2, "connection": "<id>"}`.
 
 Setting (§8.1): `max_overrides`, entries, default **64**, range `> 0` (TW-DEL-008).
 
@@ -362,7 +362,7 @@ Python — private operations at the last hop (`taskwire/delivery_test.py`):
 
 Python — `taskwire/watch_test.py`:
 
-24. `test_watch_reply_shape_for_all_three_statuses` **(named in the spec)** — `{"v": 1, "status":
+24. `test_watch_reply_shape_for_all_three_statuses` **(named in the spec)** — `{"v": 2, "status":
     0|1|2, "connection": str}`; `0` on an accepted declaration, `1` on one above `max_overrides`, `2`
     on a malformed one, and a connection id present in all three (TW-DEL-022).
 25. `test_watch_performs_no_store_reads` — counting store client, for both a `true` and a `false` on a

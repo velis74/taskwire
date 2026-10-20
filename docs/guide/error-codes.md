@@ -96,11 +96,24 @@ steps in order:
 | `POST {prefix}/{token}/collect`, `POST {prefix}/{token}/dismiss` | `409` | `taskwire.no_uncollected_result` |
 | `POST {prefix}/{token}/dialogs/{did}` | `409` | `taskwire.already_answered`, with the settled `dialog` |
 | `POST {prefix}/{token}/dialogs/{did}` | `410` | `taskwire.cancelled`, with the settled `dialog` |
-| `POST {prefix}/{token}/dialogs/{did}` | `422` | English text naming the problem |
+| `POST {prefix}/{token}/dialogs/{did}` | `422` | English text naming the problem, with `code` and `params` |
 
-Python exports them from `taskwire.rest` as `NOT_FOUND`, `REQUESTED`, `ALREADY_TERMINAL`,
-`HOLDS_AN_UNCOLLECTED_RESULT`, `NO_UNCOLLECTED_RESULT` and `ALREADY_ANSWERED`, and `CANCELLED` from
-`taskwire`.
+The `422` of a dialog reply answers `{"detail": <English text>, "code": "taskwire.invalid_reply",
+"params": {...}}`. `params.reason` says what failed:
+
+| `params.reason` | Other `params` |
+|---|---|
+| `button_required` | — |
+| `unknown_button` | `button` |
+| `values_not_an_object` | — |
+| `input_required` | `input` |
+| `unknown_input_type` | `input`, `type` |
+| `wrong_input_type` | `input`, `expected` (`number`, `boolean` or `string`) |
+
+Python exports the codes from `taskwire.rest` as `NOT_FOUND`, `REQUESTED`, `ALREADY_TERMINAL`,
+`HOLDS_AN_UNCOLLECTED_RESULT`, `NO_UNCOLLECTED_RESULT`, `ALREADY_ANSWERED` and `INVALID_REPLY`, and
+`CANCELLED` from `taskwire`. `register_taskwire_rest`, `router()` and `contrib.asgi` answer with these
+bodies alike.
 
 ## `OperationFailed`
 

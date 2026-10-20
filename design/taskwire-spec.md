@@ -439,7 +439,11 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-DLG-014** A dialog carries no deadline for any party to renegotiate, so there MUST be no rule
   about extending one and no field a client could extend. A UI MUST NOT render a countdown.
 - **TW-DLG-015** The reply handler MUST validate `button ∈ buttons` and `values` against `inputs`
-  (required, type) **before** touching the store, rejecting with 422.
+  (required, type) **before** touching the store, rejecting with 422:
+  `{"detail": <English text>, "code": "taskwire.invalid_reply", "params": {"reason": ..., ...}}`, where
+  `reason` is `button_required`, `unknown_button` (with `button`), `values_not_an_object`,
+  `input_required` (with `input`), `unknown_input_type` (with `input` and `type`) or `wrong_input_type`
+  (with `input` and `expected`).
 - **TW-DLG-016** The client's close rule MUST be written against dialog state, not against envelope
   arrival: a dialog leaving `open` closes it, whether observed in a push or a poll, and whether it
   left for `answered` or `cancelled`.
@@ -2044,14 +2048,15 @@ limit while blocked on a question produces `failed` with `code: "taskwire.dialog
 
 | Outcome | Status | `detail` | Meaning | Client behaviour |
 |---|---|---|---|---|
-| button not in `buttons`, or `values` fail `inputs` | `422` | English text naming the problem | rejected before the store is touched | reject `answer()` — a client bug |
+| button not in `buttons`, or `values` fail `inputs` | `422` | English text naming the problem, with `code` `taskwire.invalid_reply` and `params` | rejected before the store is touched | reject `answer()` — a client bug |
 | `ACCEPTED` | `204` | no body | the store arbitrated in your favour — the only trustworthy signal | close the dialog |
 | `NOT_FOUND` | `404` | `taskwire.not_found` | unknown token, unknown dialog, or another namespace's | resolve `answer()` quietly, close |
 | `ALREADY_ANSWERED` | `409` | `taskwire.already_answered` | another tab won; **body carries the dialog with the winning reply** | resolve `answer()` quietly, apply the reply, close; never an error or toast |
 | `CANCELLED` | `410` | `taskwire.cancelled` | the question was withdrawn — the operation was cancelled, failed or ended, and its tombstone still says so (TW-RET-004) | resolve `answer()` quietly, close |
 
-The `DialogResolution` values are the store port's (§5.1) and carry no namespace; the `detail` of a
-response is a namespaced code built from `ERROR_NAMESPACE`.
+The `DialogResolution` values are the store port's (§5.1) and carry no namespace. The `detail` of
+every other response is a namespaced code built from `ERROR_NAMESPACE`; the `422` carries its code in
+`code`.
 
 ### 6.3 Other HTTP statuses
 

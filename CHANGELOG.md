@@ -21,6 +21,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `unhandled_exception_error()` (Python).
 - `taskwire.rest.NOT_FOUND`, `REQUESTED`, `ALREADY_TERMINAL`, `HOLDS_AN_UNCOLLECTED_RESULT`,
   `NO_UNCOLLECTED_RESULT` and `ALREADY_ANSWERED`: the REST `detail` codes.
+- The `422` of an invalid dialog reply carries `code` `taskwire.invalid_reply` (`INVALID_REPLY`) and
+  `params.reason` with what failed; `detail` keeps the English text.
 
 ### Changed
 
