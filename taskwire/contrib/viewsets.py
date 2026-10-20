@@ -56,13 +56,13 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from fastapi_viewsets.conf import settings as viewset_settings
 from fastapi_viewsets.context import Context
 from fastapi_viewsets.decorators.route_viewset import route_viewset
 from fastapi_viewsets.exceptions import ActionDispatchError, ActionInterruptedError, ActionOutcomeUnknownError
 from fastapi_viewsets.middleware import ActionExecution, ActionTransition, Middleware, ViewSetResult
-from fastapi_viewsets.response_classes import NOT_FOUND_RESPONSE
 
 from ..calls import (
     Call,
@@ -123,27 +123,40 @@ async def _client(context: Context) -> Client:
     )
 
 
-def _unwrap(status: int, payload: dict[str, Any] | None) -> dict[str, Any]:
-    """Translate `(status, payload)` into a return value or an `HTTPException`, and nothing more.
+def _responses(**statuses: str) -> dict[int | str, dict[str, Any]]:
+    """The OpenAPI `responses` of an endpoint: each error status, with `ErrorBody` and a description."""
+    return {status.lstrip("_"): {"model": schema.ErrorBody, "description": text} for status, text in statuses.items()}
 
-    Every status this raises on was decided in `taskwire.rest`; none is invented here. In particular
-    404 covers both "unknown token" and "somebody else's token" (TW-SEC-002) - a 403 would confirm
-    that a token exists in *some* namespace, which turns the endpoint into an oracle for enumerating
-    other people's operations.
+
+_NOT_FOUND = (
+    "An unknown token, a token of another namespace, or a tombstone that expired: `taskwire.not_found` (TW-SEC-002)."
+)
+
+
+def _error(status: int, payload: dict[str, Any] | None) -> JSONResponse | None:
+    """The answer to `(status, payload)` when `status` is an error: `payload` as the body, unchanged.
+
+    Every status was decided in `taskwire.rest`; none is invented here. In particular 404 covers both
+    "unknown token" and "somebody else's token" (TW-SEC-002) - a 403 would confirm that a token exists
+    in *some* namespace, which turns the endpoint into an oracle for enumerating other people's
+    operations. The body is the one `taskwire.rest` built, so a `409` or `410` to a dialog reply
+    carries the settled `dialog` (TW-DLG-010). None below 400.
     """
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=(payload or {}).get("detail"))
-    return payload or {}
+    if status < 400:
+        return None
+    return JSONResponse(payload or {}, status_code=status)
 
 
-def _check(status: int, payload: dict[str, Any] | None) -> None:
-    """`_unwrap` for the actions that answer `204` and no body.
+def _check(status: int, payload: dict[str, Any] | None) -> JSONResponse | None:
+    """`_error` for the actions that answer `204` and no body.
 
     Collect, dismiss and a dialog reply change something the *next read* reports; none of them has a
-    body of its own. Returning `None` here is what makes FastAPI send an empty 204 rather than the
-    `null` an untyped return would serialise to.
+    body of its own. Returning `None` is what makes FastAPI send an empty 204 rather than the `null`
+    an untyped return would serialise to. Their return annotation stays `None`: with
+    `response_model=None` fastapi-viewsets derives the response model from the annotation, and a
+    204 with a model is refused. FastAPI sends a returned `JSONResponse` as it is.
     """
-    _unwrap(status, payload)
+    return _error(status, payload)
 
 
 class TaskwireViewSet:
@@ -174,8 +187,13 @@ class TaskwireViewSet:
 
     __router = APIRouter()
 
-    @__router.get("", summary="Every shared operation of this namespace, with its aggregate")
-    async def list_items(self, context: Context) -> schema.Register:
+    @__router.get(
+        "",
+        response_model=schema.Register,
+        responses=_responses(_404="The caller has no namespace: `taskwire.not_found`."),
+        summary="Every shared operation of this namespace, with its aggregate",
+    )
+    async def list_items(self, context: Context) -> schema.Register | JSONResponse:
         """`GET {prefix}` - the central endpoint, and the one an ordinary client polls.
 
         Takes no parameters (TW-REG-003), so there is none that could name another namespace: the
@@ -187,10 +205,15 @@ class TaskwireViewSet:
         first one.
         """
         status, payload = await get_operations(await _client(context))
-        return schema.Register.model_validate(_unwrap(status, payload))
+        return _error(status, payload) or schema.Register.model_validate(payload)
 
-    @__router.get("{token}", responses=NOT_FOUND_RESPONSE, summary="The complete current state of one operation")
-    async def retrieve(self, context: Context, token: str) -> schema.Snapshot:
+    @__router.get(
+        "{token}",
+        response_model=schema.Snapshot,
+        responses=_responses(_404=_NOT_FOUND),
+        summary="The complete current state of one operation",
+    )
+    async def retrieve(self, context: Context, token: str) -> schema.Snapshot | JSONResponse:
         """`GET {prefix}/{token}` - everything about one operation, in one document.
 
         This is what makes reconnect a single GET (TW-CORE-005): there is no event log, no sequence
@@ -198,10 +221,20 @@ class TaskwireViewSet:
         state only.
         """
         status, payload = await get_snapshot(await _client(context), token)
-        return schema.Snapshot.model_validate(_unwrap(status, payload))
+        return _error(status, payload) or schema.Snapshot.model_validate(payload)
 
-    @__router.post("{token}/cancel", status_code=202, summary="Ask an operation to stop")
-    async def cancel(self, context: Context, token: str) -> schema.Accepted:
+    @__router.post(
+        "{token}/cancel",
+        status_code=202,
+        response_model=schema.Accepted,
+        responses=_responses(
+            _404=_NOT_FOUND,
+            _409="The operation has ended (`taskwire.already_terminal`) or holds an uncollected result "
+            "(`taskwire.holds_an_uncollected_result`, TW-CANCEL-010).",
+        ),
+        summary="Ask an operation to stop",
+    )
+    async def cancel(self, context: Context, token: str) -> schema.Accepted | JSONResponse:
         """`202`, deliberately - an acknowledgement, never a completion (TW-CANCEL-003).
 
         The operation stops when its own code next looks, which may be never. taskwire does not
@@ -212,12 +245,16 @@ class TaskwireViewSet:
         over and there is nothing left to interrupt, so the affordance there is dismiss, not cancel.
         """
         status, payload = await request_cancel(await _client(context), token)
-        return schema.Accepted.model_validate(_unwrap(status, payload))
+        return _error(status, payload) or schema.Accepted.model_validate(payload)
 
     @__router.post(
-        "{token}/collect", status_code=204, response_model=None, summary="Take the parked result and release it"
+        "{token}/collect",
+        status_code=204,
+        response_model=None,
+        responses=_responses(_404=_NOT_FOUND, _409="There is no uncollected result: `taskwire.no_uncollected_result`."),
+        summary="Take the parked result and release it",
     )
-    async def collect(self, context: Context, token: str) -> None:
+    async def collect(self, context: Context, token: str) -> None:  # an error is a JSONResponse, see _check
         """The result is handed over exactly once (TW-RES-010): whoever gets `204` owns it.
 
         A second caller gets `409`. That matters with several tabs open on one namespace - without a
@@ -225,31 +262,51 @@ class TaskwireViewSet:
         itself was already in the snapshot the caller read; this call releases it, which is why
         there is no body to return.
         """
-        _check(*await collect_result(await _client(context), token))
+        return _check(*await collect_result(await _client(context), token))
 
     @__router.post(
-        "{token}/dismiss", status_code=204, response_model=None, summary="Discard the parked result without taking it"
+        "{token}/dismiss",
+        status_code=204,
+        response_model=None,
+        responses=_responses(
+            _404="A malformed token, or a caller without a namespace: `taskwire.not_found`.",
+            _409="The operation has not ended and holds no result: `taskwire.no_uncollected_result`.",
+        ),
+        summary="Discard the parked result without taking it",
     )
-    async def dismiss(self, context: Context, token: str) -> None:
+    async def dismiss(self, context: Context, token: str) -> None:  # an error is a JSONResponse, see _check
         """The same act as collect under a different name (TW-REST-008), differing only in
         idempotence: dismissing what is already gone is not an error, collecting it twice is."""
-        _check(*await dismiss_result(await _client(context), token))
+        return _check(*await dismiss_result(await _client(context), token))
 
-    @__router.post("{token}/dialogs/{did}", status_code=204, response_model=None, summary="Answer an open question")
+    @__router.post(
+        "{token}/dialogs/{did}",
+        status_code=204,
+        response_model=None,
+        responses=_responses(
+            _404="An unknown token or dialog, or one of another namespace: `taskwire.not_found`.",
+            _409="Another reply won: `taskwire.already_answered`, with the settled `dialog` and its reply "
+            "(TW-DLG-010).",
+            _410="The operation withdrew the question: `taskwire.cancelled`, with the settled `dialog`.",
+            _422="The reply does not fit the dialog: `code` `taskwire.invalid_reply`, `params.reason` says what "
+            "failed, and `detail` names it in English (TW-DLG-015).",
+        ),
+        summary="Answer an open question",
+    )
     async def dialog_reply(
         self,
         context: Context,
         token: str,
         did: str,
         reply: schema.DialogReply,
-    ) -> None:
+    ) -> None:  # an error is a JSONResponse, see _check
         """`did` is *this asking*, never the `dialog_id` (TW-DLG-001, TW-DLG-002).
 
         The store is the single arbiter and first answer wins (TW-STORE-003). A second tab answering
         the same question gets `409`, and the client library treats that as a normal outcome of a
         namespace-wide question rather than as a fault (TW-DLG-011) - the losing modal simply closes.
         """
-        _check(*await reply_to_dialog(await _client(context), token, did, reply.model_dump()))
+        return _check(*await reply_to_dialog(await _client(context), token, did, reply.model_dump()))
 
 
 def _action_name(request: Request | None) -> str | None:

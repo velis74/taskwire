@@ -50,6 +50,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The Python extras `viewsets` and `muxws` require `dynamicforms-fastapi-viewsets>=0.12.0`; the
   optional npm peer `@dynamicforms/fastapi-viewsets` is ^0.12.0.
 
+### Fixed
+
+- `register_taskwire_rest`'s endpoints answer an error with the body `taskwire.rest` builds. The
+  `409` and `410` of a dialog reply carry the settled `dialog` (TW-DLG-010), over REST and over
+  muxws; previously the body held `detail` only.
+- The OpenAPI schema of the six endpoints declares each error status with `ErrorBody`.
+
 ## [0.3.2] - 2026-10-19
 
 ### Fixed

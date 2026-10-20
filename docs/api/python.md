@@ -503,6 +503,11 @@ A dialog has no deadline at all.
 Unknown and foreign tokens both return **404, never 403** — a 403 would confirm the token exists in
 somebody's namespace.
 
+Every error answers `{"detail": ...}`, through every adapter (`router()`, `contrib.asgi` and
+`register_taskwire_rest`); the OpenAPI schema of `register_taskwire_rest`'s endpoints declares it as
+`ErrorBody`. The `409` and `410` of a dialog
+reply also carry `dialog`: the dialog in its settled state, with the winning reply on a `409`.
+
 While the tombstone is readable these endpoints answer about a token they still know, which is what
 separates "this operation has ended" from "no such token": a cancel on a finished operation is `409
 already_terminal`, a reply to a dialog its terminal write withdrew is `410`, and a second collect is

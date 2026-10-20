@@ -189,6 +189,33 @@ class Register(BaseModel):
     poll_after_ms: int = 5000
 
 
+class ErrorBody(BaseModel):
+    """The body of every error answer of the six endpoints, as `taskwire.rest` builds it."""
+
+    detail: str = Field(
+        description="What went wrong: `taskwire.not_found`, `taskwire.already_terminal`, "
+        "`taskwire.holds_an_uncollected_result`, `taskwire.no_uncollected_result`, `taskwire.already_answered` "
+        "or `taskwire.cancelled`; for a `422`, English text naming the problem."
+    )
+    code: str | None = Field(
+        default=None,
+        description="`taskwire.invalid_reply` on the `422` of a dialog reply; absent otherwise.",
+        examples=["taskwire.invalid_reply"],
+    )
+    params: dict[str, Any] | None = Field(
+        default=None,
+        description="On the `422` of a dialog reply, what failed: `reason` (`button_required`, `unknown_button`, "
+        "`values_not_an_object`, `input_required`, `unknown_input_type`, `wrong_input_type`) and, where it applies, "
+        "`button`, `input`, `type` and `expected`.",
+        examples=[{"reason": "unknown_button", "button": "maybe"}],
+    )
+    dialog: DialogRequest | None = Field(
+        default=None,
+        description="The dialog in its settled state, with the winning reply, on the `409` and `410` of a "
+        "dialog reply (TW-DLG-010).",
+    )
+
+
 class Accepted(BaseModel):
     """TW-CANCEL-003: a cancel request is an **acknowledgement**, never a completion.
 

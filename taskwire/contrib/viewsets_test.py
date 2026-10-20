@@ -416,6 +416,62 @@ def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
 
     second = command(http, "POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
     assert second.status == 409, "the store arbitrated, and the second answer lost"
+    assert second.payload["detail"] == "taskwire.already_answered"
+    assert second.payload["dialog"]["reply"]["button"] == "yes", "the loser is told who won (TW-DLG-010)"
+
+
+def _asking(http: TestClient, store: taskwire.MemoryStore) -> str:
+    token = http.post("/start", headers=HEADERS).json()["token"]
+    question = taskwire.DialogRequest(id="ask-1", dialog_id="acme.overwrite", buttons=[taskwire.Button(id="yes")])
+    run(store.put_dialog(taskwire.key("ns:alice", token), question, 3600))
+    return token
+
+
+def test_the_loser_of_a_dialog_reply_is_shown_the_winning_reply(http: TestClient, store: taskwire.MemoryStore) -> None:
+    """TW-DLG-010: the `409` body carries the dialog in its settled state with the winning reply."""
+    token = _asking(http, store)
+    url = f"/taskwire/{token}/dialogs/ask-1"
+    assert http.post(url, json={"button": "yes", "values": {"note": "first"}}, headers=HEADERS).status_code == 204
+
+    lost = http.post(url, json={"button": "yes", "values": {}}, headers=HEADERS)
+    assert lost.status_code == 409
+    body = lost.json()
+    assert body["detail"] == "taskwire.already_answered"
+    assert (body["dialog"]["state"], body["dialog"]["reply"]["values"]) == ("answered", {"note": "first"})
+
+
+def test_a_reply_to_a_withdrawn_dialog_is_410_with_the_dialog(http: TestClient, store: taskwire.MemoryStore) -> None:
+    """The `410` body names the withdrawal and carries the dialog, as `taskwire.rest` builds it."""
+    token = _asking(http, store)
+    run(store.withdraw_dialogs(taskwire.key("ns:alice", token)))
+
+    gone = http.post(f"/taskwire/{token}/dialogs/ask-1", json={"button": "yes", "values": {}}, headers=HEADERS)
+    assert gone.status_code == 410
+    assert gone.json()["detail"] == "taskwire.cancelled"
+    assert gone.json()["dialog"]["state"] == "cancelled"
+
+    unknown = http.post(f"/taskwire/{token}/dialogs/ask-2", json={"button": "yes", "values": {}}, headers=HEADERS)
+    assert (unknown.status_code, unknown.json()) == (404, {"detail": "taskwire.not_found"})
+
+
+def test_an_invalid_reply_is_422_with_a_code_and_what_failed(http: TestClient, store: taskwire.MemoryStore) -> None:
+    """TW-DLG-015: `taskwire.invalid_reply`, with `params` naming the failure and `detail` in English."""
+    token = _asking(http, store)
+
+    wrong = http.post(f"/taskwire/{token}/dialogs/ask-1", json={"button": "maybe", "values": {}}, headers=HEADERS)
+    assert wrong.status_code == 422
+    assert wrong.json() == {
+        "detail": "button 'maybe' is not one of this dialog's buttons",
+        "code": "taskwire.invalid_reply",
+        "params": {"reason": "unknown_button", "button": "maybe"},
+    }
+
+
+def test_the_schema_declares_every_error_answer_of_a_dialog_reply(http: TestClient) -> None:
+    """Each error status of the reply is documented with `ErrorBody`."""
+    responses = http.get("/openapi.json").json()["paths"]["/taskwire/{token}/dialogs/{did}"]["post"]["responses"]
+    for status in ("404", "409", "410", "422"):
+        assert responses[status]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ErrorBody"}
 
 
 # ------------------------------------------------------------------ tracked viewset calls (TW-CALL-*)
