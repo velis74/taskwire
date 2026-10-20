@@ -6,7 +6,7 @@ import { defineConfig } from 'vitepress';
 export default defineConfig({
   title: 'taskwire',
   description:
-    'Progress bars, awaitable dialogs and cancellation for long-running tasks in Python (FastAPI, Celery) and TypeScript/Vue, over polling or WebSocket push.',
+    'Talk to a job while it runs: nested progress, questions the worker waits on, first answer wins across tabs, sticky cancellation. Python and TypeScript.',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/taskwire-icon.svg' }]],
   // Canonical URL of each page as published on docs.velis.si, under the `--base` given to the build.
   transformHead({ pageData, siteConfig }) {
