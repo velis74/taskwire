@@ -13,8 +13,12 @@ from taskwire import (
     TOKEN_HEADER, CONNECTION_HEADER,
     Client, OperationRef, Commit,
     Call, call_token, receive_call, execute_call, hand_off,
+    ERROR_NAMESPACE, ERROR_NAMESPACE_FASTAPI_VIEWSETS,
 )
 ```
+
+`ERROR_NAMESPACE` (`"taskwire"`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`"fastapi-viewsets"`) are the
+namespaces of [Error codes](../guide/error-codes.md).
 
 ### `configure(...)`
 
@@ -117,7 +121,8 @@ async def was_aborted() -> bool                  # forces a store read
 ```
 
 `fail()` writes; `name_error()` only decides what the one terminal write of `operation()` will say,
-for an exception already on its way out of the block.
+for an exception already on its way out of the block. Both write `code` as given: an application
+prefixes its own codes with its own namespace ([Error codes](../guide/error-codes.md)).
 
 `set_result()` is the root reporter's and may be called at most once. It raises `ValueError` on a
 subtask, when the operation declared no `result_kind` — a private operation has nothing to collect

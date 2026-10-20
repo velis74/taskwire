@@ -69,7 +69,7 @@ frontend sending a token of its own. `TaskwireMiddleware` is the binding:
 | `queued` | `TaskwireMiddleware.__call__`, in the command middleware chain | web process |
 | `running`, then `done` / `failed` / `cancelled` | `TaskwireMiddleware.execute()`, around the action | where the action executes: the web process, or the executor's process for a deferred action |
 | `failed` with `not_executed` or `dispatch_failed` | `TaskwireMiddleware.__call__`, when the call ended with the operation still `queued` | web process |
-| `failed` with `interrupted`, `dialog_timeout`, `dispatch_failed` or `action_failed` | `TaskwireMiddleware.on_transition()`, when the executor ended a deferred call outside its execution | the executor's process |
+| `failed` with `interrupted`, `dialog_timeout`, `dispatch_failed` or the executor's code (`fastapi-viewsets.action_failed`) | `TaskwireMiddleware.on_transition()`, when the executor ended a deferred call outside its execution | the executor's process |
 
 `register_taskwire_rest` lists the middleware. An application that lists it itself puts it after
 `Idempotency`, so a repeat that `Idempotency` answers from a stored or running call never reaches it:
@@ -134,7 +134,7 @@ How the call ends:
 | a soft time limit ended it | `dialog_timeout` with an open question, else `interrupted` (`reason: time_limit`) | `execute()`, in the executor's process |
 | a hard time limit, a termination or a lost process ended it | `dialog_timeout` with an open question, else `interrupted` with the executor's `reason` | `on_transition()`, in the executor's process |
 | the executor will not run it (revoked, unknown, rejected) | `dispatch_failed`, when still `queued` | `on_transition()`, and `__call__` |
-| the executor failed around it | `failed` with `action_failed` | `on_transition()` |
+| the executor failed around it | `failed` with the error's code, `fastapi-viewsets.action_failed` | `on_transition()` |
 
 `interrupted` and `dialog_timeout` are `retryable: true`. The web process passes
 `ActionInterruptedError` through as it passes `ActionOutcomeUnknownError`: the executor's process

@@ -12,7 +12,7 @@ outside. Nothing in the core imports a framework, a driver or a UI library (TW-C
 
 from __future__ import annotations
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 from .ambient import ask, current_reporter, progress
 from .calls import Call, call_token, end_call, execute_call, hand_off, receive_call
@@ -36,6 +36,8 @@ from .models import (
     Envelope,
     EnvelopeKind,
     Error,
+    ERROR_NAMESPACE,
+    ERROR_NAMESPACE_FASTAPI_VIEWSETS,
     Input,
     OperationSummary,
     Progress,
@@ -87,6 +89,8 @@ __all__ = [
     "Envelope",
     "EnvelopeKind",
     "Error",
+    "ERROR_NAMESPACE",
+    "ERROR_NAMESPACE_FASTAPI_VIEWSETS",
     "InertReporter",
     "Input",
     "LocalTransport",

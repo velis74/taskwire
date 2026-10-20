@@ -29,7 +29,17 @@
  * anywhere in this client (TW-TS-006).
  */
 
-import { type DialogRequest, isTerminal, type Progress, type Result, type Text } from '../../wire/wire';
+import {
+  type DialogRequest,
+  ERROR_NAMESPACE,
+  isTerminal,
+  type Progress,
+  type Result,
+  type Text,
+} from '../../wire/wire';
+
+/** `OperationFailed.code` of a terminal document that carries no `error`. */
+const FAILED = `${ERROR_NAMESPACE}.failed`;
 
 /**
  * The disappearance of a document that was there a moment ago.
@@ -49,8 +59,12 @@ export class OperationGone extends Error {
   }
 }
 
-/** The operation failed on the server; `progress.error` is carried through verbatim (TW-PROG-005). */
+/**
+ * The operation ended `failed` or `cancelled`; `progress.error` is carried through verbatim
+ * (TW-PROG-005).
+ */
 export class OperationFailed extends Error {
+  /** `progress.error.code`, or `taskwire.failed` for a document without an error (`cancelled`). */
   readonly code: string;
 
   readonly retryable: boolean;
@@ -60,7 +74,7 @@ export class OperationFailed extends Error {
     super(error?.message?.text ?? `taskwire: operation ${token} failed`);
     Object.setPrototypeOf(this, OperationFailed.prototype);
     this.name = 'OperationFailed';
-    this.code = error?.code ?? 'failed';
+    this.code = error?.code ?? FAILED;
     this.retryable = error?.retryable ?? false;
   }
 }

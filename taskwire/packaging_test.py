@@ -30,6 +30,16 @@ def test_python_and_npm_versions_match():
     )
 
 
+def test_python_and_npm_export_the_same_error_namespaces():
+    """Both packages export one set of `ERROR_NAMESPACE*` constants, with the same values."""
+    wire = (REPO_ROOT / "vue" / "wire" / "wire.ts").read_text(encoding="utf-8")
+    index = (REPO_ROOT / "vue" / "index.ts").read_text(encoding="utf-8")
+    npm = dict(re.findall(r"^export const (ERROR_NAMESPACE\w*) = '([^']*)';", wire, re.MULTILINE))
+    python = {name: getattr(taskwire, name) for name in taskwire.__all__ if name.startswith("ERROR_NAMESPACE")}
+    assert python == npm == {"ERROR_NAMESPACE": "taskwire", "ERROR_NAMESPACE_FASTAPI_VIEWSETS": "fastapi-viewsets"}
+    assert all(re.search(rf"^  {name},$", index, re.MULTILINE) for name in npm), "vue/index.ts re-exports each one"
+
+
 def test_core_imports_no_optional_dependency():
     """TW-CORE-006: importing the core MUST NOT drag in any optional dependency.
 

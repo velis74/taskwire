@@ -124,7 +124,9 @@ else rejects, including a 422 (a malformed reply), a 500 and a transport failure
 
 Awaiting a handle: a `run()` handle settles with **the request's** own promise (`await run(fn)` is
 `await fn(...)`), and a `track()` handle settles on the operation's own terminal document — `done`
-resolves, `failed` and `cancelled` reject with `OperationFailed` carrying `progress.error`.
+resolves, `failed` and `cancelled` reject with `OperationFailed` carrying `progress.error`'s `code` and
+`retryable`; a document without an `error` gives `code` `taskwire.failed`
+([Error codes](../guide/error-codes.md)).
 
 That document is readable at its own address for `tombstone_ttl` after the operation has left the
 register, so the ordinary end of an operation is something a handle **reads**, on every transport
@@ -472,3 +474,6 @@ closed vocabularies they validate against (`PROGRESS_STATES`, `DIALOG_STATES`, `
 `INPUT_TYPES`, `ACTIVE_STATES`, `TERMINAL_STATES`) and `WIRE_VERSION`. They are exported because a
 program that speaks the protocol without using the client still has to parse it; the client itself
 puts every incoming document through the same pair, so nothing reaches a handle unvalidated.
+
+`ERROR_NAMESPACE` (`'taskwire'`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`'fastapi-viewsets'`) are the
+namespaces of [Error codes](../guide/error-codes.md).

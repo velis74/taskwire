@@ -6,6 +6,23 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-20
+
+### Added
+
+- `ERROR_NAMESPACE` (`taskwire`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`fastapi-viewsets`), exported
+  from `taskwire` in Python and TypeScript: the namespaces of the error codes taskwire declares and
+  forwards. The Error codes guide documents the code grammar, the codes of the operation document
+  and mapping namespaces to translation keys.
+
+### Changed
+
+- `OperationFailed.code` of a terminal document without an `error`, such as a `cancelled`
+  operation, is `taskwire.failed` instead of `failed`.
+- The `error.code` `TaskwireMiddleware` writes for a deferred viewset call the executor failed around
+  is fastapi-viewsets' code, verbatim: `fastapi-viewsets.action_failed` with a fastapi-viewsets
+  release that namespaces its codes, `action_failed` before it.
+
 ## [0.3.2] - 2026-10-19
 
 ### Fixed

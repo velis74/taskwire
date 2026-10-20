@@ -140,9 +140,26 @@ def t(key: str | None = None, *, text: str | None = None, **params: Any) -> Text
     return Text(key=key, params=params or None, text=text)
 
 
+ERROR_NAMESPACE = "taskwire"
+"""The namespace of the error codes taskwire declares outside the wire format: `taskwire.<code>`.
+
+A namespaced code splits at its last `.` into the namespace and the code. The reserved codes of an
+operation document's `error.code` (`dispatch_failed`, `dialog_timeout`, `interrupted`, `not_executed`,
+`http_status`) are values of the wire format and carry no namespace.
+"""
+
+ERROR_NAMESPACE_FASTAPI_VIEWSETS = "fastapi-viewsets"
+"""The namespace of the fastapi-viewsets codes `TaskwireMiddleware` writes into `error.code` verbatim:
+the `code` of the executor's error for a deferred call that failed around its execution."""
+
+
 @dataclass(frozen=True)
 class Error:
-    """TW-PROG-005. Carries no stack trace, deliberately: this document reaches a browser."""
+    """TW-PROG-005. Carries no stack trace, deliberately: this document reaches a browser.
+
+    `code` is written as given. A code the application passes (`Reporter.fail()`, `name_error()`,
+    `CallExecution.fail()`) is the application's to namespace.
+    """
 
     code: str
     message: Text

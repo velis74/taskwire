@@ -927,7 +927,10 @@ def test_on_transition_ends_what_the_executor_ended_outside_the_execution(store:
     assert [d.state for d in run(store.snapshot(taskwire.key("ns:alice", asking))).dialogs] == ["cancelled"]
     assert (_ended(store, unsent).error.code, _ended(store, unsent).error.retryable) == (DISPATCH_FAILED, True)
     assert _ended(store, started).state == "running", "a started call is not ended by not_run"
-    assert (_ended(store, broken).error.code, _ended(store, broken).error.retryable) == ("action_failed", False)
+    assert (_ended(store, broken).error.code, _ended(store, broken).error.retryable) == (
+        f"{taskwire.ERROR_NAMESPACE_FASTAPI_VIEWSETS}.action_failed",
+        False,
+    ), "the executor's code, forwarded verbatim"
     assert _ended(store, nested).state == "running"
     assert _ended(store, sent).state == "queued"
 

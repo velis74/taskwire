@@ -302,6 +302,9 @@ def _eventually(http: TestClient, token: str, predicate: Callable[[dict], bool],
     pytest.fail(f"{token} never reached the expected state: {json.dumps(snapshot)}")
 
 
+INTERRUPTED_CODE = f"{taskwire.ERROR_NAMESPACE_FASTAPI_VIEWSETS}.action_interrupted"
+
+
 def _detail(response: Any) -> tuple[int, str, str | None]:
     body = response.json()
     return response.status_code, body["detail_code"], body["detail_params"].get("reason")
@@ -324,7 +327,7 @@ def test_the_worker_reports_the_operation(http: TestClient) -> None:
 def test_a_soft_time_limit_on_an_open_question_ends_it_dialog_timeout(http: TestClient) -> None:
     token, response = _call(http, "asks")
     _eventually(http, token, lambda s: any(d["state"] == "open" for d in s["dialogs"]))
-    assert _detail(response()) == (504, "action_interrupted", "time_limit")
+    assert _detail(response()) == (504, INTERRUPTED_CODE, "time_limit")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
     assert _error(ended) == ("failed", "dialog_timeout", None, True)
     assert [d["state"] for d in ended["dialogs"]] == ["cancelled"]
@@ -333,7 +336,7 @@ def test_a_soft_time_limit_on_an_open_question_ends_it_dialog_timeout(http: Test
 def test_a_hard_time_limit_ends_the_operation_interrupted(http: TestClient) -> None:
     token, response = _call(http, "grinds")
     _eventually(http, token, lambda s: s["progress"]["percent"] == 30)
-    assert _detail(response()) == (504, "action_interrupted", "time_limit")
+    assert _detail(response()) == (504, INTERRUPTED_CODE, "time_limit")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
     assert _error(ended) == ("failed", "interrupted", {"reason": "time_limit"}, True)
 
@@ -341,7 +344,7 @@ def test_a_hard_time_limit_ends_the_operation_interrupted(http: TestClient) -> N
 def test_a_hard_time_limit_on_an_open_question_ends_it_dialog_timeout(http: TestClient) -> None:
     token, response = _call(http, "asks_past_the_hard_limit")
     _eventually(http, token, lambda s: any(d["state"] == "open" for d in s["dialogs"]))
-    assert _detail(response()) == (504, "action_interrupted", "time_limit")
+    assert _detail(response()) == (504, INTERRUPTED_CODE, "time_limit")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
     assert _error(ended) == ("failed", "dialog_timeout", None, True)
     assert [d["state"] for d in ended["dialogs"]] == ["cancelled"]
@@ -363,7 +366,7 @@ def test_a_terminated_execution_ends_the_operation_interrupted(http: TestClient,
     token, response = _call(http, "waits")
     _eventually(http, token, lambda s: s["progress"]["percent"] == 30)
     _terminate(celery_app, key, "waits")
-    assert _detail(response()) == (503, "action_interrupted", "terminated")
+    assert _detail(response()) == (503, INTERRUPTED_CODE, "terminated")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
     assert _error(ended) == ("failed", "interrupted", {"reason": "terminated"}, True)
 
@@ -374,7 +377,7 @@ def test_a_terminated_execution_on_an_open_question_ends_it_dialog_timeout(
     token, response = _call(http, "asks_until_terminated")
     _eventually(http, token, lambda s: any(d["state"] == "open" for d in s["dialogs"]))
     _terminate(celery_app, key, "asks_until_terminated")
-    assert _detail(response()) == (503, "action_interrupted", "terminated")
+    assert _detail(response()) == (503, INTERRUPTED_CODE, "terminated")
     ended = _eventually(http, token, lambda s: s["progress"]["state"] == "failed")
     assert _error(ended) == ("failed", "dialog_timeout", None, True)
     assert [d["state"] for d in ended["dialogs"]] == ["cancelled"]

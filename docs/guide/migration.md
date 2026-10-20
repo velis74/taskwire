@@ -9,6 +9,29 @@ exists.
 
 <!-- New releases go directly below this comment, above the previous one, as `## Upgrading to vX.Y.Z (from vA.B.x)`. -->
 
+## Upgrading to v0.4.0 (from v0.3.x)
+
+### Error codes
+
+| Where | Old code | New code |
+|---|---|---|
+| `OperationFailed.code` of a document without an `error` (`cancelled`) | `failed` | `taskwire.failed` |
+| `error.code` of a deferred viewset call the executor failed around | `action_failed` | `fastapi-viewsets.action_failed` |
+
+The second row follows fastapi-viewsets' own codes: taskwire writes the executor's code verbatim.
+The reserved codes of the operation document (`dispatch_failed`, `not_executed`, `dialog_timeout`,
+`interrupted`, `http_status`) are unchanged. A frontend that compares codes uses the namespace
+constants:
+
+```ts
+import { ERROR_NAMESPACE, OperationFailed } from 'taskwire';
+
+if (raised instanceof OperationFailed && raised.code === `${ERROR_NAMESPACE}.failed`) { /* ... */ }
+```
+
+Codes an application passes to `fail()` are written as given; prefix them with the application's
+own namespace (see [Error codes](./error-codes.md)).
+
 ## Upgrading to v0.3.0 (from v0.2.x)
 
 ### `TaskwireProgressDialog` is gone

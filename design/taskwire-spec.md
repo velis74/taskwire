@@ -1289,7 +1289,7 @@ bind the adapters.
   - `on_transition()` MUST end the operation of the call (TW-CALL-008) by the transition's kind:
     `interrupted` with `interrupted` and the error's `reason`, or `dialog_timeout` with an open
     question; `not_run` with `dispatch_failed` (`retryable: true`) for an operation still `queued`;
-    `failed` with the error's code (`action_failed`, `retryable: false`); `dispatched` with nothing.
+    `failed` with the error's code (`fastapi-viewsets.action_failed`, `retryable: false`); `dispatched` with nothing.
     A transition of a call dispatched inside another execution (`parent`) MUST write nothing.
 
   Test: `contrib/viewsets_worker_test.py`, against a real worker.

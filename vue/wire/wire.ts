@@ -128,6 +128,21 @@ export interface Text {
 }
 
 /**
+ * The namespace of the error codes taskwire declares outside the wire format: `taskwire.<code>`.
+ *
+ * A namespaced code splits at its last `.` into the namespace and the code. The reserved codes of an
+ * operation document's `error.code` are values of the wire format and carry no namespace.
+ */
+export const ERROR_NAMESPACE = 'taskwire';
+
+/**
+ * The namespace of the fastapi-viewsets codes the Python `TaskwireMiddleware` writes into
+ * `error.code` verbatim: the `code` of the executor's error for a deferred call that failed around
+ * its execution.
+ */
+export const ERROR_NAMESPACE_FASTAPI_VIEWSETS = 'fastapi-viewsets';
+
+/**
  * §3.2's `Error`. Named `TaskwireError` because `Error` is the global exception type, and a wire
  * document that shadowed it would make `throw new Error(...)` unwritable in every module that
  * imported this one. It is a document, not a throwable: it carries no stack trace, deliberately,
@@ -136,6 +151,8 @@ export interface Text {
  * Reserved codes: `dispatch_failed` (TW-CALL-005), `dialog_timeout` (TW-DLG-006) and `interrupted`
  * (TW-CALL-008, `message.params.reason`), all `retryable: true`; `not_executed` (TW-CALL-005),
  * `retryable: false`; `http_status` (TW-CALL-006), `retryable: true` for 502, 503 and 504 only.
+ * Every other `code` is written as given: a code the application passes (`Reporter.fail()`,
+ * `failWith()`) is the application's to namespace.
  */
 export interface TaskwireError {
   code: string;
