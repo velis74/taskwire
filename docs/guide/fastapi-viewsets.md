@@ -60,7 +60,7 @@ whether *this* socket carries them.
 
 ## Tracking viewset calls
 
-Requires `dynamicforms-fastapi-viewsets >= 0.12.0`. Every call a fastapi-viewsets proxy makes carries
+Requires `dynamicforms-fastapi-viewsets >= 0.13.0`. Every call a fastapi-viewsets proxy makes carries
 an `Idempotency-Key`, so every viewset command is a [tracked call](./tracking-calls.md) without the
 frontend sending a token of its own. `TaskwireMiddleware` is the binding:
 
@@ -174,7 +174,7 @@ has the topics, who is admitted to each, and the whole setup.
 
 ## The npm package
 
-`@dynamicforms/fastapi-viewsets` ^0.12.0 is an optional peer dependency of the npm package, imported
+`@dynamicforms/fastapi-viewsets` ^0.13.0 is an optional peer dependency of the npm package, imported
 by `taskwire/muxws` and `taskwire/fastapi-viewsets`. Both send the six calls through its
 `MuxwsProxyImpl`. `taskwire/muxws` hands the event streams on the peer to its `handleEventStream`, so
 one socket carries taskwire's pushes and the event client's events (see
