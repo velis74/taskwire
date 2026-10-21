@@ -6,6 +6,13 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-10-21
+
+### Changed
+
+- fastapi-viewsets 0.13: the optional npm peer dependency `@dynamicforms/fastapi-viewsets` is
+  `^0.13.0`, and the `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets>=0.13.0`.
+
 ## [0.4.1] - 2026-10-20
 
 ### Changed
