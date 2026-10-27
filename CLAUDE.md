@@ -17,19 +17,18 @@ PyPI and npm from this one repository. **The store is the truth; a push is only 
 | `GAPS.md` | decisions taken without the author. Every entry in it is open; an answered one leaves |
 
 ```bash
-/home/jure/.venv/taskwire/bin/python -m pytest -q     # 348 pass, 20 skip
+uv sync
+uv run pytest -q                                          # 369 pass, 20 skip
 TASKWIRE_WORKER_TEST_REDIS_URL=redis://127.0.0.1:6379/14 \
-  /home/jure/.venv/taskwire/bin/python -m pytest -q   # 355 pass, 13 skip: a real worker too
-npx vitest run                                            # 458 pass
-/home/jure/.venv/taskwire/bin/python -m ruff check taskwire/ demo/ demo.py
+  uv run pytest -q                                        # 376 pass, 13 skip: a real worker too
+npx vitest run                                            # 472 pass
+uv run ruff check taskwire/ demo/ demo.py
 npm run lint -- --fix                                     # eslint, markdownlint, vue-tsc
-python demo.py                                            # both halves, Ctrl-C stops the pair
-python demo/e2e/run_e2e.py                                # the two halves against each other, ~3 min
+uv run python demo.py                                     # both halves, Ctrl-C stops the pair
+uv run python demo/e2e/run_e2e.py                         # the two halves against each other, ~3 min
 ```
 
-Python venv is at `/home/jure/.venv/taskwire/bin/python` — not `.venv` in the repo.
-`pip install -e ".[dev]"` installs every extra the tests and the demo use; without the `celery`
-extra `contrib/celery_test.py` skips whole and takes seven tests with it.
+The `dev` dependency group pulls in every extra the tests and the demo use.
 
 ## The architecture, in one paragraph
 

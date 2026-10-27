@@ -77,7 +77,7 @@ def test_conformance_directory_is_readable():
 
 
 def test_version_is_a_release_number():
-    """`__version__` is parsed by hatchling and mirrored into package.json; keep it plain."""
+    """The version in `pyproject.toml` is mirrored into package.json; keep it plain."""
     assert re.fullmatch(r"\d+\.\d+\.\d+", taskwire.__version__), taskwire.__version__
 
 

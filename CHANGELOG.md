@@ -18,6 +18,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The Python package is built with `uv_build`. The `dev` and `demo` extras are gone: development
+  dependencies are the `dev` dependency group (`uv sync`).
 - A `GET` with a UUID `Idempotency-Key` is a tracked call (TW-CALL-002); only `HEAD` and `OPTIONS`
   are not. `SAFE_METHODS` is renamed `UNTRACKED_METHODS` and holds `HEAD` and `OPTIONS`.
 - `settings.progress_interval` / `progressInterval` defaults to 0.1 s.
