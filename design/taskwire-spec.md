@@ -366,7 +366,7 @@ adapters to things outside the process, never a capability the core lacks.
 ### 2.8 Throttling (`TW-THR-*`)
 
 - **TW-THR-001** Commits MUST be coalesced latest-wins on `settings.progress_interval`, a float in
-  **seconds**, default `0.25`. The name carries no unit suffix, matching `push_timeout` and
+  **seconds**, default `0.1`. The name carries no unit suffix, matching `push_timeout` and
   `max_overrides`.
 - **TW-THR-002** `set()` MUST check an **injected clock inline** and commit when the interval has
   elapsed. This is the primary mechanism; a background flush task MUST NOT be relied on. Test:
@@ -383,6 +383,18 @@ adapters to things outside the process, never a capability the core lacks.
   flush. Tests MUST assert that, not the stronger claim.
 - **TW-THR-007** The client docs MUST state, in these words, that *the frontend must never assume any
   update frequency*. No animation, timeout or stall heuristic may be built on the update interval.
+- **TW-THR-008** **An operation younger than `settings.push_delay` (seconds, default `0.25`, counted
+  from `created_at`) MUST publish none of its writes, with three exceptions:** a dialog open and a
+  cancel request MUST publish the operation's `snapshot` at once, and a terminal state MUST be
+  published unless the operation is a tracked call's (TW-CALL-004, TW-CALL-005, TW-CALL-008), whose
+  caller learns the outcome from the call's own answer. The process executing the operation MUST
+  publish one `snapshot` when the delay is over and the operation has not ended; an operation whose
+  execution starts after the delay publishes its first write itself. The store is written as always
+  (TW-CORE-001), so a read sees every write. `0` publishes every write at once. Tests:
+  `publish_test.py`, `publish.spec.ts`.
+
+  > An operation that ends inside the delay is answered by its own call and never reaches
+  > `tw.operations` or `tw.busy` (`progressUi.delay`), so its envelopes are traffic no client reads.
 
 ### 2.9 Dialogs (`TW-DLG-*`)
 
@@ -1190,8 +1202,9 @@ bind the adapters.
   NOT reject the call for it (`call_token` / `callToken`). Every call made inside one `run()` carries
   `run()`'s token and reports into that one operation.
 - **TW-CALL-002** **A call with no token, or with a `None` namespace, MUST be untracked and MUST run
-  unchanged** (TW-AMB-009). A call whose method is `GET`, `HEAD` or `OPTIONS` MUST NOT take its token
-  from `Idempotency-Key`; it is tracked only under an explicit `X-Taskwire-Token`.
+  unchanged** (TW-AMB-009). A call whose method is `HEAD` or `OPTIONS` MUST NOT take its token from
+  `Idempotency-Key`; it is tracked only under an explicit `X-Taskwire-Token`. A `GET` is tracked under
+  its key like any other method: a long read reports progress as any long call does.
 - **TW-CALL-003** **Where a call is received, `queued` MUST be written before the call proceeds**
   (`receive_call` / `receiveCall`), with the call's `result_kind` and its `X-Taskwire-Connection` as
   `origin_connection`. The write follows `mark_queued`: an existing `queued`, `running` or
@@ -1919,7 +1932,11 @@ function use_register(options?: TaskwireOptions):
   read when it starts, attached or not: a transport carries what *changes*, so it can say nothing
   about the state a namespace or a token was already in — an operation parked on an open question
   emits nothing between its `dialog.open` and its terminal envelope, and a client that never read
-  would show neither (TW-CORE-002, TW-TS-009). Tests: `client.spec.ts`, `register.spec.ts`.
+  would show neither (TW-CORE-002, TW-TS-009). The exception is a token this page minted (`run()`,
+  `trackCall()`, `tw.busy`): its operation starts with this page's request, so the server publishes
+  every state it reaches to the namespace (TW-THR-008), and a healthy transport owes it no read. A
+  resync (`onResync`) reads every token once, minted or not: it recovers what was pushed while the
+  socket was down. Tests: `client.spec.ts`, `register.spec.ts`.
 
   > The socket carries the client's calls as well as the server's pushes (TW-CORE-007), which makes
   > the two mechanisms alternatives rather than layers: a client polling beside its own socket
@@ -1949,9 +1966,12 @@ function use_register(options?: TaskwireOptions):
   it earlier. The handle MUST be minted as `run()` mints one: in `startedHere`, entering
   `tw.operations` under §4.3's first door, and awaitable as `call` (TW-TS-002). A key that already
   has a handle MUST reuse it (TW-TS-005). When `call` settles the client MUST end the search
-  (TW-TS-004) and read the token once more without waiting for the ladder, also while a transport
-  holds it (TW-TS-007), so a call the server did not track is dropped silently and a call whose
-  action ended inside `progressUi.delay` never enters `tw.operations`. A call made inside `run()` is
+  (TW-TS-004). Without a healthy transport it MUST read the token once more without waiting for the
+  ladder, so a call the server did not track is dropped silently and a call whose action ended
+  inside `progressUi.delay` never enters `tw.operations`. With one it MUST NOT read: a token nothing
+  was pushed for is dropped silently (the call ended inside the push delay, TW-THR-008, or was not
+  tracked), and one that is not terminal waits for its terminal envelope and is read once after the
+  ladder's ceiling (§8.2) if none arrived. A call made inside `run()` is
   tracked under `run()`'s token (TW-CALL-001) and is followed through `run()`'s handle. A `call`
   without a string `key` MUST be refused with a `TypeError`.
   `tw.awaitCall(call, handler, options?)` MUST register the same handler and resolve or reject
@@ -1977,7 +1997,9 @@ function use_register(options?: TaskwireOptions):
   key is a UUID MUST be followed as `trackCall()` follows a call (TW-TS-019), so an operation the
   server tracks the call under supplies `percent` and `label` — those of the oldest listed call
   whose operation reports a percent or a label; any other listed call has `operation: null`. A
-  call that settles inside the delay MUST NOT cause any read of its token. Detaching a source
+  call that settles inside the delay MUST NOT cause any read of its token. taskwire's own calls (the
+  six of TW-REST-004, on REST and on muxws) MUST be issued as background calls, so that a read
+  outliving the delay is not followed by reads of its own key. Detaching a source
   removes the calls it has not settled. taskwire MUST NOT render anything from `tw.busy` on its
   own. Tests: `busy.spec.ts::tw.busy`.
 - **TW-TS-023** **`axiosCallSource(http)` MUST report every request of `http` as `start` and
@@ -2147,7 +2169,8 @@ Each of these is violable from more than one place; each names the failure it pr
 | `tombstone_ttl` | seconds | 900 (15 min) | > 0 | how long a terminal document answers at its own address after it leaves the register (TW-RET-004) |
 | *(derived)* reply-list TTL | – | the operation's own | – | not configurable; TW-KEY-004 |
 | *(derived)* keepalive period | seconds | `active_ttl / 4` | – | not configurable; TW-RET-002 |
-| `progress_interval` | seconds (float) | 0.25 | > 0 | latest-wins coalescing window (TW-THR-001) |
+| `progress_interval` | seconds (float) | 0.1 | > 0 | latest-wins coalescing window (TW-THR-001) |
+| `push_delay` | seconds (float) | 0.25 | ≥ 0 | how long a new operation publishes only a dialog open, a cancel and a terminal state (TW-THR-008) |
 | `push_timeout` | seconds | 2 | > 0 | bound on any single `notify()` call |
 | `max_data_bytes` | bytes | 16384 | > 0 | encoded cap on `data`, dialog `params`, `result` |
 | `max_overrides` | entries | 64 | > 0 | per-connection override map bound (TW-DEL-008) |

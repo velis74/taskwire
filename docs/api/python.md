@@ -203,7 +203,7 @@ dialog_timeout_error() -> Error
 
 `call_token` takes a mapping or a sequence of `(name, value)` pairs and returns `X-Taskwire-Token`
 when present, else the key of a single `Idempotency-Key` Structured Field string that is a UUID, for
-any method outside `SAFE_METHODS` (`GET`, `HEAD`, `OPTIONS`). Anything else is `None`.
+any method outside `UNTRACKED_METHODS` (`HEAD`, `OPTIONS`). Anything else is `None`.
 
 `Call.carried()` returns `{"token": ..., "session": ...}`, the keyword arguments `taskwire_task`
 takes; `Call.from_carried(mapping)` reverses it and returns `None` for a missing or non-string value.
@@ -476,7 +476,8 @@ rule is wrong and the specification changes — not the suite.
 | `active_ttl` | 3600 s | document TTL while queued, running or asking |
 | `result_ttl` | 604800 s | backstop on an uncollected result |
 | `tombstone_ttl` | 900 s | how long a terminal document answers at its own address after it leaves the register |
-| `progress_interval` | 0.25 s | latest-wins coalescing window |
+| `progress_interval` | 0.1 s | latest-wins coalescing window |
+| `push_delay` | 0.25 s | how long a new operation publishes only a dialog open, a cancel and a terminal state that is not a tracked call's |
 | `push_timeout` | 2 s | bound on any single `notify()` |
 | `max_data_bytes` | 16384 | encoded cap on `data`, dialog `params`, `result` |
 | `max_overrides` | 64 | per-connection override map bound |

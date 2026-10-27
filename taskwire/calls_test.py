@@ -62,10 +62,16 @@ def test_an_unusable_key_leaves_the_call_untracked(headers: Any) -> None:
     assert call_token(headers, "POST") is None
 
 
-def test_a_safe_method_is_not_tracked_by_its_key_alone() -> None:
+def test_head_and_options_are_not_tracked_by_their_key_alone() -> None:
     """TW-CALL-002."""
     key = f'"{taskwire.new_token()}"'
-    assert [call_token({"Idempotency-Key": key}, method) for method in ("GET", "head", "OPTIONS")] == [None] * 3
+    assert [call_token({"Idempotency-Key": key}, method) for method in ("head", "OPTIONS")] == [None] * 2
+
+
+def test_a_get_is_tracked_by_its_key() -> None:
+    """TW-CALL-002."""
+    token = taskwire.new_token()
+    assert call_token({"Idempotency-Key": f'"{token}"'}, "GET") == token
 
 
 def test_the_carried_values_cross_as_plain_strings() -> None:
@@ -195,7 +201,7 @@ async def test_asgi_leaves_taskwire_and_untracked_requests_alone(store: taskwire
     app = asgi.track_calls(_asgi(200))
 
     assert await _request(app, "GET", "/taskwire/" + token, {"X-Taskwire-Token": token}) == b"-"
-    assert await _request(app, "GET", "/items", {"Idempotency-Key": f'"{token}"'}) == b"-"
+    assert await _request(app, "HEAD", "/items", {"Idempotency-Key": f'"{token}"'}) == b"-"
     assert await store.snapshot(taskwire.key(NS, token)) is None
 
 

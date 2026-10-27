@@ -224,8 +224,9 @@ function terminalCommits(store: RecordingStore): Progress[] {
 }
 
 /** The options every test shares: one namespace, one store, one injected clock, one shared kind. */
+// No push delay (TW-THR-008): these tests assert what each write publishes. `publish.spec.ts` covers the delay.
 function options(store: RecordingStore, token: string, clock?: Clock): OperationOptions {
-  return { ns: NS, store, token, resultKind: 'report', clock: clock?.read };
+  return { ns: NS, store, token, resultKind: 'report', clock: clock?.read, settings: { pushDelay: 0 } };
 }
 
 afterEach(() => {
@@ -922,7 +923,7 @@ describe('one language, one process (TW-SYM-001)', () => {
     });
 
     const rows = await operation(
-      { ns: NS, store, token, resultKind: 'report', clock: clock.read },
+      { ns: NS, store, token, resultKind: 'report', clock: clock.read, settings: { pushDelay: 0 } },
       async (reporter) => {
         clock.advance(DEFAULT_SETTINGS.progressInterval);
         await reporter.set({ percent: 40, label: { key: 'acme.importer.step' } });

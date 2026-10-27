@@ -59,6 +59,9 @@ export interface TaskwireCalls {
  * a call site could make correctly. So this class writes no header at all, and there is nowhere for
  * a token to end up in a URL (TW-CELERY-011).
  */
+/** taskwire's own requests are background calls for `axiosCallSource` (TW-TS-022, TW-TS-023). */
+const QUIET = { background: true };
+
 export class RestCalls implements TaskwireCalls {
   constructor(
     private readonly basePath: string,
@@ -70,26 +73,26 @@ export class RestCalls implements TaskwireCalls {
   }
 
   async register(): Promise<unknown> {
-    return (await this.http.get(this.url(REGISTER_PATH))).data;
+    return (await this.http.get(this.url(REGISTER_PATH), QUIET)).data;
   }
 
   async snapshot(token: string): Promise<unknown> {
-    return (await this.http.get(this.url(token))).data;
+    return (await this.http.get(this.url(token), QUIET)).data;
   }
 
   async cancel(token: string): Promise<void> {
-    await this.http.post(this.url(`${token}/cancel`));
+    await this.http.post(this.url(`${token}/cancel`), undefined, QUIET);
   }
 
   async collect(token: string): Promise<void> {
-    await this.http.post(this.url(`${token}/collect`));
+    await this.http.post(this.url(`${token}/collect`), undefined, QUIET);
   }
 
   async dismiss(token: string): Promise<void> {
-    await this.http.post(this.url(`${token}/dismiss`));
+    await this.http.post(this.url(`${token}/dismiss`), undefined, QUIET);
   }
 
   async replyToDialog(token: string, did: string, button: string, values: Record<string, unknown> = {}): Promise<void> {
-    await this.http.post(this.url(`${token}/dialogs/${did}`), { button, values });
+    await this.http.post(this.url(`${token}/dialogs/${did}`), { button, values }, QUIET);
   }
 }

@@ -682,7 +682,7 @@ describe('trackCall follows a viewset call under its key (TW-TS-019)', () => {
     expect(server.polls(token)).toHaveLength(1);
   });
 
-  it('reads a settled call while a transport holds the ladder, and drops it untracked (TW-TS-007)', async () => {
+  it('reads nothing for a call while a transport is attached, and drops one with no push (TW-TS-007)', async () => {
     const token = new_token();
     server.handler = () => ({ status: 404 });
     tw.attachTransport({ subscribe: () => () => undefined });
@@ -691,13 +691,47 @@ describe('trackCall follows a viewset call under its key (TW-TS-019)', () => {
 
     tw.trackCall(keyed(call.promise, token), (operation) => seen.push(operation.closed));
     await vi.advanceTimersByTimeAsync(5_000);
-    const before = server.polls(token).length;
-
     call.resolve();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(server.polls(token)).toHaveLength(before + 1);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(server.polls(token)).toHaveLength(0);
     expect(seen).toEqual([true]);
     expect(tw.handle(token)).toBeNull();
+  });
+
+  it('waits for the terminal push of a pushed call, and reads it once after the ceiling without one', async () => {
+    const token = new_token();
+    server.handler = () => ({
+      status: 200,
+      data: snapshotPayload(token, 'done', { rev: 3, progress: progressPayload('done') }),
+    });
+    let deliver: (envelope: Envelope) => void = () => undefined;
+    tw.attachTransport({
+      subscribe: (listener) => {
+        deliver = listener;
+        return () => undefined;
+      },
+    });
+    const call = pending<void>();
+    tw.trackCall(keyed(call.promise, token), () => undefined);
+    deliver({ v: 2, token, rev: 2, kind: 'snapshot', body: snapshotPayload(token, 'running', { rev: 2 }) });
+    call.resolve();
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(server.polls(token)).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(server.polls(token)).toHaveLength(1);
+    expect(tw.handle(token)).toBeNull();
+  });
+
+  it('reads nothing for a run() token while a transport holds the ladder (TW-TS-007)', async () => {
+    server.handler = () => ({ status: 404 });
+    tw.attachTransport({ subscribe: () => () => undefined });
+
+    const { token } = tw.run(async () => undefined);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(server.polls(token)).toHaveLength(0);
   });
 
   it('shows a call in tw.operations only once progressUi.delay has passed (§4.3)', async () => {

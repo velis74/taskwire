@@ -41,6 +41,7 @@ import {
   type WireObject,
 } from '../wire/wire';
 
+import { announce, pushDelayLeft } from './publish';
 import {
   checkSize,
   DEFAULT_SETTINGS,
@@ -83,6 +84,8 @@ export interface OperationOptions {
   clock?: () => number;
   /** Per-operation overrides of §8.1's tunables. Anything omitted keeps `DEFAULT_SETTINGS`. */
   settings?: Partial<ReporterSettings>;
+  /** @internal The operation of a tracked call (TW-THR-008); set by `executeCall()` and `receiveCall()`. */
+  call?: boolean;
 }
 
 /** What an operation *is*, as opposed to what it is plumbed to. */
@@ -250,6 +253,7 @@ export async function operationScope(opts: OperationOptions): Promise<OperationS
     settings,
     clock: opts.clock,
     raiseOnCancel: opts.raiseOnCancel,
+    call: opts.call,
   });
   await reporter.flush();
 
@@ -269,6 +273,11 @@ export async function operationScope(opts: OperationOptions): Promise<OperationS
     },
     keepalivePeriod(settings) * 1000,
   );
+
+  // TW-THR-008: the operation's snapshot once its push delay is over, unless it has ended by then.
+  const delay = pushDelayLeft(progress, settings.pushDelay);
+  const announcing =
+    delay > 0 ? setTimeout(() => void announce(store, ns, k).catch(() => undefined), delay * 1000) : null;
 
   let outcome: { state: TerminalState; error?: TaskwireError } = { state: 'done' };
   let ended = false;
@@ -295,6 +304,7 @@ export async function operationScope(opts: OperationOptions): Promise<OperationS
       // Stopped before the terminal write, so no keepalive can touch a key the next lines are about
       // to put on `tombstoneTtl`, and stretch it back to a running operation's TTL behind them.
       clearInterval(keepalive);
+      if (announcing !== null) clearTimeout(announcing);
 
       if (handedOff) {
         // The process the operation was handed to writes its terminal state (TW-CALL-007).
@@ -405,6 +415,7 @@ export async function markFailed(opts: OperationOptions & { error: TaskwireError
     settings,
     progress: existing.progress,
     clock: opts.clock,
+    call: opts.call,
   });
   await reporter.writeTerminal('failed', error, settings.tombstoneTtl);
 }

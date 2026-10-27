@@ -9,6 +9,28 @@ exists.
 
 <!-- New releases go directly below this comment, above the previous one, as `## Upgrading to vX.Y.Z (from vA.B.x)`. -->
 
+## Upgrading to v0.5.0 (from v0.4.x)
+
+### `GET` calls are tracked
+
+A `GET` carrying a UUID `Idempotency-Key` now runs inside `operation()` for that key, like every other
+method; `HEAD` and `OPTIONS` stay untracked. A viewset read can report progress through
+`taskwire.progress`, and every tracked read writes its document to the store. `SAFE_METHODS` is
+renamed `UNTRACKED_METHODS` in both languages and no longer contains `GET`.
+
+### The push delay
+
+An operation publishes nothing for its first `push_delay` (0.25 s) except a dialog open, a cancel and
+a terminal state that is not a tracked call's. A test that asserts the envelopes of each write sets
+`settings.push_delay = 0` (Python) or passes `settings: { pushDelay: 0 }` to `operation()`
+(TypeScript).
+
+### No reads for this page's own tokens over a socket
+
+With a healthy transport attached, the client does not read a token minted by `run()`, `trackCall()`
+or `tw.busy`; it relies on the pushes of TW-THR-008. A deployment whose pushes do not reach the
+client (no reader started, `check_taskwire_readers()` warns) sees such operations only after a resync.
+
 ## Upgrading to v0.4.0 (from v0.3.x)
 
 ### Error codes

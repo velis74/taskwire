@@ -18,7 +18,7 @@ dialogs and uncollected result. A caller who could write the state could park an
 
 ## Throttling, and what it guarantees
 
-Commits are coalesced latest-wins on `settings.progress_interval` (0.25 s). `set()` checks the clock
+Commits are coalesced latest-wins on `settings.progress_interval` (0.1 s). `set()` checks the clock
 **inline** rather than relying on a background flush task:
 
 ```python
@@ -33,6 +33,15 @@ What you may rely on between forced flushes: **the value visible after a burst i
 burst's values.** The burst's *last* value is guaranteed only at the next forced flush — a terminal
 state, a dialog, a result, or leaving a subtask block. Do not build an animation, a timeout or a
 stall heuristic on the update interval; the frontend must never assume any update frequency.
+
+## The push delay
+
+For its first `settings.push_delay` (0.25 s) an operation is written to the store and published to
+nobody. A dialog open and a cancel request publish the operation's snapshot at once, and a terminal
+state is published, except for a tracked call's, whose caller learns the outcome from the call's own
+answer. When the delay is over and the operation is still going, the process executing it publishes
+its snapshot; from then on every commit is published. A quick tracked call therefore costs no push at
+all, and a read still sees every write. `push_delay = 0` publishes every write at once.
 
 ## Subtasks
 

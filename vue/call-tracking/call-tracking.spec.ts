@@ -23,12 +23,16 @@ describe('callToken (TW-CALL-001, TW-CALL-002)', () => {
     expect(callToken({ 'X-Taskwire-Token': 'tok' }, 'GET')).toBe('tok');
   });
 
-  it('leaves a call untracked for an unusable key or a safe method', () => {
+  it('leaves a call untracked for an unusable key, a HEAD or an OPTIONS', () => {
     expect(callToken({ 'Idempotency-Key': '"not-a-uuid"' }, 'POST')).toBeNull();
     expect(callToken({ 'Idempotency-Key': key }, 'POST')).toBeNull();
     expect(callToken({ 'Idempotency-Key': [`"${key}"`, `"${key}"`] }, 'POST')).toBeNull();
-    expect(callToken({ 'Idempotency-Key': `"${key}"` }, 'GET')).toBeNull();
+    expect(callToken({ 'Idempotency-Key': `"${key}"` }, 'OPTIONS')).toBeNull();
     expect(callToken([['Idempotency-Key', `"${key}"`]], 'head')).toBeNull();
+  });
+
+  it('tracks a GET by its key', () => {
+    expect(callToken({ 'Idempotency-Key': `"${key}"` }, 'GET')).toBe(key);
   });
 
   it('carries the token and the namespace as plain strings', () => {
@@ -140,9 +144,11 @@ describe('trackFetch (TW-CALL-104)', () => {
     const track = trackFetch(handler(200), { store, resolveNs: () => NS });
 
     const own = await track(new Request(`http://app/taskwire/${token}`, { headers: { 'X-Taskwire-Token': token } }));
-    const read = await track(new Request('http://app/items', { headers: { 'Idempotency-Key': `"${token}"` } }));
+    const read = await track(
+      new Request('http://app/items', { method: 'HEAD', headers: { 'Idempotency-Key': `"${token}"` } }),
+    );
 
-    expect([await own.text(), await read.text()]).toEqual(['-', '-']);
+    expect([await own.text(), read.status]).toEqual(['-', 200]);
     expect(await progressOf(store, token)).toBeNull();
   });
 });

@@ -11,6 +11,12 @@ import { DEFAULT_BASE_PATH } from '../client/types';
 import type { Snapshot } from '../wire/wire';
 
 /**
+ * taskwire's own calls are background calls (TW-TS-022): a busy indicator neither shows nor follows
+ * them, so a read that outlives `progressUi.delay` is not followed by reads of its own key.
+ */
+const QUIET = { background: true } as const;
+
+/**
  * The six calls of TW-REST-004 over one muxws stream each (TW-WS-003).
  *
  * `MuxwsProxyImpl` addresses a viewset action the way HTTP/2 does - `:method` and `:path` in the
@@ -35,26 +41,26 @@ export class MuxwsCalls extends MuxwsProxyImpl<string, Snapshot, 'token'> implem
   }
 
   register(): Promise<unknown> {
-    return this.request('GET', '');
+    return this.request('GET', '', QUIET);
   }
 
   snapshot(token: string): Promise<unknown> {
-    return this.request('GET', `/${token}`);
+    return this.request('GET', `/${token}`, QUIET);
   }
 
   cancel(token: string): Promise<void> {
-    return this.request('POST', `/${token}/cancel`);
+    return this.request('POST', `/${token}/cancel`, QUIET);
   }
 
   collect(token: string): Promise<void> {
-    return this.request('POST', `/${token}/collect`);
+    return this.request('POST', `/${token}/collect`, QUIET);
   }
 
   dismiss(token: string): Promise<void> {
-    return this.request('POST', `/${token}/dismiss`);
+    return this.request('POST', `/${token}/dismiss`, QUIET);
   }
 
   replyToDialog(token: string, did: string, button: string, values: Record<string, unknown> = {}): Promise<void> {
-    return this.request('POST', `/${token}/dialogs/${did}`, { body: { button, values } });
+    return this.request('POST', `/${token}/dialogs/${did}`, { ...QUIET, body: { button, values } });
   }
 }

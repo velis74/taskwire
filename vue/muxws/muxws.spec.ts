@@ -1,4 +1,4 @@
-import { createEventClient, defineEvent } from '@dynamicforms/fastapi-viewsets';
+import { createEventClient, defineEvent, onCallActivity } from '@dynamicforms/fastapi-viewsets';
 import axios from 'axios';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -508,6 +508,10 @@ describe('the six calls over a stream each (TW-REST-004, TW-WS-003)', () => {
     // only `:method` and `:path` in the opening headers of one stream per call.
     const peer = new FakePeer();
     const calls = new MuxwsCalls({ peer: peer as never, basePath: '/taskwire' });
+    const backgrounds: boolean[] = [];
+    const stop = onCallActivity((event) => {
+      if (event.type === 'start') backgrounds.push(event.background);
+    });
 
     await calls.register();
     await calls.snapshot('tok');
@@ -524,6 +528,9 @@ describe('the six calls over a stream each (TW-REST-004, TW-WS-003)', () => {
       'POST /taskwire/tok/dismiss',
       'POST /taskwire/tok/dialogs/d1',
     ]);
+    stop();
+    // taskwire's own calls are background calls: a busy indicator neither shows nor follows them.
+    expect(backgrounds).toEqual([true, true, true, true, true, true]);
     // The reply is the one call with a body, and it is the REST body verbatim (TW-DLG-011).
     expect(peer.opened[5].payload).toEqual({ button: 'ok', values: { reason: 'newer' } });
     // A token is never a query parameter, on any transport (TW-CELERY-011).

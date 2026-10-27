@@ -9,11 +9,11 @@ opening `operation()` or ending it: the call's receipt and its execution do that
 | Header | Token |
 |---|---|
 | `X-Taskwire-Token` | its value, for any method |
-| `Idempotency-Key` holding a UUID Structured Field string, e.g. `"8f14e45f-…"` | the UUID, for any method except `GET`, `HEAD` and `OPTIONS` |
+| `Idempotency-Key` holding a UUID Structured Field string, e.g. `"8f14e45f-…"` | the UUID, for any method except `HEAD` and `OPTIONS` |
 
 `X-Taskwire-Token` wins when both are present. A call with neither, with a repeated or malformed
 `Idempotency-Key`, or whose namespace resolver returns `None`, runs untracked and is never rejected.
-A read is tracked only when the caller asks for it with `X-Taskwire-Token`.
+A `GET` is tracked like any other call, so a long read reports progress as a long write does.
 
 `Idempotency-Key` is the header an HTTP client sends so that a repeated request is answered once
 (`draft-ietf-httpapi-idempotency-key-header-07`). A client that already sends one gets a token for
@@ -157,8 +157,11 @@ const report = await tw.awaitCall(api.import(rows), (operation) => {
 ```
 
 The handler receives the operation's handle on every change and is removed once the operation ends.
-When the call settles, the token is read once more; a call the server did not track has no document,
-and its handle is dropped without an error.
+When the call settles without a healthy transport attached, the token is read once more; a call the
+server did not track has no document, and its handle is dropped without an error. With a transport
+the client reads nothing: a token nothing was pushed for ended inside the push delay or was not
+tracked and is dropped, and one that is still going waits for its terminal push, with one read after
+the polling ceiling (5 s) if that push does not come.
 
 Any other HTTP client sends the token itself and wraps its promise:
 

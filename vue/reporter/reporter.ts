@@ -41,6 +41,8 @@ import {
   type WireObject,
 } from '../wire/wire';
 
+import { publish as publishEnvelope } from './publish';
+
 /**
  * The tunables of §8.1 that the operating half reads. Seconds, floats, no unit suffix in the names -
  * the same units and the same numbers as `taskwire.settings`, so neither language can quote a
@@ -74,6 +76,11 @@ export interface ReporterSettings {
   resultTtl: number;
   /** Latest-wins coalescing window for commits (TW-THR-001). Seconds. */
   progressInterval: number;
+  /**
+   * How long after its creation an operation publishes nothing but a dialog open or a cancel
+   * (TW-THR-008). Seconds; 0 publishes every write at once.
+   */
+  pushDelay: number;
   /** Encoded cap on `data` (TW-PROG-008). Bytes. Enforced by throwing, never by truncating. */
   maxDataBytes: number;
   /** Global default for whether a progress call raises once a cancel is requested (TW-CANCEL-003). */
@@ -85,7 +92,8 @@ export const DEFAULT_SETTINGS: ReporterSettings = {
   activeTtl: 3600,
   tombstoneTtl: 900,
   resultTtl: 604800,
-  progressInterval: 0.25,
+  progressInterval: 0.1,
+  pushDelay: 0.25,
   maxDataBytes: 16384,
   raiseOnCancel: true,
 };
@@ -274,6 +282,8 @@ function expandButtons(buttons: Array<string | Button>): Button[] {
 export class Reporter {
   readonly key: string;
 
+  private readonly call: boolean;
+
   readonly ns: string;
 
   readonly token: string;
@@ -336,6 +346,8 @@ export class Reporter {
     settings?: ReporterSettings;
     raiseOnCancel?: boolean;
     notifyParent?: (local: number | null, force: boolean) => Promise<void>;
+    /** The operation of a tracked call: its terminal state inside the push delay is not published (TW-THR-008). */
+    call?: boolean;
   }) {
     this.key = options.key;
     this.ns = options.ns;
@@ -346,6 +358,7 @@ export class Reporter {
     this.settings = options.settings ?? DEFAULT_SETTINGS;
     this.raiseOnCancelValue = options.raiseOnCancel ?? this.settings.raiseOnCancel;
     this.notifyParent = options.notifyParent ?? null;
+    this.call = options.call ?? false;
   }
 
   /** The `rev` of the last commit this reporter made. `0` before the first one. */
@@ -544,7 +557,7 @@ export class Reporter {
     // is a worker nobody can free.
     await this.flush();
     const rev = await this.store.putDialog(this.key, dialog, this.settings.activeTtl);
-    await this.store.publish(this.ns, {
+    await this.publish({
       v: WIRE_VERSION,
       token: this.token,
       rev,
@@ -564,7 +577,7 @@ export class Reporter {
 
     const after = await this.store.snapshot(this.key);
     const closed = after?.dialogs.find((candidate) => candidate.id === did);
-    await this.store.publish(this.ns, {
+    await this.publish({
       v: WIRE_VERSION,
       token: this.token,
       rev: after?.rev ?? rev,
@@ -769,9 +782,15 @@ export class Reporter {
       kind: 'progress',
       body: serializeProgress(this.progress) as WireObject,
     };
-    await this.store.publish(this.ns, envelope);
+    await this.publish(envelope);
     this.raiseIfCancelled(state);
     return this.revValue;
+  }
+
+  /** `envelope` to the store, held back while the operation is inside its push delay (TW-THR-008). */
+  private async publish(envelope: Envelope): Promise<void> {
+    if (this.store === null) return;
+    await publishEnvelope(this.store, this.ns, this.key, envelope, this.progress, this.settings.pushDelay, this.call);
   }
 }
 
