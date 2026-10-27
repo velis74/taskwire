@@ -50,6 +50,7 @@ from .models import (
     Text,
     unhandled_exception_error,
 )
+from .publish import announce, publish, push_delay_left
 from .settings import configured, settings
 from .store import CANCELLED_BUTTON, key as make_key
 
@@ -169,6 +170,8 @@ class Reporter:
         # TW-RES-004: a clean exit with a result already written lands in `waiting_input`
         # rather than `done`, and `operation()`'s exit reads this to know which.
         self._result_parked = False
+        # A tracked call's terminal state inside the push delay is not published (TW-THR-008).
+        self._call = False
 
     # ---------------------------------------------------------------- properties
 
@@ -394,6 +397,12 @@ class Reporter:
         unbind(self._ambient_token)
         self._ambient_token = None
 
+    def _root(self) -> Reporter:
+        root = self
+        while root._parent is not None:
+            root = root._parent
+        return root
+
     async def _tick(self) -> None:
         """The inline throttle (TW-THR-002) and the once-per-interval yield (TW-THR-003)."""
         now = self._clock()
@@ -428,14 +437,18 @@ class Reporter:
         self._cancelled = written.cancelled
         self._raise_if_cancelled(state)
 
-        await self._store.publish(
+        await publish(
+            self._store,
             self._ns,
+            self._key,
             Envelope(
                 token=self._token,
                 rev=self._rev,
                 kind=EnvelopeKind.PROGRESS,
                 body=self._progress.to_dict(),
             ),
+            self._progress,
+            call=self._root()._call,
         )
         return self._rev
 
@@ -567,9 +580,12 @@ class Reporter:
         # see is a worker nobody can free.
         await self.flush()
         rev = await self._store.put_dialog(self._key, request, settings.active_ttl)
-        await self._store.publish(
+        await publish(
+            self._store,
             self._ns,
+            self._key,
             Envelope(token=self._token, rev=rev, kind=EnvelopeKind.DIALOG_OPEN, body=request.to_dict()),
+            self._progress,
         )
 
         root = self
@@ -591,8 +607,10 @@ class Reporter:
 
         snapshot = await self._store.snapshot(self._key)
         closed = next((d for d in (snapshot.dialogs if snapshot else []) if d.id == did), None)
-        await self._store.publish(
+        await publish(
+            self._store,
             self._ns,
+            self._key,
             Envelope(
                 token=self._token,
                 rev=snapshot.rev if snapshot else rev,
@@ -603,6 +621,7 @@ class Reporter:
                     "reply": reply.to_dict(),
                 },
             ),
+            self._progress,
         )
         # The state returns to `running` on resolution (TW-DLG-009) with nothing written: it was
         # never written on the way in either. `waiting_input` is derived from the open dialogs
@@ -805,6 +824,7 @@ class OperationScope:
         self._clock = clock
         self._reporter: Reporter | None = None
         self._keepalive: asyncio.Task | None = None
+        self._announce: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._ambient_token: Any = None
@@ -819,6 +839,8 @@ class OperationScope:
         self._caller_binds_ambient = False
         # True once the operation was handed to another process, which then owns its terminal write.
         self._handed_off = False
+        # True for the operation of a tracked call (TW-CALL-004), set by `execute_call()`.
+        self._call = False
 
     @property
     def _inert(self) -> bool:
@@ -872,14 +894,29 @@ class OperationScope:
             raise_on_cancel=self._raise_on_cancel,
         )
         self._reporter._loop = asyncio.get_running_loop()
+        self._reporter._call = self._call
         # TW-API-001: bind the ambient reporter, so code six frames down can `await progress.set()`
         # without every function between here and there growing a `reporter` parameter. The
         # caller-bound form binds around the body instead - see `bind_ambient_in_caller`.
         if not self._caller_binds_ambient:
             self._ambient_token = ambient_bind(self._reporter)
         await self._reporter._commit()
-        self._keepalive = asyncio.get_running_loop().create_task(self._keepalive_loop(store, k))
+        loop = asyncio.get_running_loop()
+        self._keepalive = loop.create_task(self._keepalive_loop(store, k))
+        delay = push_delay_left(progress)
+        if delay > 0:
+            self._announce = loop.create_task(self._announce_after(delay, store, ns, k))
         return self._reporter
+
+    async def _announce_after(self, delay: float, store: Any, ns: str, k: str) -> None:
+        """TW-THR-008: the operation's snapshot once its push delay is over, unless it has ended."""
+        try:
+            await asyncio.sleep(delay)
+            await announce(store, ns, k)
+        except asyncio.CancelledError:  # pragma: no cover - normal shutdown path
+            raise
+        except Exception:  # noqa: BLE001 - a failed push costs latency only (TW-CORE-002)
+            logger.debug("taskwire: no snapshot after the push delay for %s", k, exc_info=True)
 
     async def _keepalive_loop(self, store: Any, k: str) -> None:
         """TW-RET-002: touch every `active_ttl / 4`, without the operation's cooperation.
@@ -906,6 +943,12 @@ class OperationScope:
         if not self._caller_binds_ambient:
             ambient_unbind(self._ambient_token)
             self._ambient_token = None
+
+        if self._announce is not None:
+            self._announce.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._announce
+            self._announce = None
 
         if self._keepalive is not None:
             self._keepalive.cancel()
@@ -1122,9 +1165,12 @@ async def mark_queued(
         connection=connection,
     )
     written = await store.commit(k, progress, settings.active_ttl)
-    await store.publish(
+    await publish(
+        store,
         session,
+        k,
         Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict()),
+        progress,
     )
     return None
 
@@ -1144,6 +1190,18 @@ async def mark_failed(
     TW-REG-007, TW-RET-004): the caller is already watching a token, and a `404` would tell it nothing
     about why the work ended.
     """
+    await _mark_failed(token, session=session, error=error, store=store)
+
+
+async def _mark_failed(
+    token: str,
+    *,
+    session: str | None,
+    error: BaseException | Error,
+    store: Any = None,
+    call: bool = False,
+) -> None:
+    """`mark_failed()`; `call` marks the operation of a tracked call (TW-THR-008)."""
     if session is None:
         return None
     store = store if store is not None else configured.store
@@ -1162,9 +1220,13 @@ async def mark_failed(
     progress.updated_at = now_iso()
     progress.state = ProgressState.FAILED
     written = await store.commit(k, progress, settings.tombstone_ttl)
-    await store.publish(
+    await publish(
+        store,
         session,
+        k,
         Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=progress.to_dict()),
+        progress,
+        call=call,
     )
     return None
 

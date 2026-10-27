@@ -79,9 +79,11 @@ exactly as `call` does; the handler stays registered until the operation ends.
 
 The handle is minted as `run()` mints one: `startedHere`, joining `tw.operations` after
 `progressUi.delay`, and awaitable as `call`. Two registrations for one key share one handle. When
-`call` settles, the client reads the token once more at once, also while a transport holds the
-ladder: a call the server did not track has no document and its handle is dropped silently, after
-one call of the handler with a closed handle.
+`call` settles without a healthy transport, the client reads the token once more at once: a call the
+server did not track has no document and its handle is dropped silently, after one call of the
+handler with a closed handle. With a healthy transport it reads nothing: a token nothing was pushed
+for is dropped the same way, and one that is still going waits for its terminal push and is read once
+after the polling ceiling if that push does not come.
 
 `call` is any `KeyedCall<R>` — `PromiseLike<R> & { readonly key?: string }`. A call without a string
 `key` throws `TypeError`; a proxy method that awaits before it issues its request returns a promise

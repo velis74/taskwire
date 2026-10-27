@@ -49,7 +49,7 @@ from .models import (
     ProgressState,
     Text,
 )
-from .reporter import mark_failed, mark_queued, operation, OperationScope, Reporter
+from .reporter import _mark_failed, mark_queued, operation, OperationScope, Reporter
 from .rest import _is_uuid
 from .settings import configured
 from .store import key as make_key
@@ -59,7 +59,7 @@ logger = logging.getLogger("taskwire.calls")
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 """The header whose key names a call that carries no `X-Taskwire-Token` (TW-CALL-001)."""
 
-SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+UNTRACKED_METHODS = frozenset({"HEAD", "OPTIONS"})
 """Methods whose `Idempotency-Key` does not make a call tracked (TW-CALL-002)."""
 
 
@@ -131,7 +131,7 @@ def call_token(headers: Mapping[str, str] | Iterable[tuple[str, str]], method: s
     `headers` is a mapping or a sequence of `(name, value)` pairs; names compare case-insensitively.
     `X-Taskwire-Token` is the token when present. Otherwise the token is the key of a single
     `Idempotency-Key` header holding a Structured Field string whose content is a UUID, for any
-    `method` outside `SAFE_METHODS`. A missing, repeated or malformed `Idempotency-Key` leaves the call
+    `method` outside `UNTRACKED_METHODS`. A missing, repeated or malformed `Idempotency-Key` leaves the call
     untracked and is never an error.
     """
     token_name, key_name = TOKEN_HEADER.lower(), IDEMPOTENCY_KEY_HEADER.lower()
@@ -142,7 +142,7 @@ def call_token(headers: Mapping[str, str] | Iterable[tuple[str, str]], method: s
             return value
         if lowered == key_name:
             keys.append(value)
-    if (method is not None and method.upper() in SAFE_METHODS) or len(keys) != 1:
+    if (method is not None and method.upper() in UNTRACKED_METHODS) or len(keys) != 1:
         return None
     key = _sf_string(keys[0])
     return key if key is not None and _is_uuid(key) else None
@@ -243,7 +243,7 @@ class CallReceipt:
                 error = Error(code=DISPATCH_FAILED, message=Text(key=DISPATCH_FAILED), retryable=True)
             else:
                 error = Error(code=NOT_EXECUTED, message=Text(key=NOT_EXECUTED), retryable=False)
-            await mark_failed(call.token, session=call.session, error=error)
+            await _mark_failed(call.token, session=call.session, error=error, call=True)
         except Exception:  # noqa: BLE001 - reporting never replaces the call's own outcome
             logger.warning("taskwire: could not end the unexecuted operation %s", call.token, exc_info=True)
 
@@ -321,7 +321,9 @@ class CallExecution:
         receipt = _receipt.get()
         if receipt is not None and receipt.call is not None and receipt.call.token == call.token:
             receipt.started = True
-        return operation(call.token, session=call.session, connection=call.connection, result_kind=call.result_kind)
+        scope = operation(call.token, session=call.session, connection=call.connection, result_kind=call.result_kind)
+        scope._call = True
+        return scope
 
     def _entered(self, scope: OperationScope, reporter: Reporter) -> Reporter:
         self._scope, self._reporter = scope, reporter
@@ -442,10 +444,11 @@ async def end_call(
         if queued_only and ProgressState(snapshot.progress.state) is not ProgressState.QUEUED:
             return False
         asking = any(DialogState(dialog.state) is DialogState.OPEN for dialog in snapshot.dialogs)
-        await mark_failed(
+        await _mark_failed(
             call.token,
             session=call.session,
             error=asking_error if asking and asking_error is not None else error,
+            call=True,
         )
     except Exception:  # noqa: BLE001 - reporting is an accelerator
         logger.warning("taskwire: could not end the operation %s", call.token, exc_info=True)

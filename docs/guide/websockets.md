@@ -295,7 +295,9 @@ request per tab per tick to learn what the socket already told it.
 Suspended is not silent. Each loop still reads once when it starts — the register when something
 first reads `tw.register`, a token when it is first tracked or subscribed — because the socket
 carries what *changes*, and an operation that is already parked on a question pushes nothing at all
-until it ends. Every rung after that first read is the ladder, and the ladder is what stops.
+until it ends. A token this page minted (`run()`, `trackCall()`, `tw.busy`) is not read: its
+operation starts with this page's request, and the server pushes every state it reaches. Every rung
+after that first read is the ladder, and the ladder is what stops.
 
 Losing the socket puts every ladder back on its **base** rung, 400 ms, within one interval, and one
 register read is the whole of the recovery. Nothing is replayed and nothing is resumed: a reconnected

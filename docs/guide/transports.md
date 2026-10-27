@@ -92,7 +92,9 @@ The ladder is suspended while a transport is attached and healthy, and comes bac
 the moment one is lost or detached — so the two mechanisms alternate rather than run together, and
 the worst a dead socket costs is one 400 ms interval. What is suspended is the ladder and not the
 first read: every loop reads once when it starts, because a socket announces what changes and can
-say nothing about what was already happening when it arrived.
+say nothing about what was already happening when it arrived. A token this page minted (`run()`,
+`trackCall()`, `tw.busy`) is the exception: its operation starts with this page's request, so every
+state it reaches is pushed, and a healthy socket owes it no read. A resync reads every token once.
 
 **Some reads are off the ladder.** A shared operation's row comes from the register payload and from
 nowhere else, so a client asks for one read of the list the moment it learns of a token with no row:

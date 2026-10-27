@@ -1,7 +1,7 @@
 /** The per-token poller and the raw `Subscription` it feeds. */
 
 import type { Operation } from '../operation/base/operation';
-import { PollLadder, snapshotLadderState } from '../poll/poll';
+import { DEFAULT_POLL_SETTINGS, PollLadder, snapshotLadderState } from '../poll/poll';
 import { isTerminal, parseSnapshot, type Snapshot, WIRE_VERSION } from '../wire/wire';
 
 import type { Taskwire } from './taskwire';
@@ -58,6 +58,12 @@ export class TokenPoller {
   /** `fn` settled: the next absence ends the search (TW-TS-004). Never set by `track()`. */
   private searchOver = false;
 
+  /**
+   * This page minted the token (`run()`, `trackCall()`, `tw.busy`): the server pushes what it writes
+   * to this page's socket, so a healthy transport owes it no read (TW-TS-007).
+   */
+  private minted = false;
+
   private lastRev: number | null = null;
 
   private handle: Operation<unknown> | null = null;
@@ -83,7 +89,36 @@ export class TokenPoller {
   start(): void {
     this.wanted = true;
     if (this.stopped || this.timer !== null || this.reading) return;
-    if (!this.suspended || !this.opened) this.schedule(null, null);
+    if (!this.suspended || (!this.opened && !this.minted)) this.schedule(null, null);
+  }
+
+  /** The token is one this page minted; called before the first `start()` (TW-TS-007). */
+  markMinted(): void {
+    this.minted = true;
+  }
+
+  /**
+   * The call this token tracks settled (TW-TS-019). Without a healthy transport one read decides it.
+   * With one, a token nothing was pushed for ended inside the push delay or was never tracked and is
+   * dropped silently (TW-THR-008); one that is not terminal yet waits for its terminal push, and is
+   * read once more after the ladder's ceiling if that push did not arrive.
+   */
+  callSettled(): void {
+    if (this.stopped) return;
+    if (!this.suspended) {
+      this.readNow(true);
+      return;
+    }
+    if (!this.seen) {
+      this.vanish();
+      return;
+    }
+    if (this.latest !== null && isTerminal(this.latest.progress)) return;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.readNow(true);
+    }, DEFAULT_POLL_SETTINGS.ceilingMs);
   }
 
   /**
@@ -106,7 +141,7 @@ export class TokenPoller {
       // The read this loop owes may be scheduled rather than taken, and clearing the timer without
       // reinstating it would leave a token that pushes nothing until it ends - a question already
       // open - with no document at all (TW-TS-007).
-      if (this.wanted && !this.opened) this.schedule(null, null);
+      if (this.wanted && !this.opened && !this.minted) this.schedule(null, null);
       return;
     }
     // A read still in flight schedules the next rung itself; scheduling here as well would leave

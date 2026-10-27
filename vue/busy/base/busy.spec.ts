@@ -1,6 +1,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { RestCalls } from '../../calls/calls';
 import { configure_taskwire, resetTaskwireConfig } from '../../client/config';
 import { Taskwire } from '../../client/taskwire';
 import { TOKEN_HEADER } from '../../client/types';
@@ -320,6 +321,25 @@ describe('axiosCallSource (TW-TS-023)', () => {
     stop();
     void http.get('/c');
     expect(events).toHaveLength(6);
+  });
+
+  it("reports taskwire's own requests as background calls", async () => {
+    const http = fakeHttp(() => Promise.resolve({ status: 200, data: {} }));
+    const calls = new RestCalls('/taskwire', http);
+    const events: CallEvent[] = [];
+    axiosCallSource(http).subscribe((event) => events.push(event));
+    const token = new_token();
+
+    await calls.register();
+    await calls.snapshot(token);
+    await calls.cancel(token);
+    await calls.collect(token);
+    await calls.dismiss(token);
+    await calls.replyToDialog(token, 'd', 'ok', {});
+
+    const starts = events.filter((event) => event.type === 'start');
+    expect(starts).toHaveLength(6);
+    expect(starts.every((event) => event.type === 'start' && event.background)).toBe(true);
   });
 
   it("takes run()'s token for a request made inside run()", () => {

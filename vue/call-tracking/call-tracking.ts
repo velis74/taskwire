@@ -30,7 +30,7 @@ export function isUuid(key: string): boolean {
 }
 
 /** Methods whose `Idempotency-Key` does not make a call tracked (TW-CALL-002). */
-export const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+export const UNTRACKED_METHODS: ReadonlySet<string> = new Set(['HEAD', 'OPTIONS']);
 
 /** Headers as a WHATWG `Headers`, a plain record, or `[name, value]` pairs. */
 export type HeadersLike =
@@ -73,7 +73,7 @@ function sfString(raw: string): string | null {
  * The token a call is tracked under, or `null` for an untracked call (TW-CALL-001, TW-CALL-002).
  *
  * `X-Taskwire-Token` when present. Otherwise the key of a single `Idempotency-Key` header holding a
- * Structured Field string whose content is a UUID, for any `method` outside `SAFE_METHODS`. Header
+ * Structured Field string whose content is a UUID, for any `method` outside `UNTRACKED_METHODS`. Header
  * names compare case-insensitively. A missing, repeated or malformed key is never an error.
  *
  * `Headers` joins repeated headers into one value, which then is no Structured Field string.
@@ -87,7 +87,7 @@ export function callToken(headers: HeadersLike, method?: string | null): string 
     if (lowered === tokenName && value !== '') return value;
     if (lowered === keyName) keys.push(value);
   }
-  if ((method !== undefined && method !== null && SAFE_METHODS.has(method.toUpperCase())) || keys.length !== 1) {
+  if ((method !== undefined && method !== null && UNTRACKED_METHODS.has(method.toUpperCase())) || keys.length !== 1) {
     return null;
   }
   const key = sfString(keys[0]);
@@ -174,6 +174,7 @@ export async function executeCall<T>(
     connection: call.connection ?? null,
     resultKind: call.resultKind ?? null,
     settings: options.settings,
+    call: true,
   });
   const execution: CallExecution = {
     call,
@@ -275,7 +276,7 @@ export async function receiveCall<T>(
           const error: TaskwireError = dispatch
             ? { code: DISPATCH_FAILED, message: { key: DISPATCH_FAILED }, retryable: true }
             : { code: NOT_EXECUTED, message: { key: NOT_EXECUTED }, retryable: false };
-          await markFailed({ ...opts, error });
+          await markFailed({ ...opts, error, call: true });
         }
       } catch {
         // Logged nowhere: there is no logger in the operating half, and the call's outcome stands.

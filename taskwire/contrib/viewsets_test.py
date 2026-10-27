@@ -619,8 +619,19 @@ def test_the_idempotency_key_is_the_token_of_a_tracked_call(tracked, store: task
     assert ended.origin_connection == "conn-1"
 
 
-def test_x_taskwire_token_wins_and_tracks_a_read(tracked) -> None:
-    """TW-CALL-001, TW-CALL-002: the explicit token wins over the key, and is what tracks a GET."""
+def test_a_read_is_tracked_under_its_key(tracked) -> None:
+    """TW-CALL-001, TW-CALL-002: a GET with an `Idempotency-Key` is a tracked call."""
+    http, seen = tracked
+    key = taskwire.new_token()
+
+    answer = http.get("/items/read", headers={**HEADERS, KEY_HEADER: f'"{key}"'})
+
+    assert answer.json() == {"token": key}
+    assert _states(seen, key) == ["queued", "running", "done"]
+
+
+def test_x_taskwire_token_wins_over_the_key(tracked) -> None:
+    """TW-CALL-001: the explicit token wins over the key."""
     http, seen = tracked
     token, key = taskwire.new_token(), taskwire.new_token()
 
@@ -642,15 +653,12 @@ def test_an_operation_without_a_result_kind_is_private(tracked, store: taskwire.
 
 
 def test_a_call_without_a_usable_token_runs_untracked(tracked) -> None:
-    """TW-CALL-001, TW-CALL-002, TW-CALL-102: a key that is no UUID, a malformed header, a read with
-    only a key, an opted-out action and a call to taskwire's own viewset all run untracked."""
+    """TW-CALL-001, TW-CALL-102: a key that is no UUID, a malformed header, an opted-out action and a
+    call to taskwire's own viewset all run untracked."""
     http, seen = tracked
 
     assert http.post("/items/plain", headers={**HEADERS, KEY_HEADER: '"not-a-uuid"'}).json() == {"token": None}
     assert http.post("/items/plain", headers={**HEADERS, KEY_HEADER: "unquoted"}).json() == {"token": None}
-    assert http.get("/items/read", headers={**HEADERS, KEY_HEADER: f'"{taskwire.new_token()}"'}).json() == {
-        "token": None
-    }
     assert http.post("/items/opted-out", headers={**HEADERS, KEY_HEADER: f'"{taskwire.new_token()}"'}).json() == {
         "token": None
     }

@@ -30,6 +30,7 @@ from .models import (
     ProgressState,
     WIRE_VERSION,
 )
+from .publish import publish as _publish
 from .register import build_register, CEILING_POLL_MS, poll_after_ms
 from .settings import configured, settings
 from .store import DialogResolution, key as make_key
@@ -270,9 +271,8 @@ async def request_cancel(client: Client, token: str) -> Response:
         return 409, {"detail": HOLDS_AN_UNCOLLECTED_RESULT}
 
     rev = await store.request_cancel(key)
-    await store.publish(
-        client.session,
-        Envelope(token=token, rev=rev, kind=EnvelopeKind.CANCEL, body={}),
+    await _publish(
+        store, client.session, key, Envelope(token=token, rev=rev, kind=EnvelopeKind.CANCEL, body={}), progress
     )
     return 202, {"detail": REQUESTED}
 
@@ -320,9 +320,12 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
     if after is not None:
         ended = replace(after.progress, state=ProgressState.DONE, updated_at=now_iso())
         written = await store.commit(key, ended, settings.tombstone_ttl)
-        await store.publish(
+        await _publish(
+            store,
             client.session,
+            key,
             Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=ended.to_dict()),
+            ended,
         )
     # TW-RES-010: the event must CARRY THE RELEASED RESULT. `release_result` clears `result` off the
     # document as part of the same atomic step, so a snapshot read afterwards has none - and an

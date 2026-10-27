@@ -6,6 +6,33 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-10-27
+
+### Added
+
+- `settings.push_delay` (Python) / `ReporterSettings.pushDelay` (TypeScript), default 0.25 s
+  (TW-THR-008): for that long after its creation an operation publishes nothing but a dialog open or
+  a cancel (as its `snapshot`) and a terminal state that is not a tracked call's. The process
+  executing it publishes the operation's `snapshot` when the delay is over. The store is written as
+  always.
+
+### Changed
+
+- A `GET` with a UUID `Idempotency-Key` is a tracked call (TW-CALL-002); only `HEAD` and `OPTIONS`
+  are not. `SAFE_METHODS` is renamed `UNTRACKED_METHODS` and holds `HEAD` and `OPTIONS`.
+- `settings.progress_interval` / `progressInterval` defaults to 0.1 s.
+- With a healthy transport attached, the client reads no token this page minted (`run()`,
+  `trackCall()`, `tw.busy`): not when it starts following it, and not when a tracked call settles
+  (TW-TS-007, TW-TS-019). A settled call nothing was pushed for is dropped silently; one that is still
+  going waits for its terminal push and is read once after the polling ceiling if none arrives.
+  A resync still reads every token.
+
+### Fixed
+
+- taskwire's own six calls are background calls on REST and on muxws (TW-TS-022). A busy indicator
+  followed a read that outlived `progressUi.delay` with reads of its own key, and on a slow connection
+  each of those spawned more.
+
 ## [0.4.2] - 2026-10-21
 
 ### Changed

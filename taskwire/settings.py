@@ -39,9 +39,13 @@ class Settings:
     """Backstop on an uncollected result. Seconds; 7 days. Must be aligned with the application's
     own artefact retention (TW-RET-003) - taskwire stores a pointer and deletes nothing."""
 
-    progress_interval: float = 0.25
+    progress_interval: float = 0.1
     """Latest-wins coalescing window for commits (TW-THR-001). Seconds, float, no unit suffix in
     the name - matching `push_timeout` and `max_overrides`."""
+
+    push_delay: float = 0.25
+    """How long after its creation an operation publishes nothing but a dialog open or a cancel
+    (TW-THR-008). Seconds; 0 publishes every write at once."""
 
     push_timeout: float = 2.0
     """Bound on any single `notify()` call (TW-TR-003). Seconds."""

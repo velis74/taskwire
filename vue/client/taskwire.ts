@@ -261,6 +261,7 @@ export class Taskwire implements OperationHost, RegisterClient {
    * settles after its action has run, so that read finds the terminal document, or none.
    */
   private follow<T>(token: string, promise: Promise<T>, options: RunOptions, readOnSettle: boolean): Operation<T> {
+    this.pollerFor(token).markMinted();
     const handle = this.attach<T>(token, {
       promise,
       title: options.title,
@@ -270,7 +271,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     const poller = this.pollerFor(token);
     const settled = (): void => {
       poller.searchIsOver();
-      if (readOnSettle) poller.readNow(true);
+      if (readOnSettle) poller.callSettled();
     };
     // The command's answer is the earliest moment a row can be shown. The front end mints the token
     // and sends it with its own command, and the server writes `queued` before it replies
