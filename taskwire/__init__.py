@@ -12,7 +12,7 @@ outside. Nothing in the core imports a framework, a driver or a UI library (TW-C
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.4.3"
 
 from .ambient import ask, current_reporter, progress
 from .calls import Call, call_token, end_call, execute_call, hand_off, receive_call

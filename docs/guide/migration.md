@@ -9,7 +9,7 @@ exists.
 
 <!-- New releases go directly below this comment, above the previous one, as `## Upgrading to vX.Y.Z (from vA.B.x)`. -->
 
-## Upgrading to v0.5.0 (from v0.4.x)
+## Upgrading to v0.4.3 (from v0.4.2)
 
 ### `GET` calls are tracked
 

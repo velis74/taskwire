@@ -1,7 +1,7 @@
 {
   "name": "taskwire",
   "private": false,
-  "version": "0.5.0",
+  "version": "0.4.3",
   "type": "module",
   "description": "Progress reporting and awaitable dialogs for long-running server-side operations.",
   "author": "Jure Erznožnik",
