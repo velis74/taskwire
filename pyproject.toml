@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Progress reporting and awaitable dialogs for long-running server-side operations."
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Jure Erznožnik", email = "jure.erznoznik@gmail.com" }]
+authors = [{ name = "Jure Erznožnik", email = "jure.erznoznik@velis.si" }]
 requires-python = ">=3.10"
 keywords = ["progress", "dialogs", "celery", "fastapi", "websocket", "dynamicforms"]
 classifiers = [
