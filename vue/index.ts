@@ -22,7 +22,7 @@
  * `WIRE_VERSION` is the protocol's and moves only on a breaking wire change (TW-CORE-011); this one
  * tracks the implementation and moves whenever the package is published.
  */
-export const VERSION = '0.4.3';
+export const VERSION = '0.4.4';
 
 // §5.5 - the client
 export { configure_taskwire, resetTaskwireConfig, taskwireConfig, type TaskwireUiConfig } from './client/config';
