@@ -1,7 +1,7 @@
 {
   "name": "taskwire",
   "private": false,
-  "version": "0.4.3",
+  "version": "0.4.4",
   "type": "module",
   "description": "Progress reporting and awaitable dialogs for long-running server-side operations.",
   "author": "Jure Erznožnik",
@@ -99,7 +99,7 @@
     "url": "git@github.com:velis74/taskwire.git"
   },
   "peerDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.13.0",
+    "@dynamicforms/fastapi-viewsets": ">=0.13.0 <0.15",
     "@dynamicforms/vuetify-inputs": "^0.15.0",
     "@dynamicforms/vuetify-modal-form-kit": "^0.11.0",
     "axios": "^1.13.6",
@@ -128,7 +128,7 @@
     }
   },
   "devDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.13.1",
+    "@dynamicforms/fastapi-viewsets": "^0.14.2",
     "@dynamicforms/vuetify-inputs": "^0.15.0",
     "@dynamicforms/vuetify-modal-form-kit": "^0.11.0",
     "@types/node": "^26",
