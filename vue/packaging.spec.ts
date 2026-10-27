@@ -11,9 +11,9 @@ describe('packaging', () => {
   it('version matches pyproject', () => {
     // TW-PKG-001: one repository, two packages, a single version stream. The Python side asserts
     // the same equality from the other direction, so neither language can drift alone.
-    const initPy = readFileSync(resolve(REPO_ROOT, 'taskwire/__init__.py'), 'utf-8');
-    const match = /__version__\s*=\s*['"]([^'"]+)['"]/.exec(initPy);
-    expect(match, 'taskwire/__init__.py must declare __version__').not.toBeNull();
+    const pyproject = readFileSync(resolve(REPO_ROOT, 'pyproject.toml'), 'utf-8');
+    const match = /^version = "([^"]+)"$/m.exec(pyproject);
+    expect(match, 'pyproject.toml must declare a static version').not.toBeNull();
 
     const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf-8'));
     expect(match![1]).toBe(packageJson.version);

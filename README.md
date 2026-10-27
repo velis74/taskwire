@@ -68,8 +68,8 @@ npm install taskwire
 ## The demo
 
 ```bash
-pip install -e ".[fastapi,viewsets,demo]" && npm install
-python demo.py                       # then open http://127.0.0.1:5174
+uv sync && npm ci
+uv run python demo.py                # then open http://127.0.0.1:5174
 ```
 
 A night batch over one book: four back-office jobs that between them exercise progress, nested

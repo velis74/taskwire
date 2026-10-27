@@ -13,5 +13,5 @@
     "skipLibCheck": true
   },
   "include": ["vue/**/*"],
-  "exclude": ["dist", "coverage", "node_modules", "docs", "examples", "taskwire"]
+  "exclude": [".venv", "dist", "coverage", "node_modules", "docs", "examples", "taskwire"]
 }

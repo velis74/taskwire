@@ -7,6 +7,6 @@ export default [
       'no-redeclare': 'off',
       '@typescript-eslint/no-redeclare': 'error',
     },
-    ignores: ['dist/*', 'coverage/*', 'node_modules/*', 'docs/*', 'examples/*', 'vite.config.ts'],
+    ignores: ['.venv/*', 'dist/*', 'coverage/*', 'node_modules/*', 'docs/*', 'examples/*', 'vite.config.ts'],
   },
 ];

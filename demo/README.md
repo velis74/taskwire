@@ -6,9 +6,9 @@ a worker's own deadline expiring on a question nobody answered. The page speaks 
 or one WebSocket — and the jobs cannot tell which.
 
 ```bash
-pip install -e ".[fastapi,viewsets,demo]"
-npm install
-python demo.py
+uv sync
+npm ci
+uv run python demo.py
 ```
 
 Then open <http://127.0.0.1:5174>.

@@ -1,20 +1,20 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.13.6,<0.14"]
+build-backend = "uv_build"
 
 [project]
 name = "taskwire"
-dynamic = ["version"]
+version = "0.4.3"
 description = "Progress reporting and awaitable dialogs for long-running server-side operations."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Jure Erznožnik", email = "jure.erznoznik@velis.si" }]
 requires-python = ">=3.10"
 keywords = ["progress", "dialogs", "celery", "fastapi", "websocket", "dynamicforms"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -46,10 +46,13 @@ viewsets = ["dynamicforms-fastapi-viewsets>=0.13.0"]
 # every queued frame before closing the socket, so the `goaway` of `goaway_if_stale` (TW-WS-007)
 # reaches the client.
 muxws = ["muxws>=0.4.1", "dynamicforms-fastapi-viewsets[muxws]>=0.13.0"]
-demo = ["uvicorn>=0.27"]
+
+[dependency-groups]
 # Everything the test suite, the linters and the demo need.
 dev = [
-    "taskwire[redis,celery,fastapi,viewsets,muxws,demo]",
+    "taskwire[redis,celery,fastapi,viewsets,muxws]",
+    "muxws[websockets]>=0.4.1",
+    "uvicorn>=0.27",
     "coverage",
     "pytest",
     "pytest-asyncio",
@@ -65,9 +68,6 @@ Repository = "https://github.com/velis74/taskwire"
 Issues = "https://github.com/velis74/taskwire/issues"
 Documentation = "https://docs.velis.si/taskwire/"
 
-[tool.hatch.version]
-path = "taskwire/__init__.py"
-
 # The release tool stamps the two manifests by itself. `vue/index.ts` is the third place the version
 # is written down - the npm half exports it as `VERSION` - and nothing about a Python manifest points
 # at it, so it is named here. `packaging_test.py::test_python_and_npm_versions_match` and
@@ -76,12 +76,11 @@ path = "taskwire/__init__.py"
 [tool.publish]
 additional_files = ["vue/index.ts"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["taskwire"]
-
-[tool.hatch.build.targets.sdist]
-include = ["/taskwire", "/conformance", "/README.md", "/LICENSE"]
-exclude = ["**/*_test.py"]
+[tool.uv.build-backend]
+module-name = "taskwire"
+module-root = ""
+source-include = ["LICENSE", "conformance/**"]
+source-exclude = ["**/*_test.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -91,7 +90,7 @@ asyncio_default_fixture_loop_scope = "function"
 # `design` holds the normative specification and the design brief. They are prose that happens to
 # quote Python, and ruff would otherwise reformat the code inside their fenced blocks.
 exclude = ['docs', 'design', 'ts', 'node_modules', 'dist', 'build', '.git', '.idea',
-    '.pytest_cache', '.ruff_cache']
+    '.pytest_cache', '.ruff_cache', '.venv']
 line-length = 120
 
 [tool.ruff.lint]

@@ -1,8 +1,8 @@
 """One entry point for the demo: `python demo.py` starts both halves.
 
-    pip install -e ".[fastapi,viewsets,demo]"
-    npm install
-    python demo.py
+    uv sync
+    npm ci
+    uv run python demo.py
 
 The server listens on 127.0.0.1:8030 (override with `TASKWIRE_DEMO_PORT`) and the Vite dev server on
 5174, which proxies `/taskwire` and `/demo` to it - so neither half needs a CORS story, a second
@@ -14,7 +14,7 @@ to support.
 
 This file is a *consumer* of taskwire, not part of it. Nothing under `taskwire/` imports it, no
 library test depends on it, and it is absent from both published artefacts:
-`[tool.hatch.build.targets.wheel]` ships `taskwire` alone and the npm package ships `dist/*` alone.
+`[tool.uv.build-backend]` ships `taskwire` alone and the npm package ships `dist/*` alone.
 """
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ CLIENT_PORT = 5174
 REQUIRED_IMPORTS = (
     ("fastapi", "the demo server is a FastAPI app"),
     ("uvicorn", "which serves it"),
-    ("fastapi_viewsets", "taskwire declares its REST API as a viewset; pip install -e '.[viewsets]'"),
-    ("taskwire", "the library this demo exists to show; install the repository itself with -e"),
+    ("fastapi_viewsets", "taskwire declares its REST API as a viewset"),
+    ("taskwire", "the library this demo exists to show"),
 )
 """Checked before anything starts, because every one of these fails *late* and points somewhere else.
 
@@ -60,7 +60,7 @@ def check_imports() -> None:
     print("The demo cannot start. Missing:\n", file=sys.stderr)
     for name, why in missing:
         print(f"  {name:<18} {why}", file=sys.stderr)
-    print("\n  pip install -e '.[fastapi,viewsets,demo]'\n", file=sys.stderr)
+    print("\n  uv sync\n", file=sys.stderr)
     raise SystemExit(1)
 
 
