@@ -41,6 +41,7 @@ import httpx
 import muxws
 
 from taskwire import DIALOG_TIMEOUT
+from taskwire.models import WIRE_VERSION
 
 SESSION_COOKIE = "taskwire_demo_session"
 
@@ -162,8 +163,8 @@ async def check_the_socket_carries_the_six_calls(peer: Any, http: httpx.AsyncCli
     status, register = await call(peer, "GET", "/taskwire")
     check("GET /taskwire over the socket", status == 200, f"status={status}")
     check(
-        "the register is a v1 document",
-        isinstance(register, dict) and register.get("v") == 1,
+        f"the register is a v{WIRE_VERSION} document",
+        isinstance(register, dict) and register.get("v") == WIRE_VERSION,
         json.dumps(register)[:120],
     )
     over_http = (await http.get("/taskwire")).json()
@@ -231,7 +232,8 @@ async def check_event_topics(peer: Any, topics: list[str], socket_url: str, http
 
     polled = (await http.post("/events/poll", json={"cursors": {topics[1]: None}})).json()
     answer = (polled.get("topics") or {}).get(topics[1]) or {}
-    check("a poll over REST is refused the connection topic", answer.get("error") == "event_topic_refused", str(answer))
+    refused = (answer.get("error") or {}).get("detail_code") == "fastapi-viewsets.event_topic_refused"
+    check("a poll over REST is refused the connection topic", refused, str(answer))
 
 
 async def start(http: httpx.AsyncClient, job: str, connection: str | None) -> str | None:
@@ -263,8 +265,8 @@ async def check_export_and_cancel(peer: Any, http: httpx.AsyncClient, pushes: Pu
     check("progress pushes arrive unasked", first is not None, f"{len(pushes.seen)} envelope(s) so far")
     if first is not None:
         check(
-            "a pushed envelope is a v1 document",
-            first.get("v") == 1 and isinstance(first.get("rev"), int),
+            f"a pushed envelope is a v{WIRE_VERSION} document",
+            first.get("v") == WIRE_VERSION and isinstance(first.get("rev"), int),
             json.dumps(first)[:160],
         )
 
@@ -300,7 +302,10 @@ async def check_export_and_cancel(peer: Any, http: httpx.AsyncClient, pushes: Pu
 
 
 async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes, connection: str | None) -> None:
-    """The sequence: `queued`, `running`, `dialog.open`, `failed`.
+    """The sequence: `snapshot`, `running`, `dialog.open`, `failed`.
+
+    The writes inside `push_delay` are not published; the executing process publishes one `snapshot`
+    when the delay is over (TW-THR-008).
 
     Nobody answers, so the deadline in `jobs.py` expires - taskwire has none to offer and must never
     grow one (TW-DLG-005). The terminal write withdraws the question in the same step (TW-CANCEL-011)
@@ -335,8 +340,8 @@ async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes
     kinds = [envelope["kind"] for envelope in envelopes]
     states = [state_of(envelope) for envelope in envelopes if envelope["kind"] == "progress"]
 
-    check("the sequence opens with queued", states[:1] == ["queued"], shape(envelopes))
-    check("running is reported before the question", "running" in states[1:], shape(envelopes))
+    check("the sequence opens with the snapshot after the push delay", kinds[:1] == ["snapshot"], shape(envelopes))
+    check("running is reported before the question", "running" in states, shape(envelopes))
     check("the question is opened exactly once", kinds.count("dialog.open") == 1, shape(envelopes))
     check("the question is opened after the work started", kinds.index("dialog.open") > 0, shape(envelopes))
     check("nothing follows the terminal envelope", envelopes[-1] is terminal, shape(envelopes))
