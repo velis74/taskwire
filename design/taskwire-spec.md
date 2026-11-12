@@ -424,7 +424,8 @@ adapters to things outside the process, never a capability the core lacks.
   MUST return to `running`. This is one of the two causes in TW-PROG-013 and the only one that holds
   a worker.
 - **TW-DLG-010** First answer wins, arbitrated by `store.resolve_dialog`. A losing client MUST
-  receive `409` whose body carries the dialog in its terminal state together with the winning reply,
+  receive `409` whose error body (TW-REST-015) carries, in `dialog`, the dialog in its terminal state
+  together with the winning reply,
   MUST close its dialog quietly, and MUST NOT surface an error, toast or stack trace.
 - **TW-DLG-011** The client library MUST handle 409 (and 404 and 410) on the reply path itself,
   **resolving** `answer()` rather than rejecting, so no application error handler ever sees it. 422
@@ -437,8 +438,8 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-DLG-014** A dialog carries no deadline for any party to renegotiate, so there MUST be no rule
   about extending one and no field a client could extend. A UI MUST NOT render a countdown.
 - **TW-DLG-015** The reply handler MUST validate `button ∈ buttons` and `values` against `inputs`
-  (required, type) **before** touching the store, rejecting with 422:
-  `{"detail": <English text>, "code": "taskwire.invalid_reply", "params": {"reason": ..., ...}}`, where
+  (required, type) **before** touching the store, rejecting with 422 and the error body of
+  TW-REST-015: `detail_code` `taskwire.invalid_reply`, `detail_params` `{"reason": ..., ...}`, where
   `reason` is `button_required`, `unknown_button` (with `button`), `values_not_an_object`,
   `input_required` (with `input`), `unknown_input_type` (with `input` and `type`) or `wrong_input_type`
   (with `input` and `expected`).
@@ -893,6 +894,34 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   the register limit MUST be sized against the ceiling cadence times a plausible tab count with
   jitter. A deployment under pressure MUST advertise a longer `poll_after_ms` rather than rejecting
   requests.
+- **TW-REST-015** Every error answer of the six endpoints MUST carry exactly the fields of
+  fastapi-viewsets' `ApiErrorBody`, built in `taskwire.rest` and therefore identical through every
+  adapter and over muxws:
+
+  | Field | Type | Content |
+  |---|---|---|
+  | `detail` | string | English text, interpolated from `detail_params`; never a code |
+  | `detail_code` | string | the full code, `taskwire.<code>` (§6.2, §6.3) |
+  | `detail_params` | object | interpolation values; `{}` when there are none |
+  | `field_errors` | object | always `{}`: taskwire reports no field errors |
+  | `dialog` | `DialogRequest` | only on the `409` and `410` of a dialog reply: the settled dialog with its reply (TW-DLG-010) |
+
+  A client branches on `detail_code`, never on `detail`. The TypeScript client reads only the status.
+  Through `register_taskwire_rest()`, a dialog reply body that is not a `DialogReply` (no string
+  `button`, or `values` not an object, `null` included) is answered by fastapi-viewsets with the
+  same four fields and `detail_code` `fastapi-viewsets.validation_failed`; `values_not_an_object`
+  comes only from `router()` and `contrib.asgi`, which read `values: null` as `{}`.
+- **TW-REST-016** The OpenAPI document of `register_taskwire_rest()` and of
+  `taskwire.contrib.fastapi.router()` MUST describe the surface without the source: a summary,
+  description and tag per operation, including the namespace scope (the caller's namespace comes
+  from `session_resolver`; another namespace's token answers `404`); every path, query and header
+  parameter with a description (`token`, `did`, the optional `X-Taskwire-Connection` header); a
+  named schema with a description on every field for every request and response body, the error
+  body of TW-REST-015 included; every response status the endpoint answers, and no other. The
+  `GET {prefix}/schema` route that fastapi-viewsets adds to every viewset is fastapi-viewsets'
+  and outside this requirement. Spec ids MUST NOT appear
+  in the text of the document. Test: a test walks both generated documents and fails on any
+  taskwire parameter or schema property without a description.
 
 ### 2.17 Cancellation (`TW-CANCEL-*`)
 
@@ -1319,7 +1348,7 @@ letter, then every run of characters outside `A-Z`, `a-z`, `0-9` as one `_`, lea
 `_` removed, lowercased; an empty result is `error`. `HTTPError` is `http_error`.
 
 `taskwire.cancelled` is never written into a document: it is the TypeScript `OperationFailed.code`
-of a `cancelled` operation and the `detail` of a `410` dialog reply (§6.2). Any other code is the
+of a `cancelled` operation and the `detail_code` of a `410` dialog reply (§6.2). Any other code is the
 application's (`fail()`) or forwarded verbatim (TW-CALL-105), and taskwire neither validates nor
 rewrites it.
 
@@ -2009,21 +2038,24 @@ limit while blocked on a question produces `failed` with `code: "taskwire.dialog
 
 ### 6.2 `DialogResolution` → HTTP
 
-| Outcome | Status | `detail` | Meaning | Client behaviour |
+| Outcome | Status | `detail_code` | Meaning | Client behaviour |
 |---|---|---|---|---|
-| button not in `buttons`, or `values` fail `inputs` | `422` | English text naming the problem, with `code` `taskwire.invalid_reply` and `params` | rejected before the store is touched | reject `answer()` — a client bug |
+| button not in `buttons`, or `values` fail `inputs` | `422` | `taskwire.invalid_reply`, with `detail_params.reason` (TW-DLG-015) | rejected before the store is touched | reject `answer()` — a client bug |
 | `ACCEPTED` | `204` | no body | the store arbitrated in your favour — the only trustworthy signal | close the dialog |
 | `NOT_FOUND` | `404` | `taskwire.not_found` | unknown token, unknown dialog, or another namespace's | resolve `answer()` quietly, close |
 | `ALREADY_ANSWERED` | `409` | `taskwire.already_answered` | another tab won; **body carries the dialog with the winning reply** | resolve `answer()` quietly, apply the reply, close; never an error or toast |
 | `CANCELLED` | `410` | `taskwire.cancelled` | the question was withdrawn — the operation was cancelled, failed or ended, and its tombstone still says so (TW-RET-004) | resolve `answer()` quietly, close |
 
-The `DialogResolution` values are the store port's (§5.1) and carry no namespace. The `detail` of
-every other response is a namespaced code built from `ERROR_NAMESPACE`; the `422` carries its code in
-`code`.
+The `DialogResolution` values are the store port's (§5.1) and carry no namespace. Every error body
+has the shape of TW-REST-015; its `detail_code` is a namespaced code built from `ERROR_NAMESPACE`,
+its `detail` the English text for it.
 
 ### 6.3 Other HTTP statuses
 
-| Endpoint | Status | `detail` | Meaning |
+The `202` of a cancel is not an error: its body is `Accepted`, `{"detail": "taskwire.requested"}`.
+Every other row with a code answers the error body of TW-REST-015 with that `detail_code`.
+
+| Endpoint | Status | Code | Meaning |
 |---|---|---|---|
 | `GET {prefix}/{token}` | `200` | — | including a terminal document, for `tombstone_ttl` after it left the register |
 | `GET {prefix}` / `GET {prefix}/{token}` | `404` | `taskwire.not_found` | unknown, expired, or another namespace's — indistinguishable by design |

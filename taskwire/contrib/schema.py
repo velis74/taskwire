@@ -1,231 +1,301 @@
-"""Pydantic mirrors of the wire documents (§3), for the viewset layer only.
+"""Pydantic mirrors of the wire documents, for the OpenAPI schema of the REST adapters.
 
-Imports pydantic; nothing in `taskwire/` outside `contrib` may (TW-CORE-006). **The core stays
-dependency-free**, and that is not a stylistic preference: `pip install taskwire` has to work in a
-bare script, and the dataclasses in `models.py` are the normative shapes. These are a projection of
-them onto a schema language, kept here so the projection can never become the definition.
+Imports pydantic, so it lives in `contrib` (TW-CORE-006). The dataclasses in `taskwire.models` are the
+normative shapes; these models project them onto a schema language and define nothing of their own.
 
-## Why mirror at all
-
-`fastapi-viewsets` types a viewset over a `BaseModel` - it introspects fields to build the OpenAPI
-schema, to derive filter models, and to strip the pk from create bodies. Handing it a dataclass
-would work for none of that, and the schema is the point: it is what the FE proxy validates itself
-against, and what a reader of `/docs` sees.
-
-## The one deliberate difference from `to_dict()`
-
-`to_dict()` **omits** an absent optional field; these models **emit it as null**. Both are legal on
-the wire and parse identically, because TW-CORE-010 requires absent and null to be indistinguishable
-to a reader - a rule written for exactly this kind of second producer. `schema_test.py` asserts the
-equivalence by feeding every conformance fixture through both paths.
+An absent optional field, which `to_dict()` omits, is emitted here as `null`; a reader treats the two
+alike (TW-CORE-010). `schema_test.py` feeds every conformance fixture through both paths.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from ..models import DialogState, ProgressState, WIRE_VERSION
 
+_TIMESTAMP = "ISO 8601 timestamp in UTC with millisecond precision, e.g. `2026-01-31T09:30:00.000Z`."
+_POLL_AFTER_MS = (
+    "Milliseconds the client waits before its next read; the server may lengthen the client's own interval "
+    "with it, never shorten it."
+)
 
+
+# TW-TXT-001
 class Text(BaseModel):
-    """TW-TXT-001. Any subset of the three is valid; a frontend with a catalogue uses `key`."""
+    """A human-facing string: a translation key with parameters, a pre-composed text, or both."""
 
-    key: str | None = None
-    params: dict[str, Any] | None = None
-    text: str | None = None
+    key: str | None = Field(
+        default=None,
+        description="Translation catalogue key, prefixed with the emitting package's name. A frontend with "
+        "this key uses it and ignores `text`.",
+        examples=["taskwire.aggregate.title"],
+    )
+    params: dict[str, Any] | None = Field(
+        default=None, description="Interpolation values for `key`, by name.", examples=[{"rows": 1200}]
+    )
+    text: str | None = Field(
+        default=None,
+        description="Pre-composed text for a frontend without a catalogue or without `key` in it.",
+        examples=["Importing 1200 rows"],
+    )
 
 
+# TW-PROG-005, §3.2
 class Error(BaseModel):
-    """TW-PROG-005. No stack trace, deliberately - this document reaches a browser."""
+    """Why an operation ended `failed`."""
 
-    code: str
-    message: Text = Field(default_factory=Text)
-    retryable: bool = False
+    code: str = Field(
+        description="Namespaced error code, `<namespace>.<code>`. Codes taskwire writes: "
+        "`taskwire.dispatch_failed` (the work could not be handed to its executor), `taskwire.not_executed` "
+        "(the call ended before anything executed it), `taskwire.dialog_timeout` (an execution limit ended "
+        "the work while it held an open dialog), `taskwire.interrupted` (the executor ended the work; "
+        "`message.params.reason` is `time_limit`, `terminated` or `lost` when the executor names it), "
+        "`taskwire.http_status` (the call was answered with an error status, in `message.params.status`), "
+        "`taskwire.unhandled_exception` (an exception ended the work; `message.params.exception` is its "
+        "class name in snake case) and `taskwire.failed` (an executor error without a code). Any other "
+        "code is the application's own or an executor's error code, passed on unchanged.",
+        examples=["taskwire.interrupted"],
+    )
+    message: Text = Field(
+        default_factory=Text,
+        description="The error for display; `key` equals `code` for the codes taskwire writes.",
+    )
+    retryable: bool = Field(default=False, description="Whether repeating the same command can succeed.")
 
 
+# TW-RES-007
 class ResultRef(BaseModel):
-    """A pointer to an artefact the **application** owns (TW-RES-007). taskwire stores it, never serves it."""
+    """A pointer to an artefact the application owns and serves."""
 
-    href: str
-    mime: str | None = None
-    bytes: int | None = None
-    expires_at: str | None = None
+    href: str = Field(description="URL of the artefact.")
+    mime: str | None = Field(default=None, description="Media type of the artefact.", examples=["text/csv"])
+    bytes: int | None = Field(default=None, description="Size of the artefact in bytes.")
+    expires_at: str | None = Field(default=None, description=f"When `href` stops working. {_TIMESTAMP}")
 
 
+# TW-RES-002, §3.3
 class Result(BaseModel):
-    """TW-RES-002. `kind` names the component that collects this; taskwire never validates the set."""
+    """The outcome an operation parks for the client to collect."""
 
-    kind: str
-    params: dict[str, Any] | None = None
-    label: Text | None = None
-    value: Any = None
-    ref: ResultRef | None = None
+    kind: str = Field(
+        description="Which frontend component collects the result; equals the operation's `result_kind`. "
+        "Shipped kinds: `taskwire.download` (a `ref` to fetch), `taskwire.panel` (a `value` to render) and "
+        "`taskwire.dialog` (`params.dialog_id` names a component to open); any other is the application's.",
+        examples=["taskwire.download"],
+    )
+    params: dict[str, Any] | None = Field(default=None, description="Parameters for the collecting component.")
+    label: Text | None = Field(default=None, description="What a menu entry for the result shows.")
+    value: Any = Field(default=None, description="Inline result value, any JSON.")
+    ref: ResultRef | None = Field(default=None, description="Pointer to an artefact the application serves.")
 
 
+# TW-DLG-005
 class Button(BaseModel):
-    """A choice on a dialog. There is no `default` flag - a default button's only use is answering a
-    timeout, and there are no timeouts (TW-DLG-005)."""
+    """A choice on a dialog."""
 
-    id: str
-    label: Text | None = None
-    style: str | None = None
+    id: str = Field(description="The button's id, sent back as `DialogReply.button`.", examples=["overwrite"])
+    label: Text | None = Field(default=None, description="What the button shows.")
+    style: str | None = Field(
+        default=None,
+        description="Presentation hint for the frontend; `primary`, `danger` and `default` are recommended.",
+    )
 
 
+# TW-DLG-004
 class Input(BaseModel):
-    """A value collected alongside the choice. `type` is one of TW-DLG-004's four and nothing more."""
+    """A value a dialog collects alongside the choice."""
 
-    name: str
-    type: str = "string"
-    required: bool = False
-    label: Text | None = None
+    name: str = Field(description="Key of the value in `DialogReply.values`.")
+    type: str = Field(
+        default="string",
+        description="Type of the value: `string`, `number`, `boolean` or `date` (a string).",
+        examples=["string"],
+    )
+    required: bool = Field(default=False, description="Whether a reply must carry a non-null value for it.")
+    label: Text | None = Field(default=None, description="What the input shows.")
 
 
 class DialogReply(BaseModel):
-    """The body of an answer: which button, and the values collected with it."""
+    """An answer to a dialog: the chosen button and the values collected with it."""
 
-    button: str
-    values: dict[str, Any] = Field(default_factory=dict)
+    button: str = Field(description="`id` of one of the dialog's buttons.", examples=["overwrite"])
+    values: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The dialog's inputs by `name`. A required input needs a non-null value; a value has its "
+        "input's JSON type (a number, a boolean, or a string for `string` and `date`).",
+        examples=[{"comment": "keep the newer one"}],
+    )
 
 
+# TW-DLG-001, §3.4
 class DialogRequest(BaseModel):
-    """One asking. `id` is *this asking*, `dialog_id` is *which question* (TW-DLG-001).
+    """A question an operation asks the user."""
 
-    Only `id` is ever a key or a path segment. Keying by `dialog_id` would let two concurrent
-    operations rendering the same component answer each other's question (TW-DLG-002).
-    """
+    id: str = Field(description="Id of this asking of the question, a UUID; the `did` of the reply path.")
+    dialog_id: str = Field(
+        description="Which question: the frontend component that renders it. Not unique; never a path segment.",
+        examples=["acme.overwrite"],
+    )
+    buttons: list[Button] = Field(default_factory=list, description="The choices, in display order.")
+    inputs: list[Input] = Field(default_factory=list, description="Values collected alongside the choice.")
+    params: dict[str, Any] | None = Field(default=None, description="Parameters for the rendering component.")
+    state: DialogState = Field(
+        default=DialogState.OPEN,
+        description="`open` (awaiting a reply), `answered` (a reply won, see `reply`) or `cancelled` (the "
+        "operation withdrew the question).",
+    )
+    created_at: str = Field(description=f"When the question was asked. {_TIMESTAMP}")
+    reply: DialogReply | None = Field(default=None, description="The winning reply, once `answered`.")
 
-    id: str
-    dialog_id: str
-    buttons: list[Button] = Field(default_factory=list)
-    inputs: list[Input] = Field(default_factory=list)
-    params: dict[str, Any] | None = None
-    state: DialogState = DialogState.OPEN
-    created_at: str
-    reply: DialogReply | None = None
 
-
+# §3.2, TW-PROG-001, TW-PROG-006, TW-PROG-012
 class Progress(BaseModel):
-    """§3.2, the one document per operation.
+    """The state and display fields of one operation."""
 
-    `state` is never written by a caller - it is derived from lifecycle events and nothing else
-    (TW-PROG-012) - and `result_kind` / `origin_session` / `origin_connection` are fixed at the
-    opening write and never rewritten (TW-PROG-006).
-    """
+    state: ProgressState = Field(
+        default=ProgressState.QUEUED,
+        description="Lifecycle state, set by the library: `queued` (accepted, not yet executing), `running` "
+        "(executing), `waiting_input` (holds an open dialog or an uncollected result), `done` (finished, "
+        "any result released), `failed` (ended by an error, see `error`) or `cancelled` (stopped after a cancel "
+        "request).",
+    )
+    percent: float | None = Field(
+        default=None, ge=0, le=100, description="Completion from 0 to 100; `null` when indeterminate."
+    )
+    title: Text | None = Field(default=None, description="The operation's name.")
+    label: Text | None = Field(default=None, description="The current step.")
+    icon: str | None = Field(default=None, description="Icon name, interpreted by the frontend.")
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form values of the operation, at most `max_data_bytes` encoded (16 KiB by default).",
+    )
+    error: Error | None = Field(default=None, description="Why the operation failed; present only when `failed`.")
+    result: Result | None = Field(default=None, description="The parked result, until it is collected or dismissed.")
+    result_kind: str | None = Field(
+        default=None,
+        description="The result kind declared at start. `null` marks a private operation: the register lists "
+        "it only while it holds an open dialog, and its progress is pushed only to `origin_connection`.",
+    )
+    origin_session: str = Field(default="", description="The namespace the operation was started in.")
+    origin_connection: str | None = Field(
+        default=None, description="The socket connection that started the operation, or `null`."
+    )
+    created_at: str = Field(description=f"When the operation was started. {_TIMESTAMP}")
+    updated_at: str = Field(description=f"When the document last changed. {_TIMESTAMP}")
 
-    state: ProgressState = ProgressState.QUEUED
-    percent: float | None = None
-    title: Text | None = None
-    label: Text | None = None
-    icon: str | None = None
-    data: dict[str, Any] = Field(default_factory=dict)
-    error: Error | None = None
-    result: Result | None = None
-    result_kind: str | None = None
-    origin_session: str = ""
-    origin_connection: str | None = None
-    created_at: str
-    updated_at: str
 
-
+# §3.6
 class Snapshot(BaseModel):
-    """§3.6. The complete current state of one operation - which is what makes reconnect a single GET."""
+    """The complete current state of one operation."""
 
-    v: int = WIRE_VERSION
-    token: str
-    rev: int
-    progress: Progress
-    dialogs: list[DialogRequest] = Field(default_factory=list)
-    cancel_requested: bool = False
-    server_time: str
-    poll_after_ms: int = 5000
+    v: int = Field(default=WIRE_VERSION, description="Wire protocol version.", examples=[WIRE_VERSION])
+    token: str = Field(description="The operation token, a UUID.")
+    rev: int = Field(description="Revision of the progress document; grows with every change.")
+    progress: Progress = Field(description="State and display fields.")
+    dialogs: list[DialogRequest] = Field(
+        default_factory=list, description="Every dialog of the operation, open and settled."
+    )
+    cancel_requested: bool = Field(
+        default=False, description="Whether a cancel was requested; once `true`, it stays `true`."
+    )
+    server_time: str = Field(description=f"The server's clock at the time of the read. {_TIMESTAMP}")
+    poll_after_ms: int = Field(default=5000, ge=0, description=_POLL_AFTER_MS)
 
 
+# §3.7, TW-KEY-001, TW-REG-004, TW-DEL-014
 class OperationSummary(BaseModel):
-    """§3.7. One register row: the whole snapshot, plus what a list view needs lifted out of it.
+    """One entry of the register: an operation's snapshot and fields lifted from it."""
 
-    `token` is the pk the viewset is keyed on. That is not a convenience - the token IS the identity
-    of an operation, and there is no other key anywhere in the system (TW-KEY-001).
-    """
+    token: str = Field(description="The operation token, a UUID.")
+    snapshot: Snapshot = Field(description="The operation's complete snapshot.")
+    result_kind: str | None = Field(default=None, description="`progress.result_kind` of the snapshot.")
+    origin_session: str = Field(default="", description="`progress.origin_session` of the snapshot.")
+    result: Result | None = Field(default=None, description="`progress.result` of the snapshot.")
+    needs_attention: bool = Field(
+        default=False,
+        description="Whether the operation waits for the user: it holds an open dialog or an uncollected result.",
+    )
+    progress_delivery: bool = Field(
+        default=True,
+        description="Whether the connection named by `X-Taskwire-Connection` receives this operation's progress "
+        "pushes; without that header, whether the application's push filter allows them.",
+    )
 
-    token: str
-    snapshot: Snapshot
-    result_kind: str | None = None
-    origin_session: str = ""
-    result: Result | None = None
-    needs_attention: bool = False
-    progress_delivery: bool = True
 
-
+# §3.8a, TW-REG-011 to TW-REG-014
 class Aggregate(BaseModel):
-    """§3.8a. Counts and a dominated state.
+    """Counts over the register and its dominant state. Carries no percentage."""
 
-    **There is no `percent` and no rule may add one** (TW-REG-011). Two operations' self-reported
-    percentages are not commensurable - one is 40 % through a row count, the other through a byte
-    count - so any figure derived across them is invented. The field is absent from the wire rather
-    than null on it, which is why it is absent from this model too.
-    """
+    state: ProgressState = Field(
+        description="`waiting_input` if any entry waits for the user, else `running` if any runs, else `queued`."
+    )
+    title: Text = Field(
+        default_factory=lambda: Text(key="taskwire.aggregate.title"), description="Key `taskwire.aggregate.title`."
+    )
+    data: dict[str, int] = Field(
+        default_factory=dict,
+        description="Entry counts: `total`, `queued`, `running` and `waiting_input`.",
+        examples=[{"total": 3, "queued": 1, "running": 1, "waiting_input": 1}],
+    )
+    label: Text | None = Field(
+        default=None,
+        description="The title, else the current step, of the oldest queued or running entry; `null` without one.",
+    )
+    updated_at: str = Field(description=f"When the aggregate was computed. {_TIMESTAMP}")
 
-    state: ProgressState
-    title: Text = Field(default_factory=lambda: Text(key="taskwire.aggregate.title"))
-    data: dict[str, int] = Field(default_factory=dict)
-    label: Text | None = None
-    updated_at: str
 
-
+# §3.8, TW-REG-001, TW-REG-005, TW-REG-007
 class Register(BaseModel):
-    """§3.8. Every shared operation of one namespace, sorted, with its aggregate.
+    """The operations of the caller's namespace, with an aggregate over them."""
 
-    Returned by `GET {prefix}` rather than as a `list[OperationSummary]`: this document carries
-    `poll_after_ms`, which TW-REST-014 makes binding on the client's next poll, and the aggregate
-    computed over the same read.
-    """
+    v: int = Field(default=WIRE_VERSION, description="Wire protocol version.", examples=[WIRE_VERSION])
+    operations: list[OperationSummary] = Field(
+        default_factory=list,
+        description="Every shared operation that has not ended or holds an uncollected result, and every "
+        "private one that holds an open dialog: those that need attention first, then oldest first.",
+    )
+    aggregate: Aggregate | None = Field(default=None, description="Counts and state; `null` when empty.")
+    server_time: str = Field(description=f"The server's clock at the time of the read. {_TIMESTAMP}")
+    poll_after_ms: int = Field(default=5000, ge=0, description=_POLL_AFTER_MS)
 
-    v: int = WIRE_VERSION
-    operations: list[OperationSummary] = Field(default_factory=list)
-    aggregate: Aggregate | None = None
-    server_time: str
-    poll_after_ms: int = 5000
 
-
+# TW-REST-015
 class ErrorBody(BaseModel):
-    """The body of every error answer of the six endpoints, as `taskwire.rest` builds it."""
+    """The body of every error answer: the fields of fastapi-viewsets' `ApiErrorBody`, and `dialog`."""
 
     detail: str = Field(
-        description="What went wrong: `taskwire.not_found`, `taskwire.already_terminal`, "
-        "`taskwire.holds_an_uncollected_result`, `taskwire.no_uncollected_result`, `taskwire.already_answered` "
-        "or `taskwire.cancelled`; for a `422`, English text naming the problem."
+        description="English text of the error, interpolated from `detail_params`. Not translated.",
+        examples=["Operation not found."],
     )
-    code: str | None = Field(
-        default=None,
-        description="`taskwire.invalid_reply` on the `422` of a dialog reply; absent otherwise.",
-        examples=["taskwire.invalid_reply"],
+    detail_code: str = Field(
+        description="The error code: `taskwire.not_found`, `taskwire.already_terminal`, "
+        "`taskwire.holds_an_uncollected_result`, `taskwire.no_uncollected_result`, `taskwire.already_answered`, "
+        "`taskwire.cancelled` or `taskwire.invalid_reply`; `fastapi-viewsets.<code>` for an error of the "
+        "routing layer, such as `fastapi-viewsets.validation_failed`.",
+        examples=["taskwire.not_found"],
     )
-    params: dict[str, Any] | None = Field(
-        default=None,
-        description="On the `422` of a dialog reply, what failed: `reason` (`button_required`, `unknown_button`, "
-        "`values_not_an_object`, `input_required`, `unknown_input_type`, `wrong_input_type`) and, where it applies, "
-        "`button`, `input`, `type` and `expected`.",
+    detail_params: dict[str, Any] = Field(
+        description="The values `detail` was built from; `{}` without any. For `taskwire.invalid_reply`: "
+        "`reason` (`button_required`, `unknown_button`, `values_not_an_object`, `input_required`, "
+        "`unknown_input_type` or `wrong_input_type`) and, where it applies, `button`, `input`, `type` and "
+        "`expected`.",
         examples=[{"reason": "unknown_button", "button": "maybe"}],
+    )
+    field_errors: dict[str, Any] = Field(
+        description="Failures of a request that failed validation, by field; `{}` for every taskwire code.",
+        examples=[{}],
     )
     dialog: DialogRequest | None = Field(
         default=None,
-        description="The dialog in its settled state, with the winning reply, on the `409` and `410` of a "
-        "dialog reply (TW-DLG-010).",
+        description="Only on the `409` and `410` of a dialog reply: the dialog in its settled state, with the "
+        "winning reply on a `409`.",
     )
 
 
+# TW-CANCEL-003, TW-REST-009
 class Accepted(BaseModel):
-    """TW-CANCEL-003: a cancel request is an **acknowledgement**, never a completion.
+    """Acknowledgement of a cancel request; the operation's terminal `cancelled` state confirms the cancel."""
 
-    The operation stops when its own code next looks, which may be never - taskwire does not revoke
-    tasks, signal threads or interrupt blocking code (TW-CANCEL-009). Answering `202` with this
-    rather than `200` with a state is the protocol declining to claim otherwise.
-
-    Collect, dismiss and a dialog reply answer `204` and no body at all, so they have no model here:
-    what they changed is visible in the next read, and inventing a body for them would be a second
-    place for the same fact to be wrong.
-    """
-
-    detail: str | None = None
+    detail: Literal["taskwire.requested"] = Field(description="Always `taskwire.requested`.")

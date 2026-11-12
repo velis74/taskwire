@@ -6,7 +6,28 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.5] - 2026-11-12
+## [0.5.0] - 2026-11-12
+
+### Added
+
+- The OpenAPI documents of `register_taskwire_rest()` and `taskwire.contrib.fastapi.router()` describe
+  the whole REST surface: a summary, description and tag per operation, the `token` and `did` path
+  parameters and the optional `X-Taskwire-Connection` header, a description on every field of every
+  schema, and every response status with its body.
+- `taskwire.contrib.fastapi.router()` declares the same response models, success statuses (`202`,
+  `204`), error responses and typed dialog reply body as `register_taskwire_rest()`.
+- `TaskwireMiddleware` declares the optional `X-Taskwire-Token` header on every operation of the
+  application's viewsets (fastapi-viewsets 0.15.2 `Middleware.openapi_parameters`).
+
+### Changed
+
+- **Breaking:** every REST error answer, through every adapter and over muxws, has the fields of
+  fastapi-viewsets' `ApiErrorBody`: `detail` (English text), `detail_code` (`taskwire.<code>`),
+  `detail_params` and `field_errors`, plus `dialog` on the `409` and `410` of a dialog reply. The
+  fields `code` and `params` are gone, and `detail` no longer carries the code. The migration guide
+  has the field mapping.
+- The optional npm peer dependency `@dynamicforms/fastapi-viewsets` is `>=0.13.0 <0.16`: fastapi-viewsets
+  0.15 installs beside taskwire.
 
 ### Fixed
 

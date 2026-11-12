@@ -21,7 +21,7 @@ from ..rest import (
     dismiss_result,
     get_operations,
     get_snapshot,
-    NOT_FOUND,
+    not_found,
     reply_to_dialog,
     request_cancel,
 )
@@ -46,7 +46,10 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
             chunks += message.get("body", b"")
             if not message.get("more_body"):
                 break
-        return json.loads(chunks) if chunks else {}
+        try:
+            return json.loads(chunks) if chunks else {}
+        except ValueError:
+            return {}
 
     async def application(scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":  # pragma: no cover - only HTTP is served here
@@ -61,7 +64,7 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
         )
 
         if not path.startswith(mount):
-            status, payload = 404, {"detail": NOT_FOUND}
+            status, payload = not_found()
         elif scope["method"] == "POST":
             rest = path[len(mount) :].strip("/").split("/")
             if len(rest) == 3 and rest[1] == "dialogs":
@@ -73,9 +76,9 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
             elif len(rest) == 2 and rest[1] == "dismiss":
                 status, payload = await dismiss_result(client, rest[0])
             else:
-                status, payload = 404, {"detail": NOT_FOUND}
+                status, payload = not_found()
         elif scope["method"] != "GET":
-            status, payload = 404, {"detail": NOT_FOUND}
+            status, payload = not_found()
         else:
             rest = path[len(mount) :].strip("/")
             # The prefix itself is the register (TW-REST-004).
@@ -84,17 +87,11 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
             else:
                 status, payload = await get_operations(client)
 
-        body = json.dumps(payload or {}).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": status,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("latin-1")),
-                ],
-            }
-        )
+        body = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        headers = [(b"content-length", str(len(body)).encode("latin-1"))]
+        if payload is not None:
+            headers.insert(0, (b"content-type", b"application/json"))
+        await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
     return application
