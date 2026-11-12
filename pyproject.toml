@@ -30,17 +30,18 @@ dependencies = []   # core has no runtime dependencies (TW-CORE-006)
 redis = ["redis>=5.0"]
 celery = ["celery>=5.3", "nest_asyncio>=1.6"]
 fastapi = ["fastapi>=0.100"]
-# >=0.13.0, the release the npm peer range names. It provides: namespaced error codes, forwarded by
+# >=0.15.3: `Middleware.openapi_parameters_for()`, through which `TaskwireMiddleware` declares its header
+# on the operations it tracks only. It also provides: namespaced error codes, forwarded by
 # `TaskwireMiddleware` verbatim; one error body for every viewset route; the execution hook and the
 # Idempotency-Key helpers; a muxws command that runs its action to the end when its stream ends early
 # (TW-CALL-*); delivery filters that run on poll as on push (TW-EVT-004); and executor outcomes as
 # library exceptions plus `Middleware.executor_started()` / `on_transition()`, reported on a process
 # exit in every pool, so `contrib/viewsets.py` imports no Celery (TW-CALL-101, TW-CALL-105).
-viewsets = ["dynamicforms-fastapi-viewsets>=0.13.0"]
+viewsets = ["dynamicforms-fastapi-viewsets>=0.15.3"]
 # The six request/response calls run as viewset commands over the socket (TW-REST-004).
 # muxws >=0.4.1: `Peer.close()` flushes queued frames, so the `goaway` of `goaway_if_stale`
 # (TW-WS-007) reaches the client.
-muxws = ["muxws>=0.4.1", "dynamicforms-fastapi-viewsets[muxws]>=0.13.0"]
+muxws = ["muxws>=0.4.1", "dynamicforms-fastapi-viewsets[muxws]>=0.15.3"]
 
 [dependency-groups]
 # Everything the test suite, the linters and the demo need.

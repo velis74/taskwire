@@ -54,10 +54,10 @@ taskwire's routes exist on muxws; `register_taskwire_muxws` decides whether one 
 
 ## Tracking viewset calls
 
-Requires `dynamicforms-fastapi-viewsets >= 0.13.0`. Every call a fastapi-viewsets proxy makes carries
+Requires `dynamicforms-fastapi-viewsets >= 0.15.3`. Every call a fastapi-viewsets proxy makes carries
 an `Idempotency-Key`, so every viewset command is a [tracked call](./tracking-calls.md) without the
-frontend sending a token of its own. With fastapi-viewsets 0.15.2 or later, each operation of the
-application's viewsets declares the optional `X-Taskwire-Token` header in OpenAPI.
+frontend sending a token of its own. Each tracked operation of the application's viewsets declares the
+optional `X-Taskwire-Token` header in OpenAPI.
 `TaskwireMiddleware` is the binding:
 
 | Step | Written by | Where |
@@ -170,7 +170,7 @@ describes the topics, who is admitted to each, and the setup.
 
 ## The npm package
 
-`@dynamicforms/fastapi-viewsets` `>=0.13.0 <0.15` is an optional peer dependency of the npm package, imported
+`@dynamicforms/fastapi-viewsets` `>=0.13.0 <0.16` is an optional peer dependency of the npm package, imported
 by `taskwire/muxws` and `taskwire/fastapi-viewsets`. Both send the six calls through its
 `MuxwsProxyImpl`. `taskwire/muxws` hands the event streams on the peer to its `handleEventStream`, so
 one socket carries taskwire's pushes and the event client's events (see

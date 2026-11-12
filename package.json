@@ -128,7 +128,7 @@
     }
   },
   "devDependencies": {
-    "@dynamicforms/fastapi-viewsets": "^0.15.2",
+    "@dynamicforms/fastapi-viewsets": "^0.15.3",
     "@dynamicforms/vuetify-inputs": "^0.15.0",
     "@dynamicforms/vuetify-modal-form-kit": "^0.11.0",
     "@types/node": "^26",

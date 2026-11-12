@@ -16,8 +16,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   schema, and every response status with its body.
 - `taskwire.contrib.fastapi.router()` declares the same response models, success statuses (`202`,
   `204`), error responses and typed dialog reply body as `register_taskwire_rest()`.
-- `TaskwireMiddleware` declares the optional `X-Taskwire-Token` header on every operation of the
-  application's viewsets (fastapi-viewsets 0.15.2 `Middleware.openapi_parameters`).
+- `TaskwireMiddleware` declares the optional `X-Taskwire-Token` header on each operation of the
+  application's viewsets it tracks: not on an action configured `{TaskwireMiddleware: False}` and not on
+  the taskwire endpoints.
 
 ### Changed
 
@@ -28,6 +29,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   has the field mapping.
 - The optional npm peer dependency `@dynamicforms/fastapi-viewsets` is `>=0.13.0 <0.16`: fastapi-viewsets
   0.15 installs beside taskwire.
+- The `viewsets` and `muxws` extras require `dynamicforms-fastapi-viewsets>=0.15.3`
+  (`Middleware.openapi_parameters_for()`).
 
 ### Fixed
 

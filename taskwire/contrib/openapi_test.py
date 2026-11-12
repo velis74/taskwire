@@ -11,13 +11,14 @@ import pytest
 pytest.importorskip("fastapi_viewsets")
 
 from fastapi import APIRouter, FastAPI  # noqa: E402
+from fastapi_viewsets.action_configuration import action_configuration  # noqa: E402
 from fastapi_viewsets.conf import settings as viewset_settings  # noqa: E402
 from fastapi_viewsets.decorators.route_viewset import route_viewset  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from taskwire.contrib import schema  # noqa: E402
 from taskwire.contrib.fastapi import router  # noqa: E402
-from taskwire.contrib.viewsets import register_taskwire_rest  # noqa: E402
+from taskwire.contrib.viewsets import register_taskwire_rest, TaskwireMiddleware  # noqa: E402
 from taskwire.headers import TOKEN_HEADER  # noqa: E402
 
 PREFIX = "/taskwire"
@@ -108,12 +109,15 @@ class Jobs:
     async def export(self) -> dict:
         return {}
 
+    @__router.post("ping", summary="Ping", description="Answers at once.")
+    @action_configuration({TaskwireMiddleware: False})
+    async def ping(self) -> dict:
+        return {}
+
 
 def test_the_token_header_is_declared_on_the_applications_calls_only() -> None:
-    """With call tracking, every application viewset operation declares `X-Taskwire-Token`; the taskwire
-    endpoints, whose calls are not tracked, do not."""
-    from taskwire.contrib.viewsets import TaskwireMiddleware
-
+    """With call tracking, an application viewset operation declares `X-Taskwire-Token`; one configured
+    untracked and the taskwire endpoints, whose calls are not tracked, do not."""
     viewset_settings.viewsets_command_middleware = [TaskwireMiddleware()]
     app = FastAPI()
     api = APIRouter()
@@ -126,6 +130,7 @@ def test_the_token_header_is_declared_on_the_applications_calls_only() -> None:
         return [p["name"] for p in paths[path][method].get("parameters", []) if p["in"] == "header"]
 
     assert TOKEN_HEADER in headers("/jobs/export", "post")
+    assert TOKEN_HEADER not in headers("/jobs/ping", "post")
     assert all(
         TOKEN_HEADER not in headers(path, method)
         for path, methods in paths.items()

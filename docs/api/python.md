@@ -342,7 +342,7 @@ calls `track_viewset_calls()`; without it, it appends `taskwire_context_processo
 
 ### Tracked viewset calls
 
-Requires `dynamicforms-fastapi-viewsets >= 0.13.0`.
+Requires `dynamicforms-fastapi-viewsets >= 0.15.3`.
 
 ```python
 from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_processor, track_viewset_calls

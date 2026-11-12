@@ -430,16 +430,16 @@ wheels = [
 
 [[package]]
 name = "dynamicforms-fastapi-viewsets"
-version = "0.15.2"
+version = "0.15.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/aa/53/02d9a9fb6cf54c54b18e6d3142a9bc817d4118c38d35dcd2be93f1da534f/dynamicforms_fastapi_viewsets-0.15.2.tar.gz", hash = "sha256:7438c6ae528b6e4b391cedf532cb32179add2f8bdff825d833afa82bd67d60b2", size = 136398, upload-time = "2026-11-12T19:22:03.589Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/60/52/00ad3c1c7bb16e3d1006d421d34a4a99c5d01b092c4edb3b51e443b97f95/dynamicforms_fastapi_viewsets-0.15.3.tar.gz", hash = "sha256:0d25d24f7e153416517f4d50df715d9dfa4730f38795d87f83d7053333cbd1d4", size = 136698, upload-time = "2026-11-12T20:05:43.545Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/d2/5366e4bb1b3b61196c10ddce70727711b09f4f7a4ec78b31cc4a51aff700/dynamicforms_fastapi_viewsets-0.15.2-py3-none-any.whl", hash = "sha256:0aae170841f3008740850f5ec7774e557ed439573ce6b141b12074d13a434cdb", size = 166540, upload-time = "2026-11-12T19:22:02.207Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/fe/2347cddc06bc003d003c20ae1ac194a48844ea4d37e85739b1d582beede9/dynamicforms_fastapi_viewsets-0.15.3-py3-none-any.whl", hash = "sha256:35400e7732c844e0f938e1e979746ea52bdfad4e462ded5417f5c5d30fcd24e5", size = 166886, upload-time = "2026-11-12T20:05:41.988Z" },
 ]
 
 [package.optional-dependencies]
@@ -1173,8 +1173,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3" },
-    { name = "dynamicforms-fastapi-viewsets", marker = "extra == 'viewsets'", specifier = ">=0.13.0" },
-    { name = "dynamicforms-fastapi-viewsets", extras = ["muxws"], marker = "extra == 'muxws'", specifier = ">=0.13.0" },
+    { name = "dynamicforms-fastapi-viewsets", marker = "extra == 'viewsets'", specifier = ">=0.15.3" },
+    { name = "dynamicforms-fastapi-viewsets", extras = ["muxws"], marker = "extra == 'muxws'", specifier = ">=0.15.3" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.100" },
     { name = "muxws", marker = "extra == 'muxws'", specifier = ">=0.4.1" },
     { name = "nest-asyncio", marker = "extra == 'celery'", specifier = ">=1.6" },

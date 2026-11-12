@@ -33,7 +33,7 @@ The endpoints run through fastapi-viewsets' middleware chain and appear in its `
 import os
 import weakref
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -239,6 +239,13 @@ class TaskwireMiddleware(Middleware):
         },
     )
 
+    def openapi_parameters_for(self, viewset: type, _action: str, configuration: Any) -> Sequence[dict[str, Any]]:
+        """`TOKEN_HEADER` on every operation this middleware tracks: none of `TaskwireViewSet` and none
+        configured `False`."""
+        if configuration is False or issubclass(viewset, TaskwireViewSet):
+            return ()
+        return self.openapi_parameters
+
     def __init__(self, *, timeout_errors: tuple[type[BaseException], ...] | None = None) -> None:
         self.timeout_errors = timeout_errors if timeout_errors is not None else (ActionInterruptedError,)
         self._executor_pids: set[int] = set()
@@ -362,20 +369,12 @@ def register_taskwire_rest(
     _registered[:] = [ref for ref in _registered if ref() is not None]
     if not any(ref() is router for ref in _registered):
         _registered.append(weakref.ref(router))
-        # `route_viewset` adds the `openapi_parameters` of the listed middleware to every operation it
-        # routes. Calls to these endpoints are not tracked, so `TaskwireMiddleware` is left out while they
-        # are routed; the middleware chain is read per call, not here.
-        listed = viewset_settings.viewsets_command_middleware
-        viewset_settings.viewsets_command_middleware = [m for m in listed if not isinstance(m, TaskwireMiddleware)]
-        try:
-            route_viewset(
-                router,
-                base_path if base_path is not None else settings.rest_prefix,
-                pk_field_name="token",
-                register_muxws=register_muxws,
-            )(TaskwireViewSet)
-        finally:
-            viewset_settings.viewsets_command_middleware = listed
+        route_viewset(
+            router,
+            base_path if base_path is not None else settings.rest_prefix,
+            pk_field_name="token",
+            register_muxws=register_muxws,
+        )(TaskwireViewSet)
 
     if track_calls:
         track_viewset_calls()
