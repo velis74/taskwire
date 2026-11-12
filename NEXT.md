@@ -1,7 +1,6 @@
 # What is next, and why
 
-Read `CLAUDE.md` first for orientation; this file is only the queue. An item leaves it when it is
-done, not when it is ticked.
+The queue of open work. An item leaves it when it is done, not when it is ticked.
 
 ---
 

@@ -10,9 +10,7 @@ search: false
 file in this directory is a **work order**: one milestone, self-contained, with the rules it must
 satisfy reproduced in full, the files to create, the tests to write, and a "done when" checklist.
 
-[`CLAUDE.md`](./CLAUDE.md) in this directory carries the working rules for an implementing agent -
-how to work a milestone, when to stop and ask, and the `GAPS.md` deliverable. This file is the map:
-what each brief delivers and what order they go in.
+This file is the map: what each brief delivers and what order they go in.
 
 ## How to use these (read this before you open a brief)
 
