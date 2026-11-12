@@ -4,20 +4,28 @@
 
 ```python
 from taskwire import (
-    operation, progress, ask, t, new_token, configure, migrate_namespace,
-    Reporter, Result, Text, Input, DialogAnswer,
-    OperationCancelled, DialogVanished,
-    mark_queued, mark_failed, settings,
-    MemoryStore, NullTransport, LocalTransport,
+    operation, progress, ask, current_reporter, t, new_token, __version__,
+    configure, configure_executor, configured, reset_configuration, settings, Settings,
+    migrate_namespace, mark_queued, mark_failed,
+    Reporter, SyncReporter, InertReporter, OperationCancelled, DialogVanished,
+    Text, Result, ResultRef, Button, Input, DialogRequest, DialogReply, DialogAnswer, DialogState,
+    Progress, ProgressState, Error, Snapshot, Register, OperationSummary, Aggregate,
+    Envelope, EnvelopeKind,
+    downloadable_result, panel_result, dialog_result, declared_result_kind, declared_result_params,
+    aggregate, build_register,
+    MemoryStore, TaskwireStore, Commit, DialogResolution, key, run_conformance,
+    NullTransport, LocalTransport, TaskwireTransport,
     start_taskwire_reader, stop_taskwire_reader, check_taskwire_readers,
     TOKEN_HEADER, CONNECTION_HEADER,
-    Client, OperationRef, Commit,
-    Call, call_token, receive_call, execute_call, hand_off,
+    Client, OperationRef,
+    Call, call_token, receive_call, execute_call, end_call, hand_off,
     ERROR_NAMESPACE, ERROR_NAMESPACE_FASTAPI_VIEWSETS,
     DISPATCH_FAILED, NOT_EXECUTED, DIALOG_TIMEOUT, INTERRUPTED, HTTP_STATUS,
     UNHANDLED_EXCEPTION, FAILED, CANCELLED, exception_name, unhandled_exception_error,
 )
 ```
+
+`__version__` is the installed package version.
 
 `ERROR_NAMESPACE` (`"taskwire"`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`"fastapi-viewsets"`) are the
 namespaces of [Error codes](../guide/error-codes.md), and the code constants are taskwire's codes.
@@ -31,13 +39,14 @@ def configure(*, store=None, transport=None, session_resolver=None,
               push_filter=None, result_released=None) -> None
 ```
 
-Wires the library to its store, its transport and the application's callables. **Every argument is
-optional and `None` means "leave this one as it is"**, so a test or an application can replace one
-thing without restating the rest; there is no way to clear a value by passing `None`.
+Wires the library to its store, its transport and the application's callables, held on
+`configured`. Every argument is optional and `None` leaves that value as it is, so a value cannot be
+cleared by passing `None`. `reset_configuration()` returns the process to its unconfigured state
+(for tests).
 
-`session_resolver` is the only producer of a namespace; return the account when a user is logged in
-and the session otherwise. Returning `None` is legal and means "no taskwire for this caller at all" —
-every operation becomes a no-op and the REST layer answers 404.
+`session_resolver` produces the namespace; return the account when a user is logged in and the
+session otherwise. Returning `None` opts the caller out of taskwire: every operation becomes a no-op
+and the REST layer answers 404.
 
 ### `operation(...)`
 
@@ -49,31 +58,27 @@ def operation(token: str | None, *, session: str | None = None,
               store: Any = None, clock: Callable[[], float] | None = None) -> OperationScope
 ```
 
-An **async and synchronous** context manager. Entering writes `running`; leaving writes exactly one
-terminal state, which takes the entry out of the register in the same step. It re-raises in every
-failure case.
+An async and synchronous context manager. Entering writes `running`; leaving writes exactly one
+terminal state, which takes the entry out of the register in the same step. It re-raises every
+exception.
 
-That write leaves a **tombstone**: the document stays readable at `GET /taskwire/{token}` for
-`settings.tombstone_ttl`, carrying the terminal state, its `error` and the dialogs the terminal write
-withdrew. It is in no register and no count — only the token reaches it — and it is how a client that
-was not watching learns whether the operation was `done`, `failed` or `cancelled` rather than merely
-gone.
+The terminal document stays readable at `GET /taskwire/{token}` for `settings.tombstone_ttl` (the
+tombstone), carrying the terminal state, its `error` and the dialogs the terminal write withdrew. It
+is in no register and no count; only the token reaches it.
 
-The one exception to "one terminal state" is a parked result: an operation whose body called
-`set_result()` leaves in `waiting_input` holding the result, and the release is what ends it
-(TW-RES-004, see [Collectable results](../guide/results.md)).
+An operation whose body called `set_result()` leaves in `waiting_input` holding the result instead,
+and the release ends it (see [Collectable results](../guide/results.md)).
 
-`session` is an already-resolved namespace **string** — never a user, a request or an identity
-object. `token=None` yields a live-looking but inert reporter, so callers never branch; `set()` and
-`done()` write nothing on it, while `ask()` and `set_result()` raise `ValueError`, because there is
-nobody to arbitrate a question and nothing to park a result on.
+`session` is an already-resolved namespace string, not a user, a request or an identity object.
+`token=None` yields an `InertReporter`: `set()` and `done()` write nothing on it, while `ask()` and
+`set_result()` raise `ValueError`. A `session_resolver` that returned `None` yields one too.
 
-`connection` fixes `origin_connection` for the operation's whole life, which is the whole of a
-private operation's push scope (TW-PRIV-001). `store` runs the operation against a store other than
+`connection` fixes `origin_connection` for the operation's whole life; a private operation's
+progress is pushed to that connection only. `store` runs the operation against a store other than
 the configured one, and `clock` replaces the monotonic clock the throttle reads.
 
-The synchronous form runs a private event loop it owns for that thread, which is what makes it
-usable from a Celery worker; `reporter.sync` runs each coroutine on that loop.
+The synchronous form runs a private event loop it owns for that thread, so it is usable from a
+Celery worker; `reporter.sync` (a `SyncReporter`) runs each coroutine on that loop.
 
 ### `mark_queued(...)` / `mark_failed(...)`
 
@@ -86,11 +91,10 @@ async def mark_failed(token, *, session, error: BaseException | Error, store=Non
 The web side's writes. `mark_queued` fixes `result_kind` and `origin_connection` for the operation's
 whole life; the worker that later enters `operation()` inherits them and cannot change them.
 
-`mark_failed` is the terminal write for a job that never reached a worker — a broker that refused the
-task, a command that raised before dispatch — and for an execution its executor ended from outside
-(`end_call`). It leaves exactly what `operation()`'s exit leaves: the open dialogs withdrawn, the
-entry out of the register, and a tombstone carrying `failed` and the `error` for `tombstone_ttl`, so
-the token the caller is already watching answers with the failure instead of hanging.
+`mark_failed` is the terminal write for a job that never reached a worker (a broker that refused the
+task, a command that raised before dispatch) and for an execution its executor ended from outside
+(`end_call`). It leaves what `operation()`'s exit leaves: the open dialogs withdrawn, the entry out
+of the register, and a tombstone carrying `failed` and the `error` for `tombstone_ttl`.
 
 ### `migrate_namespace(...)`
 
@@ -98,16 +102,15 @@ the token the caller is already watching answers with the failure instead of han
 async def migrate_namespace(from_ns: str, to_ns: str) -> int
 ```
 
-The **only** way operations change namespace, and the application is the only caller — on login,
-move the anonymous session's operations onto the account with one call, the same shape as merging a
-shopping cart. Returns how many were re-keyed (`0` when no store is configured). Idempotent,
-publishes nothing, and is not reachable over REST.
+Moves every operation of `from_ns` to `to_ns`, for example the anonymous session's operations onto
+the account on login; no other call changes an operation's namespace. Returns how many were re-keyed
+(`0` when no store is configured). Idempotent, publishes nothing, and is not reachable over REST.
 
 ## `Reporter`
 
 ```python
 async def set(*, percent=..., title=..., label=..., icon=..., data=...,
-              raise_on_cancel=None) -> None      # NO state= keyword
+              raise_on_cancel=None) -> None      # no state= keyword
 async def ask(dialog_id, *, buttons, inputs=None, params=None,
               title=None, text=None) -> DialogAnswer   # no timeout, no default
 async def set_result(result: Result) -> None
@@ -129,17 +132,76 @@ for an exception already on its way out of the block. Both write `code` as given
 prefixes its own codes with its own namespace ([Error codes](../guide/error-codes.md)).
 
 `set_result()` is the root reporter's and may be called at most once. It raises `ValueError` on a
-subtask, when the operation declared no `result_kind` — a private operation has nothing to collect
-and there is no promotion path — and when a result is already parked. `Result.kind` is the
-application's own string and taskwire never validates it.
+subtask, when the operation declared no `result_kind`, and when a result is already parked.
+`Result.kind` is the application's own string and taskwire does not validate it.
 
-**What `set()` raises.** `state=` raises `ValueError` — the state comes from the lifecycle and there
-is no keyword for it. Any other unexpected keyword raises `TypeError`, as an ordinary Python call
-would. `data` beyond `settings.max_data_bytes` raises `ValueError` naming the encoded size; nothing
-is ever truncated, and the same cap applies to dialog `params` and to a `Result`.
+`set()` raises `ValueError` for `state=`, and `TypeError` for any other unexpected keyword. `data`
+beyond `settings.max_data_bytes` raises `ValueError` naming the encoded size; nothing is truncated,
+and the same cap applies to dialog `params` and to a `Result`.
 
-`raise_on_cancel` on `set()` is **sticky**: it replaces the reporter's value for every later call,
+`raise_on_cancel` on `set()` is sticky: it replaces the reporter's value for every later call,
 and a subtask made after it inherits it. It falls back to `settings.raise_on_cancel`.
+
+`taskwire.progress` is a proxy to the reporter bound in the current context, and `taskwire.ask` is
+its `ask()`; with nothing bound, every method is a no-op. `current_reporter()` returns the bound
+reporter or `None`.
+
+`InertReporter` is the reporter of an operation with no token or no namespace: the display fields,
+the nesting and the terminal writes do nothing, and `ask()` and `set_result()` raise `ValueError`.
+
+## Models
+
+The wire documents are dataclasses in `taskwire.models`, each with `to_dict()` and
+`from_dict(raw)`. `to_dict()` omits an absent optional field.
+
+| Class | Fields |
+|---|---|
+| `Text` | `key`, `params`, `text`: any subset; `t(key=None, *, text=None, **params)` builds one |
+| `Error` | `code`, `message: Text`, `retryable = False` |
+| `ResultRef` | `href`, `mime`, `bytes`, `expires_at` (ISO 8601) |
+| `Result` | `kind`, `params`, `label: Text`, `value`, `ref: ResultRef` |
+| `Button` | `id`, `label: Text`, `style` |
+| `Input` | `name`, `type = "string"` (`string`, `number`, `boolean` or `date`), `required = False`, `label: Text` |
+| `DialogRequest` | `id` (this asking, server-minted), `dialog_id` (which question), `buttons`, `inputs`, `params`, `state: DialogState`, `created_at`, `reply: DialogReply` |
+| `DialogReply` | `button`, `values`: what a client sends |
+| `DialogAnswer` | `button`, `values`: what `ask()` returns |
+| `Progress` | `state: ProgressState`, `percent`, `title`, `label`, `icon`, `data`, `error`, `result`, `result_kind`, `origin_session`, `origin_connection`, `created_at`, `updated_at`; properties `is_terminal`, `is_shared` (a `result_kind` is declared) |
+| `Snapshot` | `token`, `rev`, `progress`, `dialogs`, `cancel_requested`, `server_time`, `poll_after_ms`, `v`; properties `open_dialogs`, `needs_attention` (an open dialog or an uncollected result) |
+| `OperationSummary` | one register row: `token`, `snapshot`, `result_kind`, `origin_session`, `result`, `needs_attention`, `progress_delivery` |
+| `Aggregate` | `state`, `data` (`total`, `queued`, `running`, `waiting_input`), `title`, `label`, `updated_at`; no `percent` |
+| `Register` | `operations`, `aggregate` (`None` when empty), `server_time`, `poll_after_ms`, `v` |
+| `Envelope` | `token`, `rev`, `kind: EnvelopeKind`, `body`, `v` |
+
+| Enum | Values |
+|---|---|
+| `ProgressState` | `queued`, `running`, `waiting_input`, `done`, `failed`, `cancelled` |
+| `DialogState` | `open`, `answered`, `cancelled` |
+| `EnvelopeKind` | `progress`, `dialog.open`, `dialog.close`, `cancel` and `snapshot` are pushed; `dialog.reply` and `watch` are sent by the client only |
+
+`Result.download(*, href, mime=None, bytes=None, expires_at=None, label=None)` has kind
+`taskwire.download`, `Result.panel(kind, value, *, label=None)` the application's kind, and
+`Result.dialog(dialog_id, *, params=None)` kind `taskwire.dialog` with `params.dialog_id`.
+
+`aggregate(snapshots) -> Aggregate | None` computes the counts and the dominant state of a register,
+and `build_register(snapshots, client) -> Register` assembles the document `GET {prefix}` returns:
+sorted, with `poll_after_ms` and the client's `progress_delivery`.
+
+`taskwire.contrib.schema` holds pydantic mirrors of these documents, plus `ErrorBody` and `Accepted`,
+for the OpenAPI schema of `register_taskwire_rest`; they emit an absent optional field as `null`.
+
+## Result decorators
+
+```python
+@downloadable_result                    # result_kind="taskwire.download"
+@panel_result(kind)                     # result_kind=kind
+@dialog_result(dialog_id)               # result_kind="taskwire.dialog", params {"dialog_id": dialog_id}
+declared_result_kind(fn) -> str | None
+declared_result_params(fn) -> dict | None
+```
+
+Each decorator declares the `result_kind` of the operation a task or an action opens, so the opening
+`queued` write carries it; it does nothing else. `declared_result_kind` and `declared_result_params`
+read the declaration back, `None` when there is none; only `dialog_result` sets params.
 
 ## Who is asking: `push_filter`, `Client`, `OperationRef`
 
@@ -149,14 +211,13 @@ def push_filter(client: Client, operation: OperationRef) -> bool
 
 The application's own predicate, consulted for each pushed envelope. `Client` carries `session`,
 `connection` and at most one of `peer` / `request` — either names one caller, both name none, and
-constructing one with both raises. A `Client` with neither is ordinary: that is what a caller
-reaching `taskwire.rest` directly has. `OperationRef` carries `token`, `progress` and the
-`data` and `result_kind` shorthands a predicate almost always keys on.
+constructing one with both raises. A `Client` with neither is what a caller reaching
+`taskwire.rest` directly has. `OperationRef` carries `token`, `progress` and the `data` and
+`result_kind` shorthands.
 
-Two properties are load-bearing. **An exception out of the predicate is treated as `True`**: it is a
-display optimisation, and a broken one must degrade to sending more rather than less. And it is
-**not access control** — it runs after the namespace has already decided what the caller may read, so
-neither it nor a client's own override can raise the ceiling.
+An exception raised by the predicate is treated as `True`, so a broken predicate sends more, not
+less. The predicate is not access control: it runs after the namespace has decided what the caller
+may read, so neither it nor a client's override can widen that.
 
 A client's declared overrides win over the predicate: `false` suppresses, `true` revives what the
 predicate would have suppressed, and an absent entry defers to it. The map is bounded by
@@ -171,14 +232,17 @@ await stop_taskwire_reader()      # during shutdown
 check_taskwire_readers()          # warns if a reader is owed and none is running
 ```
 
-A store with a backplane — `RedisStore` — publishes to a channel, and **the reader is the only thing
-in a process that calls `transport.notify()`**. Without one the deployment looks healthy: the socket
-is connected, the store is correct, and no envelope ever arrives, because polling covers for it.
-`MemoryStore` publishes in process and needs none, so calling this is harmless everywhere.
+A store with a backplane (`RedisStore`) publishes to a channel, and the reader is the only caller of
+`transport.notify()` in a process. Without a running reader no envelope reaches a socket, while
+polling still shows every state, later. `MemoryStore` publishes in process and needs no reader;
+starting one with it does nothing.
 
-A web process subscribes only to the namespaces it currently holds connections for, per *process*
-and never per token or per tab. `register_taskwire_muxws` does that subscribing for the connections
-it registers.
+A web process subscribes only to the namespaces it currently holds connections for, per process,
+not per token or per tab. `register_taskwire_muxws` subscribes for the connections it registers.
+
+`RedisStore.make_reader()` returns the store's `RedisReader`, which `start_taskwire_reader()` starts:
+`start()` and `stop()` (both idempotent), `watch(ns)` and `unwatch(ns)` subscribe and unsubscribe
+`twx:{ns}`.
 
 With a transport whose `crosses_processes` is True, `ViewsetEventsTransport`, `RedisStore.publish`
 hands each envelope to this process's reader instead of `twx:{ns}`, `start_taskwire_reader()` starts
@@ -233,7 +297,7 @@ Returns whether it wrote. `interrupted_error(reason)` is `INTERRUPTED` (`"taskwi
 `message.params == {"reason": reason}` when given, `retryable: true`); `dialog_timeout_error()` is
 `DIALOG_TIMEOUT` (`"taskwire.dialog_timeout"`, `retryable: true`).
 
-`status_error(status)` is the `Error` of TW-CALL-006: `None` below 400, else `HTTP_STATUS`
+`status_error(status)` is the `Error` of a tracked call's response status: `None` below 400, else `HTTP_STATUS`
 (`"taskwire.http_status"`) with `message.params == {"status": status}`, retryable for 502, 503 and 504.
 
 Store failures on any of these writes are logged and never raised.
@@ -269,10 +333,11 @@ from taskwire.contrib.viewsets import register_taskwire_rest
 register_taskwire_rest(router, base_path=None, *, register_muxws=None, track_calls=True)
 ```
 
-Mounts the six calls of TW-REST-004 on `router` — over REST, and over muxws when the viewset layer's
-socket half is installed. `base_path` defaults to `settings.rest_prefix`. Registering twice on one
-router is a no-op rather than a duplicate mount. With `track_calls` it calls `track_viewset_calls()`;
-without it, it appends `taskwire_context_processor` to `viewsets_context_processors` when absent.
+Mounts the six calls of [the REST table](#rest) on `router`, over REST, and over muxws when the
+viewset layer's socket half is installed and `register_muxws` is not `False`. `base_path` defaults
+to `settings.rest_prefix`. Registering twice on one router mounts one copy. With `track_calls` it
+calls `track_viewset_calls()`; without it, it appends `taskwire_context_processor` to
+`viewsets_context_processors` when absent.
 
 ### Tracked viewset calls
 
@@ -337,15 +402,77 @@ taskwire with one `ViewsetEventsTransport`, which it returns. A second call chan
 | `EnvelopeEvent` | the `Event` an envelope travels as: `event_name` `"envelope"`, payload `Envelope.to_dict()` |
 | `ViewsetEventsTransport` | `notify()` publishes to `envelope_topic` and never raises; `crosses_processes` is True; `watch_topics(peer, session)` answers the socket's two topics for the `watch` reply and drops the connection topic's rev and log when the socket closes |
 | `authorize_taskwire_topic(request, context, topic)` | admits a namespace topic to a caller whose `session_resolver(request)` names it, a connection topic to the socket whose connection id and namespace name it, refuses every other `taskwire:` topic and a resolver that raises, and answers None for any other source |
-| `taskwire_delivery_filter(subscription, topic, rev, name, payload, version)` | refuses a non-terminal `progress` the socket's override or `push_filter` suppresses (TW-DEL-001, TW-DEL-010), prunes the override on a terminal one (TW-DEL-023), passes everything else |
+| `taskwire_delivery_filter(subscription, topic, rev, name, payload, version)` | refuses a non-terminal `progress` the socket's override or `push_filter` suppresses, prunes the override on a terminal one, passes everything else |
 
 The authorizer decides who receives a topic, on `subscribe` and on every `poll`; the delivery filter
 decides display only. `register_taskwire_muxws`'s `watch` reply carries `"topics"` while this
 transport is configured.
 
-`taskwire.contrib.fastapi.router(prefix=None)` returns a hand-rolled `APIRouter` with the same six
+`taskwire.contrib.fastapi.router(prefix=None)` returns a plain FastAPI `APIRouter` with the same six
 routes, and `taskwire.contrib.asgi.app(prefix=None)` serves them from a framework-free ASGI callable.
-Every REST decision lives in `taskwire.rest`, which imports no framework at all.
+The endpoint logic is in `taskwire.rest`, which imports no framework.
+
+## The WebSocket transport
+
+`taskwire.contrib.muxws`, installed with `pip install "taskwire[muxws]"`; the guide is
+[The WebSocket transport](../guide/websockets.md).
+
+```python
+from taskwire.contrib.muxws import (
+    MuxwsTransport, register_taskwire_muxws, release_peer, goaway_if_stale,
+    tag_peer, serve_peer, handle_watch, prune_override,
+)
+
+MuxwsTransport(registry: muxws.PeerRegistry)
+async register_taskwire_muxws(peer, session: str) -> StreamHandler
+async release_peer(peer, session: str, registry=None) -> None
+async goaway_if_stale(peer, current_session: str | None) -> bool
+tag_peer(peer, session: str) -> None
+async serve_peer(peer, session: str) -> StreamHandler
+handle_watch(peer, message: dict) -> dict
+prune_override(peers: list, token: str) -> None
+```
+
+`MuxwsTransport.notify(session, envelope)` sends one envelope to every peer of `registry` tagged with
+`session`, as one muxws `notify()` per peer bounded by `settings.push_timeout`. It never raises: a
+peer that fails is a dropped push and the others still receive it. It skips a non-terminal
+`progress` the socket's override or `push_filter` suppresses, sends a private operation's
+`progress` only to the peer whose connection id is its `origin_connection`, and prunes the
+operation's override from every peer on a terminal one. `is_online(session)` answers whether any
+peer of `session` is registered, and `True` when the registry cannot answer.
+
+`register_taskwire_muxws(peer, session)` is `tag_peer()` followed by `serve_peer()`. Call it once per
+socket, with the namespace `session_resolver` returned for the handshake, and before
+`registry.register(peer)`: the registry indexes a peer under the tags it holds at that moment.
+
+`serve_peer(peer, session)` subscribes this process's reader to `session` and returns the handler
+`(payload, stream) -> None` the application composes behind `process_command`. It answers `watch`
+with `handle_watch()`, adding `"topics"` when the configured transport has `watch_topics`
+(`ViewsetEventsTransport`); any other kind is answered `{"v", "status": 2, "detail"}`.
+
+`handle_watch(peer, message)` stores the whole override map `message["overrides"]` (`{token: bool}`)
+on the peer and answers `{"v", "status", "connection"}`: status `0` accepted, `1` rejected for
+exceeding `settings.max_overrides` (the previous map stays), `2` malformed. It reads no store.
+
+`release_peer(peer, session, registry=None)` deregisters the peer from `registry` and unsubscribes
+this process from `session` once no peer of it remains. It cancels nothing.
+
+`goaway_if_stale(peer, current_session)` closes a peer whose tag does not name `current_session` (or
+any peer when it is `None`) and releases it; returns whether it closed it.
+
+`prune_override(peers, token)` removes `token` from every peer's override map.
+
+## Threads
+
+```python
+from taskwire.contrib.threads import copy_context_to
+
+await loop.run_in_executor(None, copy_context_to(fn))
+```
+
+`copy_context_to(fn)` copies the caller's context when it is called and returns a wrapper that runs
+`fn` in that copy, so the ambient reporter reaches code `loop.run_in_executor` runs.
+`asyncio.to_thread` propagates the context without it.
 
 ## The Celery worker entry
 
@@ -356,15 +483,12 @@ Every REST decision lives in `taskwire.rest`, which imports no framework at all.
 def import_rows(self, reporter, *, rows): ...
 ```
 
-`taskwire_task` decorates the body and passes the reporter **by keyword**, so the parameter must be
+`taskwire_task` decorates the body and passes the reporter by keyword, so the parameter must be
 named `reporter`; `token` and `session` arrive as task kwargs. It closes the operation before Celery
-publishes the task's result. On a soft time limit it names `taskwire.dialog_timeout` **only when the
-operation was holding an open question** — `reporter.asking` answers that with no store read.
+publishes the task's result. On a soft time limit it names `taskwire.dialog_timeout` only when the
+operation was holding an open question (`reporter.asking`, read without a store read).
 Otherwise the operation ends `taskwire.unhandled_exception` with `message.params.exception`
 `soft_time_limit_exceeded`.
-
-Celery's `task_prerun` / `task_postrun` signals are not used: `postrun` fires after the result has
-been pushed, so a client could see the answer while the operation still read `running`.
 
 Two more entries the web and worker sides use:
 
@@ -374,10 +498,9 @@ await dispatch(task, *, token, session, connection=None, result_kind=None,
 configure_worker(store, transport=None)                # worker side: this store, and NullTransport
 ```
 
-`dispatch` writes `queued` and hands off; if the broker refuses, it writes `failed` so the token the
-caller is already watching does not hang. `configure_worker` gives the worker a store and a
-`NullTransport`: **a worker never pushes**, because the web process's reader is already delivering
-every envelope the worker's writes produce. Over fastapi-viewsets events the worker passes the
+`dispatch` writes `queued` and hands off; if the broker refuses, it writes `failed`.
+`configure_worker` gives the worker a store and a `NullTransport`: a worker does not push, and the
+web process's reader delivers the envelopes the worker's writes produce. Over fastapi-viewsets events the worker passes the
 `ViewsetEventsTransport` that `register_taskwire_events()` returns, which publishes to the event store;
 any other transport raises `ValueError`. It is `configure_executor(store=store, transport=...)` with
 `NullTransport` for a `None` transport.
@@ -399,12 +522,11 @@ TOKEN_HEADER = "X-Taskwire-Token"
 CONNECTION_HEADER = "X-Taskwire-Connection"
 ```
 
-The front end mints a token and sends it with **its own** command under `X-Taskwire-Token`; taskwire
+The front end mints a token and sends it with its own command under `X-Taskwire-Token`; taskwire
 never carries the command itself. On a viewset call without `X-Taskwire-Token`, the key of the
-`Idempotency-Key` header is the token when it is a UUID (see
-[Tracked viewset calls](#tracked-viewset-calls)). `X-Taskwire-Connection` names the connection, and it
-serves two purposes with no second header: delivery scope on a read, and `origin_connection` on the
-request that starts an operation. There is no tab header, and there must not be one.
+`Idempotency-Key` header is the token when it is a UUID (see [Tracked viewset
+calls](#tracked-viewset-calls)). `X-Taskwire-Connection` names the connection: the delivery scope on
+a read, and `origin_connection` on the request that starts an operation. There is no tab header.
 
 ## Ports
 
@@ -438,13 +560,12 @@ class TaskwireTransport(ABC):
 `crosses_processes` is True for a transport whose `notify()` reaches the other processes itself; a
 store whose `publish()` would cross processes then dispatches in its own process.
 
-`commit` answers with both of a write's outcomes at once, so a reporter refreshing `cancelled` after
-every commit costs one round trip rather than two (TW-STORE-014); `is_cancelled` is what
-`was_aborted()` uses when a caller wants a fresh read on demand.
+`commit` returns the new rev and the cancel flag in one round trip, and the reporter refreshes
+`cancelled` from it; `is_cancelled` is what `was_aborted()` reads.
 
-Every per-operation method takes an **already-namespaced key**, `f"{ns}:{token}"`; `list_operations`
-and `publish` take a bare namespace. There is no code path to the store without a namespace, because
-the namespace is the only authorization scope and the token is an address inside it.
+Every per-operation method takes a namespaced key, `key(ns, token)` (`f"{ns}:{token}"`);
+`list_operations` and `publish` take a bare namespace. The namespace is the only authorisation scope
+and the token is an address inside it. `DialogResolution` is the outcome of `resolve_dialog`.
 
 `RedisStore(url="redis://127.0.0.1:6379/0", *, client=None)` is the cross-process store: it holds the
 same documents under `tw:{ns}:{token}:…`, keeps one sorted-set index per namespace, publishes to
@@ -458,7 +579,7 @@ is forgotten by the next call that opens a client, and its connections close whe
 garbage-collected. A `client` passed in is used on every loop as it is. `await store.aclose()` closes
 the client of the running loop, or the one passed in.
 
-Writing your own store? Run the exported suite against it:
+A store of your own is checked with the exported suite:
 
 ```python
 from taskwire.conformance import run_conformance
@@ -466,8 +587,7 @@ from taskwire.conformance import run_conformance
 await run_conformance(MyStore)
 ```
 
-Every shipped store passes it unchanged. If a rule in it cannot be satisfied by a real backend, the
-rule is wrong and the specification changes — not the suite.
+`make_store` must accept an optional `clock=` keyword. Every shipped store passes the suite.
 
 ## Settings
 
@@ -485,10 +605,10 @@ rule is wrong and the specification changes — not the suite.
 | `rest_prefix` | `/taskwire` | mount point |
 | `keepalive_period` | `active_ttl / 4` | derived, not configurable: how often a long silent phase touches the TTL |
 
-There is no `terminal_ttl` and no `dialog_timeout`. A terminal operation is out of the register in
-the step that ends it, never aged out of it, and `tombstone_ttl` is not that TTL under another name:
-it times how long one document answers **by token**, and what it times is neither listed nor counted.
-A dialog has no deadline at all.
+`settings` is the `Settings` instance; assign its attributes to change them. There is no
+`terminal_ttl` and no `dialog_timeout` setting. A terminal operation
+leaves the register in the step that ends it; `tombstone_ttl` only bounds how long its document
+answers by token. A dialog has no deadline.
 
 ## REST
 
@@ -501,8 +621,8 @@ A dialog has no deadline at all.
 | `POST {prefix}/{token}/collect` | `204` | `404`; `409` `taskwire.no_uncollected_result` |
 | `POST {prefix}/{token}/dismiss` | `204` (idempotent, unknown tokens included) | `404` malformed token; `409` `taskwire.no_uncollected_result` |
 
-Unknown and foreign tokens both return **404, never 403** — a 403 would confirm the token exists in
-somebody's namespace.
+Unknown and foreign tokens both return 404, so the answer does not reveal that a token exists in
+another namespace.
 
 Every error answers `{"detail": ...}` (`taskwire.invalid_reply` adds `code` and `params` to a `422`;
 see [Error codes](../guide/error-codes.md#rest-detail-codes)), through every adapter (`router()`, `contrib.asgi` and
@@ -510,9 +630,8 @@ see [Error codes](../guide/error-codes.md#rest-detail-codes)), through every ada
 `ErrorBody`. The `409` and `410` of a dialog
 reply also carry `dialog`: the dialog in its settled state, with the winning reply on a `409`.
 
-While the tombstone is readable these endpoints answer about a token they still know, which is what
-separates "this operation has ended" from "no such token": a cancel on a finished operation is `409
-already_terminal`, a reply to a dialog its terminal write withdrew is `410`, and a second collect is
-`409 taskwire.no_uncollected_result`. A second dismiss stays `204` — an operation that has already ended is
-the state a dismissing caller asked for. Once the tombstone expires the token is unknown again:
-cancel and collect answer `404`, and dismiss still answers `204`.
+While the tombstone is readable these endpoints distinguish an ended operation from an unknown token:
+a cancel on a finished operation is `409 taskwire.already_terminal`, a reply to a dialog its terminal
+write withdrew is `410`, and a second collect is `409 taskwire.no_uncollected_result`. A second
+dismiss answers `204`. Once the tombstone expires the token is unknown: cancel and collect answer
+`404`, and dismiss still answers `204`.

@@ -1,41 +1,23 @@
-"""The end-to-end check: one command that proves the demo works, on both wires.
+"""The end-to-end check of the demo, on both wires.
 
     python demo/e2e/run_e2e.py
 
-It starts the demo server itself on a free port, runs both halves against it, stops the server, and
-exits non-zero if anything was not true. Nothing has to be running first and nothing is left behind:
-the server is started in a session of its own and killed in a `finally`, including on a failure or a
-Ctrl-C.
+It builds the client bundle, starts the demo server on a free port in a session of its own, runs the
+halves against it and stops the server in a `finally`, also on a failure or Ctrl-C. Exits non-zero
+when any check failed.
 
-## Why it exists beside the two suites
+(a) The protocol: `demo/live_socket_check.py` as a subprocess, over a real socket: the six calls,
+`watch` and its connection id, and `hold_the_line`'s envelope sequence `snapshot`, `running`,
+`dialog.open`, `failed`, with no `dialog.close` (TW-CANCEL-011).
 
-`pytest -q` proves the server's rules against fakes and fixtures, and `npx vitest run` proves the
-client's rules against a stub transport and a mocked axios. **Neither has ever put the two halves in
-one process tree.** Every socket test on both sides fakes one end; every client test feeds envelopes
-by hand. So a call that resolves without reaching the wire, a register that never fills over a
-socket, or a question left open in a browser after the worker behind it has gone are all invisible to
-both suites and visible here in seconds.
+(b) The built TypeScript client: `demo/e2e/drive_client.mjs`, over HTTP and over the socket, doing
+what `demo/client/src/App.vue` does: `tw.run()` per job, rows read from `tw.register`, questions
+answered by id, Cancel, Collect and Dismiss on a row. It imports `dist/`.
 
-## The two halves, and what each is for
+(c) (a) again against a server started with `TASKWIRE_DEMO_PUSH=events`: the socket subscribes the
+two topics its `watch` reply names, and another namespace's socket and a poll over REST are refused.
 
-**(a) the protocol**, `demo/live_socket_check.py`, run as a subprocess so its coverage is kept
-whole rather than paraphrased: a real `accept()` and a real `connect()`, the six calls up the socket,
-`watch` and its connection id, and `hold_the_line`'s envelope sequence - `queued`, `running`,
-`dialog.open`, `failed`, with no `dialog.close` anywhere in it (TW-CANCEL-011).
-
-**(c) the protocol over fastapi-viewsets events**: (a) again, against a server started with
-`TASKWIRE_DEMO_PUSH=events`. The socket subscribes the two topics its `watch` reply names, and a
-socket of another namespace and a poll over REST are refused them.
-
-**(b) the shipped TypeScript client**, `demo/e2e/drive_client.mjs`, over HTTP and over the socket,
-doing what `demo/client/src/App.vue` does: `tw.run()` per job, register rows read out of
-`tw.register`, questions answered by id, Cancel, Collect and Dismiss pressed on a row. It imports
-`dist/`, which is why this builds first - the published artefact is the thing under test, not the
-sources vitest loads.
-
-This file is not collected by either runner. pytest takes `test_*.py` and `*_test.py`; vitest takes
-`*.{test,spec}.*`; neither name matches, and that is deliberate - the check starts a server, runs for
-about three minutes and is a thing a person runs on purpose.
+Neither pytest nor vitest collects this file; it runs for about three minutes.
 """
 
 from __future__ import annotations
@@ -59,23 +41,21 @@ SOCKET_CHECK = ROOT / "demo" / "live_socket_check.py"
 CLIENT_DRIVER = ROOT / "demo" / "e2e" / "drive_client.mjs"
 
 STARTUP_TIMEOUT = 45.0
-"""Seconds to wait for uvicorn to answer. Long because the first import of FastAPI on a cold page
-cache is slow, and a check that gave up at two seconds would fail for a reason that is not taskwire's."""
+"""Seconds to wait for uvicorn to answer, covering a slow first import of FastAPI."""
 
 RESULT = re.compile(r"^RESULT (\{.*\})$")
 
 
 def free_port() -> int:
-    """A port the kernel has just confirmed free. Bound and released, so the demo can take it."""
+    """A free port: bound and released, so the demo can take it."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
 
 
 def wait_for_server(base: str, process: subprocess.Popen) -> None:
-    """Poll `/demo/book` until it answers. Raises once `STARTUP_TIMEOUT` passes, or as soon as the
-    server process exits - a dead server is worth saying so about rather than waiting out.
-    """
+    """Poll `/demo/book` until it answers. Raises once `STARTUP_TIMEOUT` passes or the server process
+    exits."""
     deadline = time.monotonic() + STARTUP_TIMEOUT
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -90,11 +70,9 @@ def wait_for_server(base: str, process: subprocess.Popen) -> None:
 
 
 def run_half(label: str, command: list[str]) -> tuple[int, int, dict]:
-    """Run one half, echo its output as it arrives, and count the assertions it printed.
+    """Run one half, echo its output, and count its `PASS` and `FAIL` lines.
 
-    Both halves speak the same two-word protocol - a line begins `PASS` or `FAIL` - so the counts
-    here are the children's own and not a second opinion about them. A `RESULT {json}` line, which
-    only the client driver prints, carries the structured summary.
+    Returns `(passed, failed, summary)`; `summary` is the client driver's `RESULT {json}` line.
     """
     print(f"\n=========== {label} ===========", flush=True)
     passed = failed = 0
@@ -122,8 +100,7 @@ def run_half(label: str, command: list[str]) -> tuple[int, int, dict]:
         elif stripped.startswith("FAIL"):
             failed += 1
     process.wait()
-    # A child that died without printing anything still failed, and a count of zero would read as a
-    # clean run in the summary line.
+    # A non-zero exit with no FAIL line counts as one failure.
     if process.returncode != 0 and failed == 0:
         failed = 1
         print(f"{label} exited {process.returncode} with no failing assertion of its own", flush=True)
@@ -131,11 +108,7 @@ def run_half(label: str, command: list[str]) -> tuple[int, int, dict]:
 
 
 def build_client() -> None:
-    """`npx vite build`, because the half under test is `dist/` and not `vue/`.
-
-    A stale bundle would let this check pass against a client nobody ships, which is the one failure
-    mode a check that exists to run the real thing cannot afford.
-    """
+    """Build `dist/` with `npx vite build`; the client half imports it."""
     print("building the client bundle (npx vite build)", flush=True)
     result = subprocess.run(  # noqa: S603 - a fixed argument list, no shell
         ["npx", "vite", "build"],  # noqa: S607 - npx from PATH, as every other script here calls it

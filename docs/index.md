@@ -1,10 +1,10 @@
 ---
 title: 'Progress, dialogs and cancellation for long jobs'
-description: 'Talk to a job while it runs: nested progress, questions the worker waits on, first answer wins across tabs, sticky cancellation. Python and TypeScript.'
+description: 'Nested progress, awaitable dialogs where the first answer wins across tabs, sticky cancellation and collectable results for long-running jobs. Python and TypeScript.'
 layout: home
 hero:
   name: taskwire
-  text: Talk to a job while it runs
+  text: Progress and dialogs for long-running jobs
   image:
     src: /taskwire-icon.svg
     alt: taskwire
@@ -17,12 +17,12 @@ hero:
       text: API reference
       link: /api/python
 features:
-  - title: Progress that composes
-    details: Nested subtasks whose percentages add up instead of overwriting each other, and commits coalesced so a tight loop cannot flood anything.
-  - title: Questions, not guesses
-    details: A worker can stop mid-job, ask the user something, and block until somebody answers. First answer wins across every tab that is looking.
-  - title: Cancellation that works
-    details: Cooperative and sticky, and it raises at the next progress call — so a loop with no cancellation code in it still stops.
-  - title: The store is the truth
-    details: Every change is written before anything is pushed, so a dropped push costs latency and never correctness. That is what makes the transport swappable.
+  - title: Nested progress
+    details: Nested subtasks whose percentages add up instead of overwriting each other, and commits coalesced to one per interval.
+  - title: Awaitable dialogs
+    details: A worker asks the user a question mid-job and blocks until it is answered. The first answer wins across every open tab.
+  - title: Sticky cooperative cancellation
+    details: Cancellation raises at the next progress call, so a loop with no cancellation code of its own stops.
+  - title: The store holds the state
+    details: Every change is written before anything is pushed; a dropped push delays an update and never changes it. Transports are interchangeable.
 ---

@@ -1,19 +1,13 @@
-"""The four night-batch jobs. Between them they exercise everything taskwire does.
+"""The four night-batch jobs: async functions that report through a `Reporter` and use no transport.
 
-Each one is an ordinary async function that happens to hold a `Reporter`. None of them knows what a
-transport is, whether anybody is watching, or whether the answer to a question will arrive over
-HTTP or over a socket - which is the property the whole library exists to provide.
-
-| job | what it is here to show |
+| job | shows |
 |---|---|
-| `reconcile` | dialogs: work stops, a person decides, work resumes. Four times. |
+| `reconcile` | dialogs: work stops, a person decides, work resumes; four times |
 | `export_blotter` | cancellation, and a collectable download at the end |
 | `revalue` | nested progress: four sector subtasks filling one bar by weight |
-| `hold_the_line` | a question nobody answers, under a deadline that is the application's |
+| `hold_the_line` | an unanswered question under the application's own deadline |
 
-**The pacing is deliberate.** Every job sleeps in small slices rather than doing real work, because
-the point is the reporting, and a demo that pegged a core for forty seconds would be measuring the
-reader's laptop instead.
+Every job sleeps in small slices instead of doing real work.
 """
 
 from __future__ import annotations
@@ -27,48 +21,32 @@ from taskwire import Button, DIALOG_TIMEOUT, OperationCancelled, Reporter, Resul
 from .market import blotter_rows, build_book, SECTORS, SYMBOLS, total_trades
 
 SYMBOL_STEP = 0.35
-"""Seconds per symbol in `reconcile` - about seven seconds end to end, before any question.
-
-Fast enough not to bore, and comfortably longer than the 250 ms an operation must live to appear on
-screen at all (`progressUi.delay`). A job shorter than that delay never shows a bar, which is by
-design - most operations finish in a blink and a bar that flashes up and vanishes reads as a glitch -
-but it would make for a poor demonstration.
-"""
+"""Seconds per symbol in `reconcile`: about seven seconds end to end, before any question, well above
+`progressUi.delay` (250 ms)."""
 
 EXPORT_CHUNK = 40
-"""Blotter rows per progress report. ~100 steps over the book, so the bar moves smoothly and there
-is real time in which to press cancel."""
+"""Blotter rows per progress report: about 100 steps over the book."""
 
 EXPORT_STEP = 0.22
 
 SECTOR_STEP = 0.5
-"""Deliberately the slowest, so four sectors visibly interleave rather than finishing in one tick."""
+"""Seconds per symbol in `revalue`, the slowest step, so the four sectors visibly interleave."""
 
 HOLD_STEP = 0.4
-"""Seconds per pre-flight check in `hold_the_line` - three of them, so the question is on screen in
-about a second. The waiting after the question is the demonstration; the work before it is there
-only to show that a job was running when it stopped."""
+"""Seconds per pre-flight check in `hold_the_line`; three checks put the question on screen in about a
+second."""
 
 HOLD_DEADLINE = 15.0
-"""Seconds this application will hold a worker waiting for an answer.
-
-Not a taskwire setting. There is no `settings.dialog_timeout` and `ask()` takes no deadline
-(TW-DLG-005), so the number lives at the layer that knows what the worker costs - here, and in a
-deployment in the queue configuration."""
+"""Seconds `hold_the_line` waits for an answer. The application's own deadline: `ask()` has none
+(TW-DLG-005)."""
 
 
 async def reconcile(reporter: Reporter) -> None:
-    """Walk the book; where our position and the custodian's disagree, **ask a person**.
+    """Walk the book and ask which figure stands wherever ours and the custodian's disagree.
 
-    This is the job the library was designed around. `ask()` blocks until the store arbitrates a
-    reply (TW-STORE-003) and there is **no timeout** (TW-DLG-005) - the operation waits as long as
-    the user does, its state reads `waiting_input`, and the worker really is held. That last part is
-    not hidden: it is the honest cost of asking a human something, and the demo shows it rather than
-    papering over it.
-
-    Every tab of the namespace sees the question and any of them may answer it (TW-REG-001). Open a
-    second tab while one of these is waiting: the same question is there, and answering in either
-    releases the job.
+    `ask()` blocks until the store arbitrates a reply (TW-STORE-003) and has no timeout (TW-DLG-005);
+    the operation reads `waiting_input` while it waits. Every tab of the namespace sees the question
+    and any of them may answer it (TW-REG-001). Parks a reconciliation report.
     """
     book = build_book()
     await reporter.set(
@@ -85,9 +63,8 @@ async def reconcile(reporter: Reporter) -> None:
 
         if position.disagrees:
             conflicts += 1
-            # `params` is the whole of what the frontend needs to render this question. taskwire
-            # never composes a sentence: it carries a key, the values, and a fallback string
-            # (TW-TXT-001), and the application decides what that looks like on screen.
+            # `params` carries the values the frontend renders; the texts are a key and a fallback
+            # (TW-TXT-001).
             answer = await reporter.ask(
                 "demo.position_conflict",
                 buttons=[
@@ -122,9 +99,7 @@ async def reconcile(reporter: Reporter) -> None:
             },
         )
 
-    # A result parks the operation in the register until somebody collects or dismisses it
-    # (TW-RES-010). Until then the row stays, which is the point: a report nobody saw is a report
-    # nobody can act on.
+    # The row stays in the register until the result is collected or dismissed (TW-RES-010).
     await reporter.set_result(
         Result.panel(
             "demo.reconciliation_report",
@@ -139,12 +114,10 @@ async def reconcile(reporter: Reporter) -> None:
 
 
 async def export_blotter(reporter: Reporter) -> None:
-    """Write every fill to a file. Long, boring, and **cancellable** - which is the point.
+    """Write every fill to a file and park a download; a long, cancellable job.
 
-    There is no cancellation code in this function. `set()` raises `OperationCancelled` by default
-    (TW-CANCEL-002), so a loop that reports progress stops when asked without its author having
-    written anything for it. The `except` below is not what stops the work; it is what decides what
-    a half-written export leaves behind.
+    A cancel stops it at the next `set()`, which raises `OperationCancelled` by default
+    (TW-CANCEL-002).
     """
     rows_total = total_trades()
     await reporter.set(
@@ -157,23 +130,19 @@ async def export_blotter(reporter: Reporter) -> None:
     try:
         for symbol, _, _ in SYMBOLS:
             rows = blotter_rows(symbol)
-            # Reported every `EXPORT_CHUNK` rows rather than every row: a report per row would be
-            # four thousand store writes for a bar the eye cannot follow, and the throttle would
-            # coalesce them anyway.
+            # One report per `EXPORT_CHUNK` rows.
             for offset in range(0, len(rows), EXPORT_CHUNK):
                 written += len(rows[offset : offset + EXPORT_CHUNK])
                 await asyncio.sleep(EXPORT_STEP)
-                # This is where a cancel lands. Nothing below is written for it: `set()` raises by
-                # default (TW-CANCEL-002), so the loop stops whether or not its author thought about it.
+                # Raises `OperationCancelled` once a cancel is requested (TW-CANCEL-002).
                 await reporter.set(
                     percent=100 * written / rows_total,
                     label=t("demo.export.symbol", symbol=symbol, text=f"Writing {symbol} ({len(rows)} fills)"),
                     data={"rows_done": written, "rows_total": rows_total},
                 )
     except OperationCancelled:
-        # Re-raised so `operation()` writes `cancelled` (TW-CANCEL-006). What a half-finished export
-        # leaves behind is the operation author's call, which is why `raise_on_cancel` is switchable
-        # rather than a library-wide policy.
+        # Clean-up of a partial export goes here; re-raised so `operation()` writes `cancelled`
+        # (TW-CANCEL-006).
         raise
 
     await reporter.set_result(
@@ -187,15 +156,10 @@ async def export_blotter(reporter: Reporter) -> None:
 
 
 async def revalue(reporter: Reporter) -> None:
-    """Revalue the book sector by sector, with one child reporter per sector.
+    """Revalue the book with one child reporter per sector, run concurrently, and park the valuation.
 
-    The bar is filled by **four independent children**, each owning a slice of it. taskwire keeps a
-    per-child contribution map rather than last-write-wins (TW-NEST-004), which is the difference
-    between a bar that ends at 100 % and one that jumps to 100 % the moment the fastest sector
-    finishes and then sits there while three others are still running.
-
-    The sectors here are deliberately unequal in size, so the weights are visible: Technology's five
-    symbols move the bar less than Industrials' seven.
+    `split()` weights each child by its sector's size, and the parent sums the children's
+    contributions (TW-NEST-004).
     """
     await reporter.set(title=t("demo.revalue.title", text="Revaluing portfolio"), percent=0)
 
@@ -215,8 +179,7 @@ async def revalue(reporter: Reporter) -> None:
             )
         return value
 
-    # Concurrently, because that is when the contribution map earns its keep: four children reporting
-    # interleaved, in an order that changes between runs.
+    # The children report interleaved, in an order that changes between runs.
     values = await asyncio.gather(
         *[
             one_sector(child, sector, members)
@@ -241,26 +204,13 @@ async def revalue(reporter: Reporter) -> None:
 
 
 async def hold_the_line(reporter: Reporter) -> None:
-    """Ask a question, then let the worker's own deadline expire before anybody answers it.
+    """Ask a question under the application's own `HOLD_DEADLINE`.
 
-    **Start it, watch the question arrive, and then leave it alone.** Fifteen seconds later the
-    question disappears from every tab of the namespace and the operation leaves the register,
-    `failed` with code `taskwire.dialog_timeout` and `retryable: true`; a tab that was part-way through
-    answering gets 410 for as long as the terminal document is readable and 404 once it has expired,
-    and closes its modal without a word either way (TW-DLG-011).
-
-    Those fifteen seconds belong to **this function**. `ask()` has no timeout and must never grow
-    one (TW-DLG-005), so a deadline has to be written where the cost of waiting is actually known:
-    around the call, by the application. Here that is `asyncio.wait_for`, because the demo is a
-    single asyncio process with no executor of its own. In a deployment it is the executor's own
-    time limit ending the work instead, which taskwire renders as `failed` with code
-    `taskwire.dialog_timeout` and `retryable: true` (TW-DLG-006). What happens to the operation is the
-    same in both: one terminal write, which withdraws every open dialog in the same step
-    (TW-CANCEL-011), so no question is ever left on screen pointing at a worker that is gone.
-
-    Answer inside the fifteen seconds and the job finishes normally and parks its decision. Both
-    endings are the demonstration - taskwire holds the worker for exactly as long as the user takes,
-    and how long that may be is the application's sentence to finish.
+    An answer within the deadline parks the decision. Otherwise `asyncio.wait_for` ends the wait and
+    the operation ends `failed` with `taskwire.dialog_timeout`, `retryable: true`, the code an
+    executor's time limit writes too (TW-DLG-006). The terminal write withdraws the open dialog in
+    every tab (TW-CANCEL-011); a late reply gets 410 while the terminal document is readable and 404
+    after it (TW-DLG-011).
     """
     checks = (
         t("demo.hold.balances", text="Matching cash balances"),
@@ -275,13 +225,11 @@ async def hold_the_line(reporter: Reporter) -> None:
 
     for index, check in enumerate(checks):
         await asyncio.sleep(HOLD_STEP)
-        # The last quarter of the bar is the decision, so a reader can see the job stop short of
-        # finishing rather than at a round 100 %.
+        # The checks fill three quarters of the bar; the decision is the last quarter.
         await reporter.set(percent=100 * (index + 1) / (len(checks) + 1), label=check)
 
-    # The deadline is the application's, applied from outside `ask()` and known to nothing inside
-    # taskwire. When it expires, `wait_for` cancels the pending `ask()` and raises; the exception
-    # walks out of `operation()`, which writes `failed` and withdraws this dialog on the way.
+    # On expiry `wait_for` cancels the pending `ask()` and raises; `operation()` then writes `failed`
+    # and withdraws the dialog.
     try:
         answer = await asyncio.wait_for(
             reporter.ask(
@@ -299,13 +247,8 @@ async def hold_the_line(reporter: Reporter) -> None:
             HOLD_DEADLINE,
         )
     except (TimeoutError, asyncio.TimeoutError):
-        # `name_error` decides what the one terminal write of `operation()` will say and writes
-        # nothing itself; the write happens as this exception leaves the block. Without it the code
-        # would be `TimeoutError` and the message the same word again - the exception's class is all
-        # taskwire can derive, and it does not know what the deadline was for. An execution ended by
-        # its executor's time limit reports this code (TW-DLG-006), so both deployments of this job end
-        # with the same document. `asyncio.TimeoutError` is only a distinct class from the builtin
-        # before Python 3.11; both are named here so `wait_for` is caught on every supported version.
+        # Names the terminal error `taskwire.dialog_timeout` instead of `taskwire.unhandled_exception`.
+        # `asyncio.TimeoutError` differs from the builtin before Python 3.11.
         reporter.name_error(
             DIALOG_TIMEOUT,
             t(DIALOG_TIMEOUT, text=f"Nobody answered within {HOLD_DEADLINE:.0f} s."),
@@ -329,4 +272,4 @@ JOBS: dict[str, Any] = {
     "revalue": revalue,
     "hold": hold_the_line,
 }
-"""What the frontend may start, by name. An unknown name is a 404 rather than an import."""
+"""The jobs the frontend may start, by name."""

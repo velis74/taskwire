@@ -16,7 +16,7 @@ import taskwire
 from .market import SYMBOLS
 
 STEP_SECONDS = 0.1
-"""The pause per symbol; with the book's symbols it makes a call that runs for a couple of seconds."""
+"""Seconds per symbol; about two seconds for the whole book."""
 
 
 class PositionsViewSet:

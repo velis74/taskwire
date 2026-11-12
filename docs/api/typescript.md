@@ -1,6 +1,6 @@
 # TypeScript API
 
-TypeScript ships **the whole library**, not just a client. A browser-only or Node-only program can
+TypeScript ships the whole library, including the operating half. A browser-only or Node-only program can
 run an operation, report progress, ask questions and cancel, with no server and no Python anywhere.
 
 Wire field names are `snake_case`; the TypeScript surface exposes them as `camelCase` and converts in
@@ -11,7 +11,7 @@ Six entry points: `taskwire`, `taskwire/vue`, `taskwire/muxws`, `taskwire/vuetif
 `taskwire/fastapi-viewsets` and `taskwire/conformance`. The main entry imports axios, the package's
 one required peer dependency; the `/vue`, `/muxws`, `/vuetify` and `/fastapi-viewsets` subpaths each
 import the optional peer they are named for (`/muxws` also fastapi-viewsets), and `/conformance`
-imports nothing at all.
+imports nothing.
 
 ## The client
 
@@ -21,8 +21,8 @@ import { use_taskwire, configure_taskwire, run, new_token } from 'taskwire';
 const tw = use_taskwire({ basePath: '/taskwire', axiosInstance: api });
 
 tw.register;      // the namespace's shared operations, plus this tab's private ones
-tw.operations;    // this tab's *visible* subset - deliberately smaller
-tw.aggregate;     // counts and a dominated state; null at rest, and NO percentage
+tw.operations;    // the subset this tab shows
+tw.aggregate;     // counts and the dominant state; null at rest, no percentage
 tw.selected;      // the one operation whose own percentage a footer may draw
 ```
 
@@ -46,13 +46,13 @@ tw.busy;  tw.onBusyChange(cb);      // the calls a busy indicator renders
 tw.retryNow();                      // retryNow() of every attached source
 ```
 
-`run()` mints the token and binds it for the **synchronous** part of `fn`, so the request `fn` issues
+`run()` mints the token and binds it for the synchronous part of `fn`, so the request `fn` issues
 carries `X-Taskwire-Token`. A callback that awaits before it requests sends no header, and the server
 then mints a token of its own that nothing is watching.
 
 `headers()` returns `X-Taskwire-Token` while `run()` has a token bound and `X-Taskwire-Connection`
-once a socket declared an id — exactly what the axios interceptor writes — for a request made with
-any other HTTP client.
+once a socket declared an id (what the axios interceptor writes), for a request made with any other
+HTTP client.
 
 ### Following a call
 
@@ -80,7 +80,7 @@ exactly as `call` does; the handler stays registered until the operation ends.
 The handle is minted as `run()` mints one: `startedHere`, joining `tw.operations` after
 `progressUi.delay`, and awaitable as `call`. Two registrations for one key share one handle. When
 `call` settles without a healthy transport, the client reads the token once more at once: a call the
-server did not track has no document and its handle is dropped silently, after one call of the
+server did not track has no document and its handle is dropped without an error, after one call of the
 handler with a closed handle. With a healthy transport it reads nothing: a token nothing was pushed
 for is dropped the same way, and one that is still going waits for its terminal push and is read once
 after the polling ceiling if that push does not come.
@@ -111,29 +111,27 @@ operation.mute(); operation.unmute(); operation.clearOverride();
 operation.onChange(cb); operation.close();
 ```
 
-A handle closes on the terminal state, and what closing stops is the *watching*: the poller is
-released and the four writes go quiet, because an operation that has ended has nothing left to
-answer, cancel or release. `show()`, `hide()` and the override map keep working — they are this tab's
-own view and reach no server, and the row `progressUi.failureLinger` holds after a failure is a
-closed handle by definition, so its ✕ is `hide()` on one.
+A handle closes on the terminal state: the poller is released and the four writes do nothing.
+`show()`, `hide()` and the override map keep working, as they are this tab's own view and reach no
+server; the row `progressUi.failureLinger` holds after a failure is a closed handle, and its ✕ is
+`hide()` on it.
 
-`answer()`, `cancel()`, `collect()` and `dismiss()` **resolve quietly on 404, 409 and 410** — another
-tab getting there first is the normal outcome of a namespace-wide question, not a fault, and so is
-an operation that ended before the call arrived: while its tombstone is readable the server names
-which of those it was (`409 taskwire.already_terminal`, `410` for a withdrawn dialog, `409
-taskwire.no_uncollected_result` for a second collect), and afterwards the token is simply unknown. Everything
-else rejects, including a 422 (a malformed reply), a 500 and a transport failure.
+`answer()`, `cancel()`, `collect()` and `dismiss()` resolve without an error on 404, 409 and 410:
+another tab answered first, or the operation ended before the call arrived. While the tombstone is
+readable the server names which (`409 taskwire.already_terminal`, `410` for a withdrawn dialog,
+`409 taskwire.no_uncollected_result` for a second collect); afterwards the token is unknown.
+Everything else rejects, including a 422 (a malformed reply), a 500 and a transport failure.
 
-Awaiting a handle: a `run()` handle settles with **the request's** own promise (`await run(fn)` is
+Awaiting a handle: a `run()` handle settles with the request's own promise (`await run(fn)` is
 `await fn(...)`), and a `track()` handle settles on the operation's own terminal document — `done`
 resolves, `failed` and `cancelled` reject with `OperationFailed` carrying `progress.error`'s `code` and
 `retryable`; a `cancelled` operation gives `code` `taskwire.cancelled`, a `failed` document without an
 `error` `taskwire.failed` ([Error codes](../guide/error-codes.md)).
 
 That document is readable at its own address for `tombstone_ttl` after the operation has left the
-register, so the ordinary end of an operation is something a handle **reads**, on every transport
-including a page that only polls. `OperationGone` is the other case, and only that one: the document
-vanished after the handle had seen it, which means its TTL ran out before the client came back.
+register, so a handle reads the end of an operation on every transport, polling included. A handle
+rejects with `OperationGone` when the document vanished after the handle had seen it: its TTL ran
+out before the client read it again.
 
 ### `subscribe()`
 
@@ -148,7 +146,7 @@ subscription.close();
 
 ### The client persists nothing
 
-Not the register, not the token list, not a delivery preference. Three things survive a read, all in
+Not the register, the token list or a delivery preference. Three things are kept between reads, in
 memory: the tokens this page minted, the override map this client holds, and the connection id its
 `watch` reply carried. The tab id (`TAB_ID`) is in memory too and is never sent to a server.
 
@@ -204,15 +202,15 @@ resetTaskwireConfig();   // back to the defaults above
 ```
 
 `progressUi.delay` is how long a `startedHere` operation must live before it joins `tw.operations`;
-most operations finish inside it and never appear at all. `failureLinger` is how long a row the
+an operation that finishes inside it never appears. `failureLinger` is how long a row the
 client saw fail is held afterwards. `progressUi: false` turns the visible collection off wholesale
-without affecting `tw.register`. `dialogAdoptDelay` is how long a tab that did **not** start an
-operation waits before presenting its question (TW-TAB-005); it is clamped, and zero is not allowed.
+without affecting `tw.register`. `dialogAdoptDelay` is how long a tab that did not start an
+operation waits before presenting its question; it is clamped, and zero is not allowed.
 `progressUi.delay` is also the age at which a call enters `tw.busy.calls`, and `unreachableAfter` is
 the number of unanswered attempts after which a call is unreachable there.
 
-**None of these is derived from the poll interval, and none may be.** A frontend must never assume an
-update frequency: no animation, timeout or stall heuristic may be built on how often a poll happens.
+None of these is derived from the poll interval. The update frequency is not guaranteed, so a
+frontend must not base an animation, a timeout or a stall heuristic on it.
 
 ## The operating half
 
@@ -234,7 +232,7 @@ await operation({ ns: 'local', store, token: new_token(), resultKind: 'report' }
 });
 ```
 
-`operation()` takes its body as a **callback**, and writes the terminal state on the way out whether
+`operation()` takes its body as a callback, and writes the terminal state on the way out whether
 the body returned or threw, before re-throwing.
 
 There is a block form too, holding the same operation open for the length of an `await using`:
@@ -251,14 +249,12 @@ try {
 }
 ```
 
-**The two are not equivalent.** `Symbol.asyncDispose` is handed no arguments: the disposal runs
-whether the block returned or threw and cannot ask which, so a scope that ends without `failed()`
-ends `done` — including one whose block threw. A callback the library calls is a callback it can
-watch fail; a block it does not call is not, which is why `operation(opts, body)` is the form to
-reach for and this one is for callers who want the lifecycle tied to a scope.
+`Symbol.asyncDispose` receives no arguments, so the disposal cannot tell whether the block threw: a
+scope that ends without `failed()` ends `done`, also when its block threw. `operation(opts, body)`
+records a throw by itself.
 
-`markQueued` and `markFailed`, imported from the same entry point, are the web side's two writes and
-the twins of the Python ones: a browser that starts work elsewhere writes `queued` under the token
+`markQueued` and `markFailed`, imported from the same entry point, are the web side's two writes, as
+in Python: a browser that starts work elsewhere writes `queued` under the token
 before it sends the command.
 
 A store publishes through its `dispatch` option, which is what a transport is wired to; without one a
@@ -289,8 +285,8 @@ turns carried values back into a `Call`. `trackFetch` wraps a WHATWG `fetch` han
 execution, a status of 400 or more ends its operation `taskwire.http_status`, and requests under
 `excludePrefix` (default `DEFAULT_BASE_PATH`) pass through.
 
-`store.commit()` answers with `{ rev, cancelled }` — both of a write's outcomes at once, so a
-reporter refreshing `cancelled` after every commit costs one round trip rather than two.
+`store.commit()` answers with `{ rev, cancelled }` in one round trip, and the reporter refreshes
+`cancelled` from it.
 
 The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `flush`, `subtask`,
 `split`, `cancelled` and `wasAborted`, with the same rules as the Python half.
@@ -306,10 +302,7 @@ The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `fl
 | the ambient `progress` proxy | the tab-hint rules |
 | — | `tw.busy` and the call sources |
 
-The ambient proxy is the one worth knowing about: `contextvars` has no browser equivalent, and an
-unbound proxy is a *silent* no-op — so one that worked under Node and no-opped in a browser would
-fail as a progress bar that never moves, with nothing logged. TypeScript callers pass the reporter
-explicitly.
+TypeScript callers pass the reporter explicitly.
 
 ## The socket
 
@@ -322,14 +315,15 @@ transport.onHealth((healthy) => ...);
 detachMuxws(tw);                                 // back to polling; the socket stays the caller's
 ```
 
-Attaching does two things: it takes the pushes, and it moves the six calls of TW-REST-004 onto the
-socket. While attached, every stream opened on the peer — the application's own commands included —
-carries `X-Taskwire-Connection` once the socket has an id, and `X-Taskwire-Token` when it is opened
-in the synchronous part of a `run()` callback, as the axios interceptor writes them on a request.
-`{ routeCalls: false }` takes the pushes and leaves the calls on HTTP, and `{ basePath }` names the
-prefix the viewset is mounted under when it is not the client's own. The connection id needs no
-option: `attachMuxws` feeds it to `tw.setConnection()` on every `watch` reply. Losing the socket puts
-every ladder back on its base rung. taskwire never dials a socket and never closes one.
+Attaching does two things: it takes the pushes, and it moves the six REST calls (list, read, cancel,
+collect, dismiss, dialog reply) onto the socket. While attached, every stream opened on the peer —
+the application's own commands included — carries `X-Taskwire-Connection` once the socket has an id,
+and `X-Taskwire-Token` when it is opened in the synchronous part of a `run()` callback, as the axios
+interceptor writes them on a request. `{ routeCalls: false }` takes the pushes and leaves the calls
+on HTTP, and `{ basePath }` names the prefix the viewset is mounted under when it is not the
+client's own. The connection id needs no option: `attachMuxws` feeds it to `tw.setConnection()` on
+every `watch` reply. Losing the socket puts every ladder back on its base rung. taskwire never dials
+a socket and never closes one.
 
 `attachMuxws` installs the peer's `onStream` handler. A stream whose headers carry `:event` goes to
 fastapi-viewsets' `handleEventStream`, and so to the event client `createEventClient({ peer })`
@@ -370,13 +364,13 @@ const { entries, aggregate, selected, show, collect, dismiss, mute } = use_regis
 const busy = useBusy();   // tw.busy as a ref
 ```
 
-`use_operation` takes a token or `{ token, basePath, axiosInstance }`. `use_register` is what starts
-the register loop; `use_operations` deliberately does not, because the visible collection is local
-policy over handles this tab already has. `useBusy` takes a client or `TaskwireOptions` and returns
-a ref holding the current `BusyState`; it stops following with the surrounding effect scope.
+`use_operation` takes a token or `{ token, basePath, axiosInstance }`. `use_register` starts the
+register loop; `use_operations` does not, as it reads only handles this tab already has. `useBusy`
+takes a client or `TaskwireOptions` and returns a ref holding the current `BusyState`; it stops
+following with the surrounding effect scope.
 
-`taskwire/vue` is the only module in the package that imports Vue; the core never does, so taskwire
-is usable from React, from Svelte or from a plain script tag.
+Only `taskwire/vue` and `taskwire/vuetify` import Vue; the core does not, so taskwire is usable from
+React, Svelte or a plain script tag.
 
 ## Vuetify
 
@@ -391,20 +385,19 @@ const { stop } = useBusyDialog({ showCalls: true });
 
 `useTaskwireDialogs` presents every open question of the namespace through the modal kit, applying
 the tab rules: the tab that started the operation presents at once, every other waits
-`dialogAdoptDelay` and presents only if the question is still open. **Mount it once, high up** —
-mounting it twice presents each question twice. `dialogId` maps to a component exactly as a
-`Result.kind` does, and anything unmapped falls back to a plain message dialog carrying the declared
-buttons as `Action`s of `@dynamicforms/vuetify-inputs`, which is a worse dialog but never a missing
-one. A modal that settles with anything but one of the declared buttons — the kit's own **Close** —
-answers nothing and leaves the question open.
+`dialogAdoptDelay` and presents only if the question is still open. Mount it once, near the root;
+mounting it twice presents each question twice. `dialogId` maps to a component as a `Result.kind`
+does, and anything unmapped falls back to a plain message dialog carrying the declared buttons as
+`Action`s of `@dynamicforms/vuetify-inputs`. A modal that settles with anything but one of the
+declared buttons (such as the kit's own Close) answers nothing and leaves the question open.
 
 `<TaskwireFooter />` draws the aggregate and the selected operation's own percentage, and renders
 nothing when the aggregate is null.
 
 `<TaskwireOperations />` lists `tw.register`, one row per operation, each with its title, its label
 and its own bar. Clicking a row selects it (`tw.select`); the selected row has
-`aria-current="true"`. A row offers **Cancel** while the operation has not ended and holds no
-result, and **Collect** and **Dismiss** while it holds one. It emits `collected` with the released
+`aria-current="true"`. A row offers Cancel while the operation has not ended and holds no result,
+and Collect and Dismiss while it holds one. It emits `collected` with the released
 `Result` and the operation, and `error` with the error and the operation when a write rejects. It
 renders nothing while the register is empty.
 
@@ -416,7 +409,7 @@ the modal kit's `custom()`, with the body passed as a component, while `tw.busy.
 closes it when it does not; a dialog the user closes stays closed until `visible` has been false
 once. `<TaskwireBusy />` is its default
 body: `busy.label`, a bar for `busy.percent` (indeterminate when `null`), with `show-calls` one row
-per listed call, and while `busy.unreachable` holds a notice with **Try now**, which calls
+per listed call, and while `busy.unreachable` holds a notice with Try now, which calls
 `tw.retryNow()`. Options and wiring: [Handling long-running
 requests](../guide/long-running-requests.md#the-frontend-with-fastapi-viewsets).
 
@@ -434,7 +427,7 @@ import { DialogAdoption, DialogPresenter, VisibilityDelay, TAB_ID } from 'taskwi
 
 `DialogAdoption` decides who presents a question and when; `VisibilityDelay` decides when a
 `startedHere` operation joins the visible collection. Both are framework-free, both take injectable
-timers, and both are what `taskwire/vuetify` and the demo run rather than re-deriving the rules.
+timers, and `taskwire/vuetify` uses both.
 
 `new DialogPresenter({ client, present, dialogAdoptDelay?, timers? })` applies `DialogAdoption` to
 every open question of `client.register` and answers through `operation.answer()`.
@@ -453,29 +446,23 @@ import { runConformance } from 'taskwire/conformance';
 await runConformance((options) => new MyStore(options));
 ```
 
-An entry point published for the same reason `taskwire.conformance` is importable in Python: a
-store is an application's to write — over IndexedDB in a browser, over whatever a service already
-runs — and this is what says whether the thing it wrote is one. It asserts the same behaviours as the
-Python suite, check for check, so a store is judged by the same standard in either language.
+`runConformance` checks a store an application writes (over IndexedDB, for example) against the same
+behaviour as `taskwire.conformance.run_conformance`.
 
-## The aggregate has no percentage
+## The aggregate
 
-There is no unit in which two operations' self-reported percentages are commensurable — one is 40 %
-through a row count, the other 40 % through a byte count — so any figure derived across them is
-invented. `Aggregate` declares `percent?: never`, which means reintroducing one fails the type-check
-rather than only a test.
-
-A footer that wants a bar draws one **selected** operation's own percentage. The shipped default is
-FIFO: the oldest entry that is `queued` or `running`, advancing on its own when that one leaves.
+`Aggregate` declares `percent?: never`; see
+[The aggregate carries counts and a state](../guide/several-operations.md#the-aggregate-carries-counts-and-a-state).
+A footer draws one selected operation's own percentage. The default selection is FIFO: the oldest
+entry that is `queued` or `running`, advancing when that one leaves.
 
 ## The wire layer
 
 Every document has a `parseX` / `serializeX` pair — `parseProgress`, `serializeProgress`,
 `parseSnapshot`, `parseEnvelope`, `parseDialogRequest`, `parseRegister` and the rest — plus the
 closed vocabularies they validate against (`PROGRESS_STATES`, `DIALOG_STATES`, `ENVELOPE_KINDS`,
-`INPUT_TYPES`, `ACTIVE_STATES`, `TERMINAL_STATES`) and `WIRE_VERSION`. They are exported because a
-program that speaks the protocol without using the client still has to parse it; the client itself
-puts every incoming document through the same pair, so nothing reaches a handle unvalidated.
+`INPUT_TYPES`, `ACTIVE_STATES`, `TERMINAL_STATES`) and `WIRE_VERSION`, for a program that speaks the
+protocol without the client. The client parses every incoming document with the same functions.
 
 `ERROR_NAMESPACE` (`'taskwire'`) and `ERROR_NAMESPACE_FASTAPI_VIEWSETS` (`'fastapi-viewsets'`) are the
 namespaces of [Error codes](../guide/error-codes.md). `DISPATCH_FAILED`, `NOT_EXECUTED`,

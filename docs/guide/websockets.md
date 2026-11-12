@@ -1,19 +1,16 @@
 # The WebSocket transport
 
-Everything taskwire does works over HTTP alone. The socket is an accelerator: it carries the same
-protocol, the same documents and the same six calls, and it changes latency and nothing else.
+Everything taskwire does works over HTTP alone. The socket carries the same protocol, documents and
+six calls, and changes latency only:
 
-What it buys is two things at once:
+- pushes down: progress, an opened question, a closed question and a cancellation are sent as they
+  are written, where polling reads them at its next interval (400 ms to 5 s, one request per tab per
+  tick);
+- calls up: the six endpoints of the REST surface travel the same connection, each as one stream, so
+  a tab with a socket needs no HTTP to read the register or answer a question.
 
-- **pushes down** — progress, an opened question, a closed question and a cancellation leave the
-  server the instant they are written, instead of waiting for somebody to ask again. Polling's floor
-  is its interval: 400 ms at best, five seconds at rest, and one request per tab per tick whether or
-  not anything happened;
-- **calls up** — the six endpoints of the REST surface travel the same connection, each as one
-  stream. A tab that has a socket needs no second wire to read the register or answer a question.
-
-Both directions are optional and neither is a new protocol. A deployment with no socket at all sees
-the same states, the same dialogs, the same cancellations and the same results, just later.
+Both directions are optional. A deployment with no socket sees the same states, dialogs,
+cancellations and results, later.
 
 ## Install
 
@@ -30,10 +27,10 @@ npm install taskwire muxws @dynamicforms/fastapi-viewsets
 :::
 
 [muxws](https://docs.velis.si/muxws/) is the multiplexed WebSocket library the transport is written
-against, and [fastapi-viewsets](https://docs.velis.si/) is what publishes taskwire's six endpoints —
-over REST and over the socket, from one registration. See
-[fastapi-viewsets integration](./fastapi-viewsets.md) for what that registration does beyond mounting
-routes, and for the `register_muxws` knob this page assumes is on.
+against, and [fastapi-viewsets](https://docs.velis.si/) publishes taskwire's six endpoints over REST and over
+the socket from one registration. See [fastapi-viewsets integration](./fastapi-viewsets.md) for what
+that registration does beyond mounting routes, and for its `register_muxws` option, which this page
+assumes is on.
 
 ## The server: one endpoint, one call
 
@@ -48,16 +45,13 @@ from taskwire.contrib.redis_store import RedisStore
 registry = PeerRegistry()
 taskwire.configure(
     store=RedisStore(),                      # MemoryStore for a single process
-    transport=MuxwsTransport(registry),      # this is the whole of "turn the socket on"
+    transport=MuxwsTransport(registry),      # pushes over the registered peers
     session_resolver=session_resolver,
 )
 
 @app.on_event("startup")
 async def start_reader() -> None:
-    # A store with a backplane publishes to a channel, and the reader is the only thing in this
-    # process that turns a channel message into a push. Without it the socket is connected and
-    # silent, and polling covers for it well enough that the deployment looks healthy.
-    await taskwire.start_taskwire_reader()
+    await taskwire.start_taskwire_reader()   # required with RedisStore: turns backplane messages into pushes
 
 @app.websocket("/ws")
 async def socket(websocket):
@@ -78,32 +72,26 @@ async def socket(websocket):
         await release_peer(peer, ns, registry)
 ```
 
-`register_taskwire_rest(router)` is unchanged and still mounts the endpoints — it is the same call
-that publishes them over the socket, so there is no second surface to keep in step and no route
-declared twice. Pass `register_muxws=False` to it for a deployment that wants REST alone.
+`register_taskwire_rest(router)` mounts the endpoints and publishes them over the socket with the
+same call. Pass `register_muxws=False` to it for REST alone.
 
-Three things in that handler are worth knowing rather than copying:
+In that handler:
 
-**taskwire never takes the peer's handler slot.** A muxws peer has exactly one `on_stream`, and it
-is the application's. `register_taskwire_muxws` *returns* a handler for you to compose;
-`process_command` returns `False`, having sent nothing, when the stream is not one of the viewset's
-commands, which is what makes the two compose in that order. Your own streams keep working on the
-same socket.
+- taskwire does not take the peer's handler slot. A muxws peer has one `on_stream`, and it is the
+  application's. `register_taskwire_muxws` returns a handler for you to compose; `process_command`
+  returns `False`, having sent nothing, when the stream is not one of the viewset's commands, so the
+  two compose in that order and your own streams work on the same socket.
+- `register_taskwire_muxws` tags the peer, and the tag must come before `registry.register(peer)`:
+  the registry indexes a peer under the tags it holds at that moment, so a peer registered earlier
+  receives no push.
+- `register_taskwire_muxws` subscribes a Redis backplane to the namespace's channel in this process;
+  the reader receives only the namespaces it was told of. `release_peer` unsubscribes once this
+  process holds no more sockets of that namespace, and deregisters the peer.
 
-**The tag comes before `registry.register(peer)`.** The registry indexes a peer under the tags it
-holds at that instant, so a peer registered before it is tagged is indexed under nothing: it receives
-no push, while everything else about the deployment looks correct.
-
-**`register_taskwire_muxws` is also where this process learns it holds a connection for that
-namespace**, so a Redis backplane subscribes to that namespace's channel there. A reader that was
-never told which namespaces to watch is subscribed to nothing — connected, silent, and covered for
-by polling well enough that the deployment looks fine. `release_peer` unsubscribes once this process
-holds no more sockets of that namespace, and deregisters the peer.
-
-Authorization does not change on the socket. Every command carries the WebSocket handshake's own
-headers as its baseline, so `session_resolver` reads the same cookie or `Authorization` header on a
-stream that it reads on a request, and the namespace is decided per call rather than cached at
-handshake time. The peer's tag exists to address it for fan-out, never to authorize it.
+Authorisation is the same on the socket. Every command carries the WebSocket handshake's headers as
+its baseline, so `session_resolver` reads the same cookie or `Authorization` header on a stream as on
+a request, and the namespace is resolved per call, not cached at handshake time. The peer's tag
+addresses it for fan-out and does not authorise it.
 
 ## The client: one call
 
@@ -121,10 +109,10 @@ await socket.announce();     // obtain this socket's connection id
 
 `attachMuxws` does two things: it takes pushes from the peer, and it moves the six calls onto it.
 Pass `{ routeCalls: false }` to take the pushes and leave the calls on HTTP. `detachMuxws(tw)` undoes
-both, and taskwire never closes the socket — it did not dial it.
+both; taskwire never closes the socket.
 
-The socket is the application's to open, which is why there is no URL anywhere in taskwire's
-configuration. One peer serves the whole application: taskwire's streams and the streams your
+The application opens the socket, so taskwire's configuration has no URL. One peer serves the whole
+application: taskwire's streams and the streams your
 application opens from the browser share it. A stream the server opens to the browser reaches
 taskwire's handler (see [the next section](#one-peer-for-taskwire-and-fastapi-viewsets-events)).
 
@@ -279,8 +267,8 @@ interceptor writes on a request:
 const report = tw.run(() => api.import(rows));    // a muxws proxy call: the stream carries the token
 ```
 
-The token covers only the synchronous part of the callback, exactly as over HTTP: a callback that
-awaits before it calls sends no token, and `run(token => ...)` is the form that is always correct. A
+The token covers only the synchronous part of the callback, as over HTTP: a callback that awaits
+before it calls sends no token; `run(token => ...)` passes it explicitly. A
 muxws proxy opens a call's stream synchronously once its peer has resolved; a call issued before
 that opens its stream later, without the token. A fastapi-viewsets proxy opens a repeat of a call
 with the headers of its first stream, so a repeat carries the same token. `detachMuxws(tw)` removes
@@ -288,66 +276,50 @@ the interceptor.
 
 ## Polling stops while the socket is up
 
-A client with a healthy transport attached **suspends its polling ladder** — the register's and every
-token's. The two are alternatives, not layers: a client polling beside its own socket spends a
-request per tab per tick to learn what the socket already told it.
+A client with a healthy transport attached suspends its polling ladders, the register's and every
+token's.
 
-Suspended is not silent. Each loop still reads once when it starts — the register when something
-first reads `tw.register`, a token when it is first tracked or subscribed — because the socket
-carries what *changes*, and an operation that is already parked on a question pushes nothing at all
-until it ends. A token this page minted (`run()`, `trackCall()`, `tw.busy`) is not read: its
-operation starts with this page's request, and the server pushes every state it reaches. Every rung
-after that first read is the ladder, and the ladder is what stops.
+Each loop still reads once when it starts — the register when something first reads `tw.register`, a
+token when it is first tracked or subscribed — because the socket carries only changes, and an
+operation already waiting on a question pushes nothing until it ends. A token this page minted
+(`run()`, `trackCall()`, `tw.busy`) is not read: its operation starts with this page's request, and
+the server pushes every state it reaches. Every later read is the ladder's, and that is suspended.
 
-Losing the socket puts every ladder back on its **base** rung, 400 ms, within one interval, and one
-register read is the whole of the recovery. Nothing is replayed and nothing is resumed: a reconnected
-socket is a new socket, and the client's next read is what restores the picture.
+Losing the socket puts every ladder back on its base rung, 400 ms, within one interval, followed by
+one register read. Nothing is replayed or resumed: a reconnected socket is a new socket, and the
+client's next read restores the state.
 
 ## The connection id
 
 `announce()` sends one empty declaration — `{"kind": "watch", "overrides": {}}` — and the reply
 carries this socket's server-issued id. The client keeps it in memory and stamps it on every request
-it makes, as `X-Taskwire-Connection`. That header is the whole of what the id does, and it does two
-things with it:
+it makes, as `X-Taskwire-Connection`. The server uses the header for two things:
 
-- a **private** operation — one started with no `result_kind` — records the id of the connection its
-  start command carried, and its progress is pushed to that socket and to no other;
-- `progress_delivery` on a register read is answered for *this* connection, so an operation this tab
+- a private operation (one started with no `result_kind`) records the id of the connection its
+  start command carried, and its progress is pushed to that socket only;
+- `progress_delivery` on a register read is answered for this connection, so an operation this tab
   silenced renders as silenced in this tab.
 
-The id belongs to the socket rather than to the client, and does not survive a reconnect. taskwire
-re-obtains it: a socket that has declared once declares again, empty, when it comes back — and the
-client names no connection at all in between rather than one that is gone. An empty declaration
-restores nothing; it asserts exactly the state the new socket already has.
+The id belongs to the socket, not the client, and does not survive a reconnect. A socket that has
+declared once declares again, empty, when it comes back, and the client sends no connection header
+in between. An empty declaration restores no overrides.
 
-## The store is still the truth
+## Lost pushes
 
-Every state change is written to the store **before** anything is pushed anywhere. A push is a
-notification that state changed, never the only copy of it.
-
-So a dropped, coalesced or suppressed push cannot change what the next read returns. taskwire keeps
-no event log, no sequence numbers, no replay endpoint and no gap detection, because a client is
-entitled to current state and asking for it is always enough. Over fastapi-viewsets events the event
-store keeps a log of its own; taskwire answers a gap in it with a read. A socket that dies mid-import costs
-the tab watching it a few hundred milliseconds of staleness — not a wrong percentage, not a missed
-question, and not a result that vanished.
-
-A vanished watcher never affects the operation either. A disconnect is not a statement of intent:
-nothing is cancelled, deleted or shortened, and a 90,000-row import keeps running with nobody
-looking at it.
+A lost push delays an update and does not change it; see
+[The store is the truth](./transports.md#the-store-is-the-truth). Over fastapi-viewsets events the
+event store keeps a log of its own; taskwire answers a gap in it with a read.
 
 ## Identity changes close the socket
 
-After a login, or any move from one namespace to another, a socket whose tag names the old namespace
-is **closed, never retagged** — `goaway_if_stale(peer, current_ns)` does it. Retagging would leave a
-connection authorized for a namespace nobody re-checked. The client dials again and reads the
-register under its new identity, and that is the whole of the recovery.
+After a login, or any move from one namespace to another, `goaway_if_stale(peer, current_ns)` closes
+a socket whose tag names the old namespace; it does not retag it, so no connection keeps a namespace
+it was not authorised for. The client dials again and reads the register under its new identity.
 
 ## Answering a question over the socket
 
-A dialog reply travels the socket as what it is: the same `POST /taskwire/{token}/dialogs/{did}` the
-REST client sends, dispatched from a stream into the same handler. First answer wins across every
-tab either way, and the losing tab is told so identically.
+A dialog reply over the socket is the same `POST /taskwire/{token}/dialogs/{did}` the REST client
+sends, dispatched from a stream into the same handler. The first answer wins across every tab
+either way, and the other tabs receive the same answer as over REST.
 
-REST remains the default: it is the path that works with no socket at all. A client answers over
-HTTP until `attachMuxws` moves its calls.
+A client answers over HTTP until `attachMuxws` moves its calls.

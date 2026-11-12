@@ -1,56 +1,26 @@
 /**
- * Drive the **shipped TypeScript client** against a running demo, over both wires, doing what the
- * demo's page does and nothing else.
+ * Drive the built TypeScript client (`dist/`) against a running demo, over both wires, doing what the
+ * demo's page does: `tw.run()`, `entry.answer()`, `entry.cancel()`, `entry.collect()` and
+ * `entry.dismiss()` against a live store.
  *
- * `demo/live_socket_check.py` proves the protocol: real envelopes over a real socket, asserted as
- * documents. It never loads `dist/`. Every test in `npx vitest run` loads `dist/`'s sources and
- * hands them a fake: a stub transport fed envelopes by hand, or an axios mock. So between the two
- * suites nothing has ever put the client that ships next to the server that ships. This file is
- * that seam, and it is the only place `tw.run()`, `entry.answer()`, `entry.cancel()`,
- * `entry.collect()` and `entry.dismiss()` are called against a live store.
+ * Assertions read register rows by token, as the page renders `tw.register` (through `use_register()`
+ * in `demo/client/src/App.vue`), not `tw.operations`. The handle `tw.run()` returns settles with the
+ * POST (TW-TS-002); it is kept for its `token` and as the row once the operation has left the register
+ * (TW-REG-007), and it is the object the register adopts (TW-TS-005).
  *
- * ## What it reads, and why that matters
+ * Dialogs are tracked by id: `Operation.dialog` is the oldest open question. Whether an answer landed
+ * is read from the server through a second axios instance, because `answer()` settles its dialog
+ * locally when the POST resolves.
  *
- * The page renders **`tw.register`** - `use_register()` in `demo/client/src/App.vue` seeds `entries`
- * from `client.register` and re-seeds it from `onRegisterChange` (`vue/vue.ts`), and the template's
- * `v-for` is over `entries`. It does **not** render `tw.operations`, which is the UI-policy-filtered
- * visible set and is empty in an ordinary run. So every assertion below reads a register row, by
- * token, exactly as the markup does.
+ * `client` is the axios instance `use_taskwire()` uses; its requests are counted. `probe` is this
+ * script's own, for verifying reads and clean-up, and is not counted.
  *
- * `tw.run(fn, opts)` hands back a `PromiseLike` over **the request's** promise (TW-TS-002), not a
- * live handle onto the operation; the page discards it. It is kept here for its `token` and as the
- * fallback row once a terminal state has taken the entry out of the register (TW-REG-007) - it is
- * the same object the register adopts, because one token is one handle (TW-TS-005).
+ * The polling assertion counts periodic reads (`GET {prefix}` and `GET {prefix}/{token}`) on both the
+ * axios instance and as muxws streams, by patching `peer.open`. Over a socket both must be zero while
+ * an operation runs (TW-TS-007); over HTTP the axios count must be non-zero in the same window.
  *
- * ## Dialogs are tracked by id, always
- *
- * `reconcile` asks four times, and `Operation.dialog` is the **oldest open** question. So "a dialog
- * is present after answering" proves nothing - it is usually the next question. Every dialog
- * assertion here captures the id first and asserts about that id, and the one that decides whether
- * an answer landed reads the id's state **off the server** through a second axios instance, because
- * `answer()` settles its dialog locally the moment the POST resolves (`Operation.#markDialogSettled`)
- * and a client-side read would be asserting on the client's own optimism.
- *
- * ## Two axios instances, on purpose
- *
- * `client` is the one `use_taskwire()` is built on, and therefore the only one the library ever
- * issues a request through; every request on it is counted and classified. `probe` is this script's
- * own: the out-of-band reads that verify the server agrees, and the cleanup that keeps one phase's
- * leftovers out of the next. Nothing the probe does is counted, so the polling assertion measures
- * the library and not the harness.
- *
- * ## What the polling assertion measures
- *
- * **The ladder, not HTTP.** `attachMuxws` does two independent things (TW-TS-007 and its own
- * `routeCalls`): it suspends every polling ladder, and it moves the six calls of TW-REST-004 onto
- * the socket. So "no HTTP at all" would be true for two reasons at once and would prove neither.
- * What is measured instead is *periodic reads over whichever wire carries them*: `GET {prefix}` and
- * `GET {prefix}/{token}` on the axios instance, **and** the same two as muxws streams, counted by
- * patching `peer.open`. Over a socket both must be zero while an operation is running; over HTTP the
- * first must be non-zero in the same window, which is the control that proves the counter works.
- *
- * Usage: `node demo/e2e/drive_client.mjs http://127.0.0.1:8030`. `demo/e2e/run_e2e.py` is the
- * supported entry point and starts the server itself.
+ * Usage: `node demo/e2e/drive_client.mjs http://127.0.0.1:8030`; `demo/e2e/run_e2e.py` starts the
+ * server and runs it.
  */
 
 import process from 'node:process';
@@ -58,8 +28,7 @@ import process from 'node:process';
 import { MuxwsProxyImpl, RestProxyImpl } from '@dynamicforms/fastapi-viewsets';
 import axios from 'axios';
 import { JsonCodec, registerCodec } from 'muxws';
-// A browser `connect()` cannot set handshake headers, and the demo's namespace is a cookie: the
-// socket must carry it or it is a socket no envelope can reach (TW-WS-007). Node's twin takes them.
+// The Node `connect()` sets handshake headers, here the session cookie (TW-WS-007).
 import { connect } from 'muxws/node';
 
 import { use_taskwire } from '../../dist/index.js';
@@ -71,7 +40,7 @@ const BASE_PATH = '/taskwire';
 /** The three states an operation can end in. Everything else is still running. */
 const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 
-/** Long enough to bound a failure, never long enough to pace a success: every wait is on an event. */
+/** Upper bounds of the waits; every wait ends on its event. */
 const T = {
   row: 15_000,
   progress: 20_000,
@@ -81,42 +50,30 @@ const T = {
   settles: 10_000,
   holdEnds: 30_000,
   pollWindow: 4_000,
-  /** Long enough that both ladders have seen the question and parked on the rung it chooses. */
+  /** The pause before answering a question, longer than one polling rung. */
   thinking: 1_500,
 };
 
 /**
- * How long the row of an operation **this client started** may take to reach the screen, measured
- * from the command's own answer.
- *
- * A budget rather than a timeout: every other wait here is on an event and bounds a failure, while
- * this one is the assertion. The register is the only place a shared operation's row can come from
- * (TW-PRIV-002), so a client that does not read the list when its own command returns waits for the
- * ladder - which sits on its five second ceiling for exactly as long as the namespace was quiet,
- * i.e. always, at the moment somebody starts the first job of the day.
+ * Maximum delay between the command answering and the row of the operation it started appearing.
+ * The row comes from the register only (TW-PRIV-002), so the client must read the list when its own
+ * command returns.
  */
 const ROW_BUDGET_MS = 500;
 
 /**
- * How long the bar may stand still after this client answered the question the worker was parked on.
- *
- * The reply releases the worker on the spot, and `reconcile` reports again within a step. What the
- * budget is really about is the *reader*: the interval rules answer their ceiling while a question is
- * open - a human is deciding, and asking faster changes nothing - so a client that kept that rung
- * after its own reply would show a frozen bar for five seconds after every answer and move only when
- * the next question happened to arrive.
+ * Maximum time the bar may stand still after this client answered the open question: a write of the
+ * client's own restarts the polling ladder at its base rung.
  */
 const RESUME_BUDGET_MS = 2_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Wait for a predicate, and **never hand it an `Operation`**.
+ * Wait for a truthy `predicate()`, or `null` after `timeoutMs`.
  *
- * A handle is a `PromiseLike` over the request that started it (TW-TS-002), so `await predicate()`
- * on one waits for that request rather than reading the value - and a handle the register adopted
- * has no request behind it, so the wait never ends. Return the token, the dialog, a boolean, or the
- * entry wrapped in an object; never the entry itself.
+ * The predicate must not return an `Operation`: a handle is a `PromiseLike` (TW-TS-002), so awaiting
+ * it waits for its request, which an adopted handle never settles. Wrap an entry in an object.
  */
 async function until(predicate, timeoutMs, step = 40) {
   const deadline = Date.now() + timeoutMs;
@@ -133,12 +90,8 @@ async function until(predicate, timeoutMs, step = 40) {
 // ------------------------------------------------------------------------------------------------
 
 /**
- * One record per assertion, keyed by a **stable id** rather than by its sentence.
- *
- * The id is what the two wires are compared on at the end. Three ids are wire-specific by nature -
- * a push cannot be counted on a wire that has none - and those are declared rather than silently
- * passed on the wire that cannot run them, because a vacuous pass in an agreement table is worse
- * than an absence.
+ * One record per assertion, keyed by a stable id; the two wires are compared by id. Wire-specific
+ * checks have ids of their own and are listed, not compared.
  */
 class Ledger {
   constructor(wire) {
@@ -168,8 +121,8 @@ class Ledger {
 // ------------------------------------------------------------------------------------------------
 
 /**
- * Everything the two transports have in common: one client, one namespace, one counted axios
- * instance, and - over a socket - one peer whose streams and envelopes are tapped on the way past.
+ * One wire's client: one namespace, one counted axios instance and, over a socket, one peer whose
+ * streams and envelopes are tapped.
  */
 class Harness {
   constructor(base, wire) {
@@ -185,14 +138,13 @@ class Harness {
   }
 
   async open() {
-    // A namespace of its own per wire, so one wire's leftovers cannot be the other's starting state.
+    // A namespace of its own per wire.
     const seed = await axios.get(`${this.base}/demo/book`);
     const cookie = (seed.headers['set-cookie'] ?? [])
       .map((value) => /taskwire_demo_session=([^;]+)/.exec(value)?.[1])
       .find(Boolean);
     if (!cookie) throw new Error('the demo handed out no session cookie');
-    // Kept, because a second page of the same namespace is one of the arrangements under test and
-    // the namespace *is* this cookie.
+    // Kept for the second page of the same namespace (`Observer`).
     const headers = { Cookie: `${SESSION_COOKIE}=${cookie}` };
     this.headers = headers;
 
@@ -201,28 +153,19 @@ class Harness {
     this.client.interceptors.request.use(
       (config) => {
         const url = config.url ?? '';
-        // A read of the register or of one token - the ladder's two shapes, and the only requests a
-        // client issues on its own initiative. A POST is a command or a call and is never periodic.
+        // A read of the register or of one token: the polling ladder's requests.
         if ((config.method ?? 'get').toLowerCase() === 'get' && url.startsWith(BASE_PATH)) this.reads.http += 1;
         return config;
       },
       null,
-      // `synchronous: true` on **this** interceptor, and it is not optional. axios runs the whole
-      // request chain in a promise only if every interceptor in it is synchronous, so one ordinary
-      // interceptor on the same instance would push taskwire's own into a microtask - by which time
-      // `run()` has unbound the ambient token and `X-Taskwire-Token` is never written (TW-TS-003).
-      // The command then arrives with no token, the server mints one of its own, and every row this
-      // script looks for is under an address it does not have.
+      // Must be synchronous: one asynchronous interceptor makes axios run taskwire's interceptor in a
+      // microtask, after `run()` has unbound the token, and `X-Taskwire-Token` is not sent (TW-TS-003).
       { synchronous: true },
     );
 
     this.tw = use_taskwire({ basePath: BASE_PATH, axiosInstance: this.client });
 
-    // The page's own order, and it is the assertion rather than a detail. `use_register()` runs at
-    // setup - so the register loop is started, and its first read merely *scheduled* - and the wire
-    // is chosen afterwards, on a click. A harness that attached first would start the loop under an
-    // already-suspended ladder, which is the one arrangement in which the socket has nothing to get
-    // wrong (TW-TS-007).
+    // The page's order: the register loop starts first, the socket is attached afterwards (TW-TS-007).
     this.entries = this.tw.register;
     this.stopWatching = this.tw.onRegisterChange((operations) => {
       this.entries = operations;
@@ -233,8 +176,7 @@ class Harness {
       const peer = await connect(`${this.base.replace(/^http/, 'ws')}/ws`, { headers });
       this.peer = peer;
 
-      // Tapped by wrapping the peer's own two entry points, so the library is attached to exactly
-      // what the page attaches it to: `attachMuxws` sees a peer, not a decorated stand-in.
+      // Count GET streams and record pushes by wrapping the peer's own `open` and `onStream`.
       const open = peer.open.bind(peer);
       peer.open = (body, options) => {
         const method = options?.headers?.[':method'];
@@ -250,7 +192,7 @@ class Harness {
         });
 
       this.transport = attachMuxws(this.tw, peer);
-      // One empty declaration, purely to learn this socket's id (TW-REG-020) - what the page does.
+      // An empty declaration, for this socket's id (TW-REG-020).
       this.connection = await this.transport.announce();
     }
   }
@@ -270,8 +212,7 @@ class Harness {
   /** Start a job the way `App.vue` does: `run()` mints the token and the POST carries it. */
   start(job) {
     const handle = this.tw.run((_token) => this.client.post(`/demo/jobs/${job}`), { resultKind: `demo.${job}` });
-    // The handle is a `PromiseLike` over the POST (TW-TS-002), so this is the command answering and
-    // nothing about the work: the moment the operation exists and the register can answer for it.
+    // The handle settles with the POST (TW-TS-002): the moment the command answered.
     Promise.resolve(handle).then(
       () => this.answered.set(handle.token, Date.now()),
       () => undefined,
@@ -280,27 +221,23 @@ class Harness {
   }
 
   /**
-   * The server's own answer for a token, or `null` when there is nothing left to read.
-   *
-   * An ending is not an absence. The terminal write takes the operation out of the register
-   * (TW-REG-007) and leaves the document at its own address for `tombstone_ttl` (TW-RET-004), so a
-   * `404` here means expired or another namespace's - never "the work is over".
+   * The server's snapshot of a token, or `null` on 404: expired or another namespace's. A terminal
+   * document stays readable for `tombstone_ttl` (TW-RET-004).
    */
   async serverSnapshot(token) {
     const response = await this.probe.get(`${BASE_PATH}/${token}`);
     return response.status === 200 ? response.data : null;
   }
 
-  /** The tokens the register lists for this namespace. The register is the only listing there is. */
+  /** The tokens the server's register lists for this namespace. */
   async serverRegisterTokens() {
     const response = await this.probe.get(BASE_PATH);
     return response.status === 200 ? (response.data.operations ?? []).map((entry) => entry.token) : [];
   }
 
   /**
-   * Whether the operation is over, as the server tells it: the row has left the register and the
-   * document reads terminal at its own address. Answers with that terminal progress, so a caller can
-   * say *which* ending and, for a failure, why.
+   * The terminal progress once the operation has left the server's register and its document reads
+   * terminal; `null` otherwise.
    */
   async serverEnded(token) {
     const [listed, snapshot] = await Promise.all([this.serverRegisterTokens(), this.serverSnapshot(token)]);
@@ -315,13 +252,7 @@ class Harness {
     return (snapshot.dialogs ?? []).find((dialog) => dialog.id === id)?.state ?? null;
   }
 
-  /**
-   * Put an operation out of its misery between phases.
-   *
-   * Not a check and never one: the assertion it follows has already been recorded, and this exists
-   * so that a job left running by a call that did nothing cannot be mistaken for the next phase's
-   * subject. It goes out over the probe, so it is neither counted nor attributed to the library.
-   */
+  /** Cancels or dismisses a leftover operation over the probe between phases; not counted. */
   async cleanup(token) {
     await this.probe.post(`${BASE_PATH}/${token}/cancel`);
     await this.probe.post(`${BASE_PATH}/${token}/dismiss`);
@@ -330,14 +261,9 @@ class Harness {
 }
 
 /**
- * A second page of the same namespace: the tab that started nothing.
- *
- * Its entries are **adopted** - the register loop mints the handle, and TW-REG-002 gives it no poller
- * of its own - which is a different object with a different set of readers from the handle `run()`
- * hands back. Every check above this line reads the starting tab's handle and so proves nothing
- * about it, while the register is namespace-wide (TW-REG-001) and every question in it appears here
- * too (TW-TAB-004). It speaks the same wire as the harness, on a socket of its own where that is a
- * socket, because a second connection is what a second tab is.
+ * A second page of the same namespace that starts nothing (TW-REG-001, TW-TAB-004). Its entries are
+ * adopted by the register loop and have no poller of their own (TW-REG-002). It uses the harness's
+ * wire, with a socket of its own over WebSocket.
  */
 class Observer {
   constructor(host) {
@@ -377,12 +303,9 @@ class Observer {
 // ------------------------------------------------------------------------------------------------
 
 /**
- * `export`: the register fills, a bar moves, the ladder does or does not run, and Cancel ends it.
- *
- * Cancellation is asserted **on the server** rather than on the row. A 202 is an acknowledgement and
- * not a completion (TW-CANCEL-003) and the row's own departure would follow it by a poll, so what is
- * waited for is the operation leaving the register with `cancelled` written at its own address - the
- * thing the user pressing Cancel is actually asking for.
+ * `export`: the row appears, the bar moves, the polling ladder runs or is suspended, and Cancel ends
+ * the operation. Cancellation is asserted on the server: out of the register, `cancelled` at its own
+ * address (TW-CANCEL-003).
  */
 async function phaseExport(h) {
   const { ledger } = h;
@@ -391,8 +314,7 @@ async function phaseExport(h) {
 
   const listed = await until(() => h.row(token) !== null, T.row);
   ledger.check('register.fills', 'the started operation appears as a register row', listed !== null, `token ${token}`);
-  // Taken before the wait below, because over a socket the push routinely puts the row on screen
-  // *before* the POST it was started by has resolved, and that is a pass rather than a puzzle.
+  // Taken before the wait: over a socket the row often appears before the POST resolves (a pass).
   const shownAt = Date.now();
   const answeredAt = await until(() => h.answered.get(token) ?? null, T.row);
   const waited = answeredAt === null ? null : shownAt - answeredAt;
@@ -403,9 +325,7 @@ async function phaseExport(h) {
     waited === null ? 'the command never answered' : `${waited} ms, on a ${h.wire} client`,
   );
   if (listed === null) {
-    // Every check below reads that row, and the cancellation check reads the document the terminal
-    // write leaves at its own address. A token whose row never appeared gives neither of them
-    // anything to be true or false about, so they are recorded as unreached instead.
+    // The checks below need the row; record them as not reached.
     ['progress.moves', 'cancel.ends'].forEach((id) => ledger.blocked(id, id, 'the register row never appeared'));
     ledger.blocked(
       h.wire === 'websocket' ? 'ws.no_ladder_polling' : 'http.ladder_polls',
@@ -416,9 +336,7 @@ async function phaseExport(h) {
     return token;
   }
 
-  // The one thing only the command carries. `origin_connection` is fixed at the opening write from
-  // the `X-Taskwire-Connection` header of the request that started the operation (TW-PRIV-001), so
-  // it is evidence about the *client*: the socket declared an id, and the command named it.
+  // `origin_connection` comes from the starting request's `X-Taskwire-Connection` (TW-PRIV-001).
   const stamped = await h.serverSnapshot(token);
   if (h.wire === 'websocket') {
     ledger.check(
@@ -445,8 +363,7 @@ async function phaseExport(h) {
   }, T.progress);
   ledger.check('progress.moves', 'the bar moves - percent strictly increases', moved !== null, `samples ${percents}`);
 
-  // Measured while something is running, which is when the ladder is on its **base** rung: at rest
-  // it is at the five second ceiling and a quiet window would prove far less.
+  // Measured while the operation runs, when the ladder is on its base rung.
   const before = { ...h.reads };
   await sleep(T.pollWindow);
   const delta = { http: h.reads.http - before.http, socket: h.reads.socket - before.socket };
@@ -511,10 +428,8 @@ async function phaseDialogs(h) {
     `dialogId ${first.dialogId}`,
   );
 
-  // `waiting_input` is derived and never written (TW-PROG-010), so the two wires carry different
-  // documents here: a read derives it on the way out, a push carries the committed one. What must
-  // not differ is what a reader is told, on pain of the same operation reading `running` in one tab
-  // and `waiting input` in the next (TW-CORE-002).
+  // `waiting_input` is derived (TW-PROG-010): a read derives it, a push carries the committed state,
+  // and the client derives it again, so both wires report the same (TW-CORE-002).
   const serverState = (await h.serverSnapshot(token))?.progress?.state ?? null;
   ledger.check(
     'dialog.state_agrees_with_the_server',
@@ -525,19 +440,15 @@ async function phaseDialogs(h) {
 
   const id = first.id;
   const percentAtAsk = h.row(token)?.progress?.percent ?? 0;
-  // `answer()` answers the oldest open question, so this is the one guard that makes "by id" true.
+  // `answer()` answers the oldest open question; this confirms it is the captured id.
   const answeringTheCaptured = h.row(token)?.dialog?.id === id;
-  // A moment's thought, and it is the assertion below rather than politeness. Answering in the same
-  // tick as the question arrives leaves both loops holding a rung scheduled *before* it - a short one
-  // - and the bar then moves again for a reason that has nothing to do with the reply. A person takes
-  // longer than one rung, by which time both ladders are on the ceiling a question puts them on.
+  // Answering only after the ladders reached the ceiling an open question puts them on, so the bar
+  // moving again is caused by the reply.
   await sleep(T.thinking);
   await h.row(token).answer('ours');
   const answeredAt = Date.now();
 
-  // Measured before the two checks below and not after them, because this is the only one of the
-  // three that is about *when*: the other two assert states that stay true once they are reached,
-  // and waiting on them first would put their own latency inside this number.
+  // Measured first: the two checks below wait on states and would add their latency.
   const resumed = await until(() => (h.row(token)?.progress?.percent ?? 0) > percentAtAsk, T.resumes, 25);
   const stoodStill = resumed === null ? null : Date.now() - answeredAt;
   ledger.check(
@@ -608,17 +519,9 @@ async function phaseDialogs(h) {
 }
 
 /**
- * `reconcile`, cancelled while it is parked on a question: the modal has to go.
- *
- * A cancel wakes the worker at once (TW-CANCEL-007) and its terminal write withdraws every open
- * question in the same step, announcing that withdrawal with nothing (TW-CANCEL-011). So what the
- * client has to close its modal on is the row's departure and the state it reads afterwards
- * (TW-DLG-016) - a question that outlived the operation that asked it is a modal over a worker that
- * is gone.
- *
- * Asserted on the handle rather than on the row, because the row is exactly what leaves: the
- * register drops a departed operation, and the modal the page is drawing is bound to the entry it
- * captured when the question arrived.
+ * `reconcile`, cancelled while a question is open: the worker is woken (TW-CANCEL-007), the terminal
+ * write withdraws the question with no envelope of its own (TW-CANCEL-011), and the client settles
+ * it (TW-DLG-016). Asserted on the captured handle, as the row leaves the register.
  */
 async function phaseCancelWhileAsking(h) {
   const { ledger } = h;
@@ -652,8 +555,7 @@ async function phaseCancelWhileAsking(h) {
     T.settles,
     100,
   );
-  // Held, because the failure this catches is a question that comes back rather than one that never
-  // went: a late read landing on a closed handle would be the shape of it.
+  // Held, to catch a question reopened by a late read.
   await sleep(3_000);
   const stillClosed = entry.dialog === null && entry.dialogs.every((dialog) => dialog.state !== 'open');
   ledger.check(
@@ -665,7 +567,7 @@ async function phaseCancelWhileAsking(h) {
   await h.cleanup(token);
 }
 
-/** `revalue`: the second release path. Dismiss is the same act as collect and must do the same. */
+/** `revalue`: Dismiss on a parked result releases it as Collect does. */
 async function phaseDismiss(h) {
   const { ledger } = h;
   const op = h.start('revalue');
@@ -692,13 +594,10 @@ async function phaseDismiss(h) {
 }
 
 /**
- * `reprice`: an application viewset call, made through a fastapi-viewsets proxy on the wire under
- * test, followed with `tw.awaitCall()` under its `Idempotency-Key` (TW-CALL-001, TW-TS-019).
- *
- * Nothing in the call names taskwire: the proxy sends its key, `TaskwireMiddleware` tracks the call,
- * and the action reports through `taskwire.progress`. The operation is private, so it must never be a
- * register row; over a socket its `origin_connection` is the socket's id, which only the muxws open
- * interceptor can have put on the command stream (TW-TS-020).
+ * `reprice`: an application viewset call through a fastapi-viewsets proxy on the wire under test,
+ * followed with `tw.awaitCall()` under its `Idempotency-Key` (TW-CALL-001, TW-TS-019). The operation
+ * is private and never a register row; over a socket its `origin_connection` is the socket's id, put
+ * on the command stream by the muxws open interceptor (TW-TS-020).
  */
 async function phaseTrackedCall(h) {
   const { ledger } = h;
@@ -714,7 +613,7 @@ async function phaseTrackedCall(h) {
   );
 
   const samples = [];
-  // The server's register, read while the action runs: the one listing a second tab would see.
+  // The server's register, read while the action runs.
   let listing = null;
   const call = positions.reprice();
   const answer = await h.tw.awaitCall(call, (operation) => {
@@ -758,11 +657,8 @@ async function phaseTrackedCall(h) {
 }
 
 /**
- * A client that was not here: it opens after the operation ended, calls `track()`, and reads what it
- * is told.
- *
- * Its own client and, over a socket, its own connection - nothing it knows can have come from having
- * watched. The one read a held ladder still owes (TW-TS-007) is the only one it takes.
+ * A new client, with its own connection over a socket, that calls `track()` on an ended operation and
+ * returns the terminal progress it reads (TW-TS-007), or `null`.
  */
 async function lateReader(h, token) {
   const http = axios.create({ baseURL: h.base, headers: h.headers });
@@ -786,17 +682,10 @@ async function lateReader(h, token) {
 }
 
 /**
- * `hold`: a question nobody answers, under the application's own fifteen second deadline.
- *
- * The terminal write withdraws the question in the same step (TW-CANCEL-011) and publishes **no**
- * `dialog.close` - so the terminal progress is the only notice a client ever gets that the modal on
- * its screen is pointing at a worker that is gone. That is what the last checks are about, and they
- * are asserted on both wires and in both tabs: a client that cleared its question only over a socket,
- * or only in the tab that started the job, would leave that modal up for everybody else.
- *
- * The second tab is not a variation of the first. Its entry is adopted by the register loop and has
- * no poller (TW-REG-002), and no payload ever carries the terminal document (TW-REG-007) - so with
- * no push to carry it, the row's departure is the entire announcement it will ever get.
+ * `hold`: an unanswered question under the application's own deadline. The terminal write withdraws
+ * it with no `dialog.close` (TW-CANCEL-011); both the starting tab and a second tab must clear it. The
+ * second tab's entry has no poller (TW-REG-002) and no register payload carries the terminal document
+ * (TW-REG-007), so over HTTP it clears on the row's departure.
  */
 async function phaseHold(h) {
   const { ledger } = h;
@@ -827,9 +716,7 @@ async function phaseHold(h) {
     `dialogId ${asked.dialogId}`,
   );
 
-  // The other tab's own copy of the row, kept the way the page keeps it: the entry object that was
-  // holding the question, read again after the operation is over. `App.vue` does exactly this - the
-  // modal closes when the entry it is drawn from has no open dialog left, and nothing else closes it.
+  // The second tab's entry holding the question, read again after the end, as `App.vue` keeps it.
   const held = await until(() => {
     const entry = elsewhere.row(token);
     return (entry?.dialog ?? null) === null ? null : { entry };
@@ -856,10 +743,7 @@ async function phaseHold(h) {
     ended === null ? 'nothing was left at the address' : `it reads ${ended.state} / ${ended.error?.code}`,
   );
 
-  // Waited for rather than sampled. The two ends of this are on separate clocks: the row departs
-  // when the register is next read, and the handle learns of the withdrawal from the terminal state
-  // its own poller reads - and both of those ladders are at the five second ceiling while a question
-  // is open, so which arrives first is not a property of anything.
+  // Waited for: the row's departure and the handle's terminal read come from separate loops.
   const settled = await until(
     () => (op.dialogs.find((dialog) => dialog.id === asked.id)?.state ?? 'gone') !== 'open',
     T.settles,
@@ -891,9 +775,7 @@ async function phaseHold(h) {
   }
   await elsewhere.close();
 
-  // What the record is for, and the one thing an absence cannot do. This client did not exist while
-  // the operation ran: it starts at `track()`, on a token that is already over, and TW-RET-004 is
-  // what lets it be told `failed` and `taskwire.dialog_timeout` instead of that there is nothing there.
+  // A client created after the end reads `failed` and the code from the tombstone (TW-RET-004).
   const late = await lateReader(h, token);
   ledger.check(
     'hold.late_reader_learns_why',
@@ -935,13 +817,7 @@ async function runWire(base, wire) {
   return h.ledger;
 }
 
-/**
- * The same script, the same outcomes.
- *
- * Compared on the shared ids only. The three wire-specific ones are listed rather than compared: a
- * `dialog.close` cannot be counted on a wire that pushes nothing, and pretending otherwise would put
- * a pass in this table that nothing ran.
- */
+/** Compare the two wires' outcomes on the shared ids; wire-specific ids are listed only. */
 function compare(ledgers) {
   const [http, ws] = ledgers;
   const shared = [...http.records.keys()].filter((id) => ws.records.has(id));

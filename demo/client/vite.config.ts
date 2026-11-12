@@ -7,10 +7,8 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      // `taskwire` is the *root* of this npm workspace, and npm links only workspace **members**
-      // into `node_modules` - so the bare specifier every consumer outside this repository writes
-      // has nothing to resolve to here. A consumer deletes these two lines and changes nothing
-      // else: every import in `src/` is the published one, spelled the published way.
+      // `taskwire` is the root of this npm workspace and npm links only workspace members into
+      // `node_modules`, so the package specifiers are resolved to the sources here.
       'taskwire/muxws': fileURLToPath(new URL('../../vue/muxws.ts', import.meta.url)),
       'taskwire/vue': fileURLToPath(new URL('../../vue/vue.ts', import.meta.url)),
       'taskwire/vuetify': fileURLToPath(new URL('../../vue/vuetify.ts', import.meta.url)),
@@ -19,20 +17,13 @@ export default defineConfig({
   },
   server: {
     port: 5174,
-    // Vite's default is to step to the next free port, print it in its own banner and carry on.
-    // `demo.py` has already printed 5174 by then and cannot un-print it, so the reader would open a
-    // port this run is not serving - and if what holds 5174 is a dev server left from an earlier
-    // run, that is a *stale taskwire demo* which looks live and answers nothing new. Failing to
-    // start is the honest outcome.
+    // demo.py prints 5174; fail instead of moving to another port.
     strictPort: true,
     proxy: {
-      // Both halves through one origin, so the demo needs no CORS story and the session cookie is
-      // first-party. `/taskwire` is the library's; `/demo` is the application's own.
+      // One origin for both halves: no CORS, and the session cookie is first-party.
       '/taskwire': { target: 'http://127.0.0.1:8030', changeOrigin: false },
       '/demo': { target: 'http://127.0.0.1:8030', changeOrigin: false },
-      // The socket goes through the same origin for the same reason the calls do: the handshake
-      // carries the session cookie, and a cookie set `SameSite=lax` is not sent on a cross-site
-      // WebSocket upgrade - so a socket dialled straight at :8030 would arrive with no namespace.
+      // A `SameSite=lax` cookie is not sent on a cross-site WebSocket upgrade, so the socket is proxied too.
       '/ws': { target: 'ws://127.0.0.1:8030', ws: true, changeOrigin: false },
     },
   },

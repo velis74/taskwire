@@ -32,9 +32,9 @@ configure_taskwire({ progressUi: { delay: 500 }, unreachableAfter: 3 });
 ## The backend: an action that reports progress
 
 With `register_taskwire_rest(router)`, every viewset call that carries an `Idempotency-Key` holding
-a UUID — every call a fastapi-viewsets proxy makes other than a `GET` — is an operation under that
-key, and the action reports into it through the ambient reporter (see
-[fastapi-viewsets integration](./fastapi-viewsets.md#tracking-viewset-calls)):
+a UUID (every call a fastapi-viewsets proxy makes) is an operation under that key, and the action
+reports into it through the ambient reporter (see [fastapi-viewsets
+integration](./fastapi-viewsets.md#tracking-viewset-calls)):
 
 ```python
 from fastapi import APIRouter
@@ -56,7 +56,7 @@ class ImportViewSet:
 No `from __future__ import annotations` in a viewset module: `route_viewset` reads the return
 annotations as objects.
 
-**A deferred action** reports the same way. A `celery_viewset` viewset runs the action in the
+A deferred action reports the same way. A `celery_viewset` viewset runs the action in the
 executor's process, and `TaskwireMiddleware` binds the reporter there; that process configures the
 store and calls `track_viewset_calls()` once at startup:
 
@@ -174,12 +174,13 @@ Both sources may be attached at once. A proxy call reaches both under one key an
 axios request; only `viewsetCallSource()` keeps the call listed between them.
 
 A proxy call made inside `tw.run()` is reported under its `Idempotency-Key`, while the server tracks
-it under `run()`'s token (TW-CALL-001). `tw.busy` follows the key, which has no document, so it
+it under `run()`'s token, because `X-Taskwire-Token` takes precedence over `Idempotency-Key`
+([The token of a call](./tracking-calls.md#the-token-of-a-call)). `tw.busy` follows the key, which has no document, so it
 shows no progress for that call; the handle `run()` returns does.
 
 ## Per call
 
-**Background requests** are left out of `tw.busy` entirely: out of `calls`, `visible` and
+Background requests are left out of `tw.busy` entirely: out of `calls`, `visible` and
 `unreachable`.
 
 ```ts
@@ -196,7 +197,7 @@ await axios.get('/heartbeat', { background: true });
 
 A request two sources report is background when either reports it so.
 
-**A handler for one call.** `tw.trackCall(call, handler)` and `tw.awaitCall(call, handler)` follow
+A handler for one call: `tw.trackCall(call, handler)` and `tw.awaitCall(call, handler)` follow
 one proxy call from its start, whatever its age, and hand the operation to the caller's own code —
 a progress bar in a form, for instance (see [Tracking calls](./tracking-calls.md#on-the-frontend)):
 

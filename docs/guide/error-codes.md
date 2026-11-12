@@ -10,7 +10,7 @@ A namespaced code is `<namespace>.<code>`:
 
 - `code` is snake_case and contains no `.`: `[a-z0-9]+(_[a-z0-9]+)*`;
 - `namespace` is one or more segments joined by `.`, each `[a-z0-9]+(-[a-z0-9]+)*`;
-- a full code splits at its **last** `.`: everything before it is the namespace, everything after it
+- a full code splits at its last `.`: everything before it is the namespace, everything after it
   is the code.
 
 Each namespace a taskwire error can carry is exported as a constant, with the same value in Python

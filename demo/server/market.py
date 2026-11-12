@@ -1,14 +1,8 @@
-"""The book the night batch runs over: positions, trades, and the discrepancies that need a human.
+"""The book the night batch runs over: positions, trades, and the discrepancies that need a person.
 
-Nothing here touches a network, and nothing is drawn from the clock. Every number comes from a
-generator seeded from the symbol and the purpose, never from one shared stream - so a symbol's
-figures do not depend on whether the reader happened to start the export before the reconciliation.
-A demo whose numbers move when you click things in a different order is a demo you cannot compare
-two screenshots of.
-
-The universe is the same twenty symbols as the muxws demo, deliberately. That demo shows a live
-board; this one shows what the back office does with the same book after the close - which is the
-half muxws has nothing to say about, and the half that is made of long operations.
+No network and no clock. Every number comes from a generator seeded from the symbol and the
+purpose, not from one shared stream, so a symbol's figures do not depend on the order in which jobs
+run.
 """
 
 from __future__ import annotations
@@ -48,28 +42,22 @@ SECTORS: dict[str, tuple[str, ...]] = {
     "Energy & Utilities": ("DYNA", "GRID", "SAGE"),
     "Materials & Consumer": ("EMBR", "LOOM", "MESA", "NOVA", "KITE"),
 }
-"""Four sectors, because `revalue` splits its bar across them by weight - which is what makes the
-nested-progress arithmetic visible rather than merely implemented."""
+"""The sectors `revalue` splits its bar across, weighted by size."""
 
 DEFAULT_SEED = 1_234_567
 """The seed every generator is built from, so two runs of the demo produce the same book."""
 
 
 def _rng(symbol: str, purpose: str) -> random.Random:
-    """One generator per (symbol, purpose). See the module docstring for why this is not one stream."""
-    # noqa: S311 - a fake market, not a key. `secrets` would be the wrong fix: this must be
-    # reproducible, which is the entire point of seeding it.
+    """One generator per (symbol, purpose), reproducible across runs."""
+    # A fake market, not a key: the generator must be reproducible, so not `secrets`.
     return random.Random(f"{DEFAULT_SEED}:{symbol}:{purpose}")  # noqa: S311
 
 
 @dataclass(frozen=True)
 class Position:
-    """What our book says, beside what the custodian says.
-
-    When the two disagree the batch cannot decide alone: taking ours silently loses a real trade,
-    taking theirs silently loses ours. That is the shape of question `ask()` exists for - a decision
-    only a person holds the context for, in the middle of work that has already been half done.
-    """
+    """One symbol's position in our book beside the custodian's figure; `reconcile` asks a person
+    which stands when they disagree."""
 
     symbol: str
     name: str
@@ -87,13 +75,7 @@ class Position:
 
 
 CONFLICTS: dict[str, int] = {"CIRQ": -75, "GRID": 125, "MESA": -200, "RUNE": 50}
-"""The four symbols whose custodian figure disagrees, and by how much.
-
-Named rather than drawn, because "roughly a fifth of them, on average" is not a demo you can write a
-docstring about. Four rather than one because a single question is just a question; four is the
-thing worth watching - the job stops, waits for a person, resumes, and stops again, sitting at
-`waiting_input` with its worker held each time.
-"""
+"""The symbols whose custodian figure differs, and by how much."""
 
 
 def build_book() -> list[Position]:

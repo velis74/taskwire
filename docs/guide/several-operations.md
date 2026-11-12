@@ -1,36 +1,34 @@
 # Several operations at once
 
-One user, three imports running, a question outstanding on the second, and a report waiting to be
-collected from the first. This is the case the register exists for.
+The register lists every shared operation of a namespace: for example three imports of one user,
+one of them asking a question and another holding a report to collect.
 
 ## The register is the namespace's, not the tab's
 
-`GET /taskwire` returns **every shared operation of the namespace** — the account when a
-user is logged in, the session otherwise. Not this tab's, not this connection's. A user who starts an
-import in one tab and switches to another still sees it, and can still answer its questions.
+`GET /taskwire` returns every shared operation of the namespace (the account when a user is logged
+in, the session otherwise), not only this tab's or this connection's. A user who starts an import in
+one tab sees it, and can answer its questions, in another.
 
 ```ts
 const tw = use_taskwire();
 tw.register;      // everything of this namespace, plus this tab's own private operations
-tw.operations;    // this tab's VISIBLE subset — deliberately smaller
+tw.operations;    // the subset this tab shows
 ```
 
-Each entry carries the **whole snapshot**, so one request renders an operations UI with no follow-up
-per-token reads.
+Each entry carries the whole snapshot, so one request renders an operations UI with no per-token
+reads.
 
-## Visible is not the same as present
+## Visible and present
 
-`tw.operations` is never populated wholesale from `tw.register`. An entry joins the visible set two
+`tw.operations` is not populated wholesale from `tw.register`. An entry joins the visible set in two
 ways only:
 
-1. `startedHere` **and** `progressUi.delay` has elapsed — so a fast operation never appears at all,
-   because a bar that flashes up and vanishes reads as a glitch rather than as feedback;
+1. `startedHere` and `progressUi.delay` has elapsed, so an operation that ends sooner never appears;
 2. an explicit `show()`.
 
-Every other tab's view stays empty. A namespace-wide register rendered in every tab is a
-namespace-wide flicker.
+Every other tab's view stays empty.
 
-## The aggregate carries counts and a state — and no percentage
+## The aggregate carries counts and a state
 
 ```json
 {
@@ -44,17 +42,15 @@ namespace-wide flicker.
 
 `label` is the selected operation's own title, so a footer has something to write beside the counts.
 
-**There is no `percent` here.** There is no unit in which two operations' self-reported percentages
-are commensurable — one is 40 % through a row count, the other 40 % through a byte count — so any
-figure derived across them is invented. The field is absent from the wire rather than `null` on it,
-and `Aggregate` declares `percent?: never` in TypeScript so that adding one fails the typecheck.
+The aggregate has no `percent` field: the operations' percentages measure different units (rows,
+bytes), so no combined figure is derived. The field is absent from the wire, and `Aggregate`
+declares `percent?: never` in TypeScript.
 
-`state` is computed **by domination**, ordered `waiting_input > running > queued`, never by majority.
-One operation blocked on a question among nine running ones is the whole reason a user needs to look
-at the widget, and a majority rule would hide it.
+`state` is the dominant state, ordered `waiting_input > running > queued`, so one operation waiting
+on a question among nine running ones makes the aggregate `waiting_input`.
 
-The server never emits `done` or `failed` here: a terminal entry with nothing to collect has already
-left the register, so no count can see one.
+The aggregate's state is never `done` or `failed`: a terminal entry with nothing to collect has
+already left the register.
 
 ## A footer draws one operation's bar
 
@@ -66,12 +62,11 @@ import { TaskwireFooter } from 'taskwire/vuetify';
 <template><TaskwireFooter /></template>
 ```
 
-The bar is the **selected** operation's own percentage. The default selection is FIFO — the oldest
+The bar is the selected operation's own percentage. The default selection is FIFO — the oldest
 entry that is `queued` or `running` — and it advances on its own when that one leaves the register.
 `tw.select(token)` pins another; `tw.select(null)` returns to the default.
 
-When the selected operation's percentage is `null` the bar is indeterminate. That is the honest
-rendering of "this operation does not know", rather than zero or a guess.
+When the selected operation's percentage is `null` the bar is indeterminate.
 
 ## A list of every operation
 
@@ -84,10 +79,10 @@ import { TaskwireOperations } from 'taskwire/vuetify';
 ```
 
 `TaskwireOperations` lists `tw.register` — every shared operation of the namespace and this tab's
-private ones — one row each, with each operation's **own** bar. Clicking a row selects it, which is
-the operation `TaskwireFooter` draws. A row offers **Cancel** while the operation runs and holds no
-result, and **Collect** and **Dismiss** while it holds one; `collected` hands the application the
-released `Result`, and what it does with it is the application's.
+private ones — one row each, with each operation's own bar. Clicking a row selects it, which is the
+operation `TaskwireFooter` draws. A row offers Cancel while the operation runs and holds no result,
+and Collect and Dismiss while it holds one; `collected` passes the released `Result` to the
+application.
 
 ## Requests that take a while
 
@@ -99,35 +94,28 @@ connection — is `tw.busy` and `useBusyDialog()`, described in
 
 ## Sorting
 
-`needs_attention` first, then `created_at` **ascending** — oldest first — within both groups. There
-is no third key.
-
-An old uncollected result therefore sorts above a fresh question. The result holds nothing, and the
-aggregate's `waiting_input` state lights the indicator either way.
+`needs_attention` first, then `created_at` ascending (oldest first) within both groups. There is no
+third key, so an old uncollected result sorts above a newer question.
 
 ## Terminal entries leave immediately
 
-An operation that reaches a terminal state **with nothing to collect leaves the register in the same
-step** — there is no `terminal_ttl` and no linger. The terminal envelope *is* the notification, and
-the awaiting caller already has its answer. The store enforces it off the document's own state, so
-no read of the list can catch a `failed` row on its way out.
+An operation that reaches a terminal state with nothing to collect leaves the register in the same
+step. The store de-indexes it off the document's own state, so no read of the list returns a
+terminal row.
 
-Leaving the list is not disappearing. The document itself answers at `GET /taskwire/{token}` for
-`settings.tombstone_ttl` (900 s), so a client that missed the envelope can still ask which of `done`,
-`failed` and `cancelled` this was. That **tombstone** is reachable by token only: it is in no
-register, in no count, and there is never more than one of it per operation.
+The document itself answers at `GET /taskwire/{token}` for `settings.tombstone_ttl` (900 s), so a
+client that missed the terminal envelope can read whether it was `done`, `failed` or `cancelled`.
+That tombstone is reachable by token only: it is in no register and no count.
 
-If you want a failed row to stay on screen a moment longer, that is `progressUi.failureLinger`, and
-it is purely the client holding on to a row it watched depart.
+`progressUi.failureLinger` keeps a failed row on screen in the client that watched it for a while
+after it left the register.
 
 ## One token is one row
 
-However deep the subtask tree, one token produces one register entry, one bar and one document. There
-is no wire field expressing the tree, and a 400-way `split()` does not inflate the aggregate.
+However deep the subtask tree, one token produces one register entry, one bar and one document. No
+wire field expresses the tree, and `split()` does not add to the aggregate's counts.
 
 ## What taskwire does not ship
 
-**Cross-tab UI synchronisation.** No `BroadcastChannel` dialog mirroring, no leader-elected polling,
-and no hook to add them. The tab rules produce one modal in the tab the user is looking
-at without any tab having to be elected, and an elected leader is a tab whose closing loses the
-election.
+Cross-tab UI synchronisation: no `BroadcastChannel` dialog mirroring, no leader-elected polling,
+and no hook to add them. The tab rules decide which tab presents a question.

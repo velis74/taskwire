@@ -1,7 +1,7 @@
 # fastapi-viewsets integration
 
-taskwire's REST surface is not a hand-rolled router — it is declared as a
-[fastapi-viewsets](https://docs.velis.si/) `ViewSet`, and one call mounts it:
+taskwire's REST surface is declared as a [fastapi-viewsets](https://docs.velis.si/) `ViewSet`, and
+one call mounts it:
 
 ```python
 from fastapi import APIRouter
@@ -14,30 +14,25 @@ app.include_router(router)
 
 That single call:
 
-- mounts the six calls of `TW-REST-004` on `router`, over REST and — unless told otherwise — over
-  muxws as well (see [`register_muxws`](#which-transports-get-mounted) below);
+- mounts taskwire's six calls (list, read, cancel, collect, dismiss, dialog reply) on `router`, over
+  REST and, unless `register_muxws=False`, over muxws as well (see [`register_muxws`](#which-transports-get-mounted) below);
 - registers `taskwire_context_processor` globally, so `context["taskwire_session"]`,
-  `["taskwire_connection"]` and `["taskwire_token"]` become available to **every** viewset action in
+  `["taskwire_connection"]` and `["taskwire_token"]` become available to every viewset action in
   the process that declares a `context: Context` parameter, not only taskwire's own endpoints;
 - appends a `TaskwireMiddleware` to `viewsets_command_middleware` when none is listed, which tracks
   every viewset call that carries a token (see [Tracking viewset calls](#tracking-viewset-calls));
   `track_calls=False` leaves it out;
-- is idempotent per router — calling it twice mounts one copy, never two.
+- is idempotent per router: calling it twice mounts one copy.
 
-## What this buys, beyond not writing six routes by hand
+## Consequences for the application
 
-**The middleware chain is yours.** Authentication, rate limiting, session handling — whatever your
-application's `FastAPI` instance already runs applies to taskwire's endpoints exactly as it applies
-to your own. taskwire invents no second way to be protected.
-
-**One schema.** taskwire's six endpoints appear in the same `/schema` fastapi-viewsets already
-serves, so a frontend proxy that validates itself against it catches an endpoint that moved at
-startup, not in production.
-
-**The context processor is transport-blind.** `process_command` (the muxws half) supplies the
-WebSocket handshake's own headers as the baseline for every command, so `session_resolver` reads the
-same cookie or `Authorization` header on a stream that it reads on a request. Nothing branches on how
-a call arrived, and nothing should.
+- The application's middleware chain (authentication, rate limiting, session handling) applies to
+  taskwire's endpoints as it applies to its own.
+- taskwire's six endpoints appear in the `/schema` fastapi-viewsets serves, so a frontend proxy that
+  validates itself against it reports a missing endpoint at startup.
+- `process_command` (the muxws half) supplies the WebSocket handshake's headers as the baseline for
+  every command, so `session_resolver` reads the same cookie or `Authorization` header on a stream as
+  on a request.
 
 ## Which transports get mounted
 
@@ -45,7 +40,7 @@ a call arrived, and nothing should.
 register_taskwire_rest(router, base_path=None, *, register_muxws=None, track_calls=True)
 ```
 
-`register_muxws` is the one knob:
+`register_muxws`:
 
 - `None` (the default) defers to fastapi-viewsets' own setting — published on both transports unless
   the application has turned muxws off globally;
@@ -54,9 +49,8 @@ register_taskwire_rest(router, base_path=None, *, register_muxws=None, track_cal
 Publishing the socket half here does not open a connection — see
 [The WebSocket transport](./websockets.md) for `register_taskwire_muxws(peer, ns)`, the call that
 attaches a specific `Peer`, answers its `watch` and, without `register_taskwire_events`, subscribes
-its namespace to the store's backplane. The two are
-independent: this one decides whether taskwire's routes exist on muxws at all; that one decides
-whether *this* socket carries them.
+its namespace to the store's backplane. The two are independent: `register_muxws` decides whether
+taskwire's routes exist on muxws; `register_taskwire_muxws` decides whether one socket carries them.
 
 ## Tracking viewset calls
 
@@ -78,11 +72,11 @@ frontend sending a token of its own. `TaskwireMiddleware` is the binding:
 settings.viewsets_command_middleware = [Idempotency(redis_client=redis), TaskwireMiddleware()]
 ```
 
-**Untracked calls.** Besides the calls [every adapter leaves untracked](./tracking-calls.md#the-token-of-a-call),
+Untracked calls: besides the calls [every adapter leaves untracked](./tracking-calls.md#the-token-of-a-call),
 a call to taskwire's own six endpoints and a call to an action configured
 `@action_configuration({TaskwireMiddleware: False})` run unchanged and write nothing.
 
-**Privacy.** An operation is private unless the action declares a `result_kind`: with a result
+Privacy: an operation is private unless the action declares a `result_kind`: with a result
 decorator on the action method, or with
 `@action_configuration({TaskwireMiddleware: {"result_kind": "acme.export"}})` — the form to use on a
 `perform_*` method.
@@ -98,7 +92,7 @@ class ExportViewSet:
         ...
 ```
 
-**The action reports through the ambient reporter**, which `execute()` binds around it. It does not
+The action reports through the ambient reporter, which `execute()` binds around it. It does not
 open `operation()` for its own token. An action that hands its work to a task of its own hands the
 operation over with [`hand_off()`](./tracking-calls.md#handing-a-call-to-a-worker); an action
 dispatched from inside another action's execution reports into nothing of its own.
@@ -138,12 +132,12 @@ How the call ends:
 
 `taskwire.interrupted` and `taskwire.dialog_timeout` are `retryable: true`. The web process passes
 `ActionInterruptedError` through as it passes `ActionOutcomeUnknownError`: the executor's process
-writes the terminal state, so the two never race. An execution whose process exits writes no
+writes the terminal state, so only one process writes it. An execution whose process exits writes no
 terminal state of its own; fastapi-viewsets reports that end to `on_transition()`, from the
 supervisor of a prefork pool child or from the exiting process itself, and it ends `taskwire.interrupted` or
 `taskwire.dialog_timeout` there.
 
-**On the frontend**, `tw.trackCall(call, handler)` and `tw.awaitCall(call, handler)` follow a proxy
+On the frontend, `tw.trackCall(call, handler)` and `tw.awaitCall(call, handler)` follow a proxy
 call under its `key` — see [Tracking calls](./tracking-calls.md#on-the-frontend). Over muxws,
 `attachMuxws` puts `X-Taskwire-Connection` on the command stream, so a private operation's progress
 reaches the socket that made the call.
@@ -170,11 +164,11 @@ event store (`viewsets_event_store`, a `RedisEventStore` across processes) is th
 backplane, and `start_taskwire_reader()` starts nothing. The executor's process calls it too, and
 keeps the transport. The browser attaches with `attachViewsetEvents`
 from `taskwire/fastapi-viewsets`. [Over fastapi-viewsets events](./websockets.md#over-fastapi-viewsets-events)
-has the topics, who is admitted to each, and the whole setup.
+describes the topics, who is admitted to each, and the setup.
 
 ## The npm package
 
-`@dynamicforms/fastapi-viewsets` ^0.13.0 is an optional peer dependency of the npm package, imported
+`@dynamicforms/fastapi-viewsets` `>=0.13.0 <0.15` is an optional peer dependency of the npm package, imported
 by `taskwire/muxws` and `taskwire/fastapi-viewsets`. Both send the six calls through its
 `MuxwsProxyImpl`. `taskwire/muxws` hands the event streams on the peer to its `handleEventStream`, so
 one socket carries taskwire's pushes and the event client's events (see
@@ -182,8 +176,8 @@ one socket carries taskwire's pushes and the event client's events (see
 
 `taskwire/fastapi-viewsets` exports `attachViewsetEvents(tw, peer)`, which takes taskwire's pushes
 from the peer's event client and does not import `taskwire/muxws`, and `viewsetCallSource()`, which
-reports every proxy call into `tw.busy`. One busy dialog for every slow proxy call, with the server's progress and a "no
-connection" notice:
+reports every proxy call into `tw.busy`. One busy dialog for every slow proxy call, with the
+server's progress and a "no connection" notice:
 
 ```ts
 import { use_taskwire } from 'taskwire';

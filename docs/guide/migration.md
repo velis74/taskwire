@@ -28,8 +28,9 @@ a terminal state that is not a tracked call's. A test that asserts the envelopes
 ### No reads for this page's own tokens over a socket
 
 With a healthy transport attached, the client does not read a token minted by `run()`, `trackCall()`
-or `tw.busy`; it relies on the pushes of TW-THR-008. A deployment whose pushes do not reach the
-client (no reader started, `check_taskwire_readers()` warns) sees such operations only after a resync.
+or `tw.busy`; it relies on the snapshot the server pushes when the push delay ends. A deployment
+whose pushes do not reach the client (no reader started, `check_taskwire_readers()` warns) sees such
+operations only after a resync.
 
 ## Upgrading to v0.4.0 (from v0.3.x)
 

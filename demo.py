@@ -5,16 +5,13 @@
     uv run python demo.py
 
 The server listens on 127.0.0.1:8030 (override with `TASKWIRE_DEMO_PORT`) and the Vite dev server on
-5174, which proxies `/taskwire` and `/demo` to it - so neither half needs a CORS story, a second
-origin, or a cross-site cookie.
+5174, which proxies `/taskwire`, `/demo` and `/ws` to it, so both halves share one origin.
 
-**The demo offers both transports and switches between them at runtime.** Nothing in
-`demo/server/jobs.py` differs by a line either way - that being the claim the two transports exist
-to support.
+The page switches between HTTP and the WebSocket transport at runtime; `demo/server/jobs.py` is the
+same for both.
 
-This file is a *consumer* of taskwire, not part of it. Nothing under `taskwire/` imports it, no
-library test depends on it, and it is absent from both published artefacts:
-`[tool.uv.build-backend]` ships `taskwire` alone and the npm package ships `dist/*` alone.
+The demo is not part of the published packages: the wheel ships `taskwire` only and the npm package
+`dist/*` only.
 """
 
 from __future__ import annotations
@@ -43,11 +40,8 @@ REQUIRED_IMPORTS = (
     ("fastapi_viewsets", "taskwire declares its REST API as a viewset"),
     ("taskwire", "the library this demo exists to show"),
 )
-"""Checked before anything starts, because every one of these fails *late* and points somewhere else.
-
-A missing `fastapi_viewsets` surfaces as an ImportError inside a reloader child that has already
-printed a banner saying the server is up.
-"""
+"""Packages checked before anything starts; a missing one would otherwise fail inside the reloader
+child, after the banner."""
 
 
 def check_imports() -> None:
@@ -65,10 +59,7 @@ def check_imports() -> None:
 
 
 def check_client() -> None:
-    """`npm install` is a separate step and forgetting it is the likeliest way to see nothing.
-
-    Vite would otherwise fail inside a child process whose output scrolls past behind uvicorn's.
-    """
+    """Refuse to start when the client's npm dependencies are not installed."""
     if (CLIENT / "node_modules").exists() or (HERE / "node_modules" / "vite").exists():
         return
     print(
@@ -105,18 +96,14 @@ def main() -> None:
 
     import uvicorn
 
-    # The Vite child runs in a session of its own so the terminal's Ctrl-C does not reach it twice;
-    # the cost is that it also does not die when this process is *signalled*. Python runs no `finally`
-    # on SIGTERM, so without this handler a `kill` or a CI timeout leaves a dev server holding 5174 -
-    # and the next run then fails to bind against what looks like a live demo but is a stale one.
-    # Turning the signal into an exception puts the cleanup below back on the path.
+    # Vite runs in a session of its own and does not receive this process's SIGTERM; raising
+    # KeyboardInterrupt on it runs the `finally` that stops Vite, so port 5174 is not left bound.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 
     client: subprocess.Popen | None = None
     if not args.server_only:
         client = start_client()
-        # Vite binds fast, but printing the URL before it does would invite the reader to open a
-        # port nothing is answering yet.
+        # Print the URL only after Vite has bound its port.
         time.sleep(1.2)
 
     banner = f"""
