@@ -1,12 +1,10 @@
 import { defineConfig } from 'vitepress';
 
-// This directory is the user-facing documentation and nothing else. The normative specification and
-// the design brief live in `design/`, deliberately outside the VitePress source root: they record
-// why the library is what it is, and would only mislead somebody trying to use it.
+// User-facing documentation only; the specification in `design/` is outside the VitePress source root.
 export default defineConfig({
   title: 'taskwire',
   description:
-    'Talk to a job while it runs: nested progress, questions the worker waits on, first answer wins across tabs, sticky cancellation. Python and TypeScript.',
+    'Nested progress, awaitable dialogs where the first answer wins across tabs, sticky cancellation and collectable results for long-running jobs. Python and TypeScript.',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/taskwire-icon.svg' }]],
   // Canonical URL of each page as published on docs.velis.si, under the `--base` given to the build.
   transformHead({ pageData, siteConfig }) {

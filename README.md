@@ -4,56 +4,39 @@ Progress reporting and awaitable dialogs for long-running operations, in Python 
 
 A long-running job — an import, a report, a batch — needs to tell whoever started it what it is
 doing while it is doing it, and sometimes needs to ask them something before it can continue.
-taskwire is that conversation, and the four things it carries:
+taskwire provides:
 
-- **progress**, with nested subtasks whose percentages compose correctly rather than overwriting
-  each other, and commits coalesced so a tight loop cannot flood anything;
+- **progress**, with nested subtasks whose percentages compose rather than overwrite
+  each other, and commits coalesced to one per interval;
 - **awaitable dialogs** — the worker asks a question mid-job and blocks until the answer arrives,
-  with the first answer winning across every tab that is looking;
+  with the first answer winning across every open tab;
 - **cancellation**, cooperative and sticky, which raises in the worker at its next progress call;
-- **collectable results** — the job parks a file or a value for later collection and *exits*,
+- **collectable results** — the job parks a file or a value for later collection and exits,
   holding no worker while the record waits.
 
-## The one idea worth knowing
+## The store holds the state
 
-**The store is the truth; a push is only an accelerator.** Every state change is written before
-anything is sent anywhere, so a dropped, coalesced or suppressed push never changes what the next
-read returns. There is no event log, no sequence numbers and no replay: a client is entitled to
-current state, and asking for it is always enough.
+Every state change is written to the store before anything is pushed, so a dropped, coalesced or
+suppressed push never changes what the next read returns. There is no event log, no sequence
+numbers and no replay: a client reads current state.
 
 ## One protocol, three implementations
 
-The layering is the shape of the source tree:
-
-```text
-             protocol            documents, envelopes, the six kinds, the state
-                 │               machines, validation.  Knows of no transport.
-     ┌───────────┼───────────┐
-   local        REST         WS         three independent implementations of it
-     │           │           │
-  (none)   fastapi / asgi   muxws       one adapter each, to the world outside
-```
-
-The **protocol** is specified once and depends on nothing. Each **implementation** carries it over
-one medium and is written against the protocol layer alone, never against another implementation.
-Each **adapter** is the thin piece that binds an implementation to a particular framework, and is
-the only place that framework is imported.
-
 | Implementation | Carries the protocol over | Adapter | Needs |
 |---|---|---|---|
-| **local** | the process itself — no wire, no socket, no serialization | none | nothing |
-| **REST** | request/response polling; the baseline everywhere | `contrib.viewsets`, `contrib.fastapi`, `contrib.asgi` | nothing in core |
-| **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
+| local | the process itself, no serialisation | none | nothing |
+| REST | request/response polling | `contrib.viewsets`, `contrib.fastapi`, `contrib.asgi` | nothing in core |
+| WS | one push per envelope down, the six calls up | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |
 
-Swapping one for another changes latency and nothing else — no feature, no state, no document.
-Both languages ship the protocol and the operating half, so a browser-only application runs
-operations rather than only watching them; the adapters, the Redis store and the Celery entry are
-Python's, and the polling client and the register are TypeScript's.
+Swapping one for another changes latency only. Both languages ship the protocol and the operating
+half, so a browser-only application runs operations as well as watching them; the adapters, the
+Redis store and the Celery entry are Python's, and the polling client and the register are
+TypeScript's. See [Transports](https://docs.velis.si/taskwire/guide/transports.html).
 
 ## Install
 
 ```bash
-pip install taskwire                 # core: no runtime dependencies at all
+pip install taskwire                 # core: no runtime dependencies
 pip install "taskwire[redis]"        # cross-process store and backplane
 pip install "taskwire[fastapi]"      # the REST adapter
 pip install "taskwire[viewsets]"     # the REST API as a fastapi-viewsets viewset
@@ -77,7 +60,7 @@ progress, awaitable dialogs, cancellation and collectable results. See [`demo/RE
 
 ## Status
 
-Pre-1.0 and under active construction. The wire format is versioned independently of the package
+Pre-1.0. The wire format is versioned independently of the package
 (`Envelope.v`), so package semver says nothing about it.
 
 ## Links

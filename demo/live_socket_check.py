@@ -1,21 +1,12 @@
 """Drive a running demo over one real WebSocket and assert the protocol end to end.
 
-Every socket test in either suite fakes one half. The Python tests hand `serve_peer` a stub peer and
-read what it was told; the TypeScript tests hand `attachMuxws` a stub transport and feed it envelopes
-by hand. Neither can reach what this script reaches: a real `accept()` on the server, a real
-`connect()` from here, real streams in both directions, and a `watch` reply carrying a connection id
-that a fake can only assert was asked for.
+The six calls of TW-REST-004 go up the socket as viewset commands, answered by the routes the REST
+router mounts (TW-DEL-016); envelopes come down, one `notify` per envelope (TW-WS-003); `watch` is
+answered by taskwire's handler behind `process_command`.
 
-What runs over that socket is the whole surface. The six calls of TW-REST-004 go *up* it as viewset
-commands, answered by the same routes the REST router mounts (TW-DEL-016); the envelopes of
-TW-CORE-007 come *down* it, one `notify` per envelope (TW-WS-003); and `watch` - the one call with no
-`{token}` to hang off - is answered by taskwire's own handler behind `process_command`.
-
-The assertion this exists for is the **envelope sequence** of `hold_the_line`: `queued`, `running`,
-`dialog.open`, and then one terminal progress carrying `failed`. There is no `dialog.close` in it.
-`withdraw_dialogs` publishes none, so that terminal envelope is the only signal a client ever gets
-that an open question is gone (TW-CANCEL-011), and a client that does not settle its dialogs on a
-terminal state leaves a modal on screen pointing at a worker that no longer exists.
+The envelope sequence of `hold_the_line` is asserted: `snapshot`, `running`, `dialog.open`, then one
+terminal progress carrying `failed`, with no `dialog.close`: the terminal envelope is the only notice
+that the open question was withdrawn (TW-CANCEL-011).
 
 It starts nothing. Run the demo beside it:
 
@@ -47,14 +38,12 @@ SESSION_COOKIE = "taskwire_demo_session"
 
 EXPORT_JOB = "export"
 HOLD_JOB = "hold"
-"""Two of the four names in `demo/server/jobs.py` `JOBS`: the cancellable one and the one that asks a
-question nobody answers. The other two add no seam this script does not already cross."""
+"""Two of the names in `demo/server/jobs.py` `JOBS`: the cancellable job and the one whose question
+goes unanswered."""
 
 HOLD_TIMEOUT = 40.0
-"""How long to wait for the terminal envelope: `jobs.HOLD_DEADLINE` plus the pre-flight checks, twice.
-
-The envelope is waited *for* rather than slept past, so this bounds a failure and does not pace a
-success - a run against an unmodified demo returns in about sixteen seconds."""
+"""Upper bound on the wait for the terminal envelope: `jobs.HOLD_DEADLINE` plus the pre-flight checks,
+twice. The wait ends as soon as the envelope arrives."""
 
 TERMINAL = {"done", "failed", "cancelled"}
 
@@ -62,10 +51,7 @@ failures: list[str] = []
 
 
 def check(label: str, ok: bool, detail: str = "") -> bool:
-    """Print one PASS/FAIL line and record the failures. Every assertion in this file goes through it.
-
-    Returns `ok`, so a caller can skip what a failed precondition makes meaningless.
-    """
+    """Print one PASS/FAIL line, record a failure, and return `ok`."""
     print(f"{'PASS' if ok else 'FAIL'}  {label}{(' - ' + detail) if detail else ''}")
     if not ok:
         failures.append(f"{label}: {detail}" if detail else label)
@@ -82,12 +68,8 @@ def endpoints() -> tuple[str, str]:
 
 
 class Pushes:
-    """Every envelope this socket has been handed, in arrival order.
-
-    A push is an accelerator and never the truth (TW-CORE-002), so nothing here raises on a payload
-    it cannot read: an envelope with no token or no kind is recorded as malformed and reported at the
-    end, exactly as a client is required to drop it rather than throw.
-    """
+    """Every envelope this socket received, in arrival order; one without a token or a kind is
+    recorded as malformed rather than raising (TW-CORE-002)."""
 
     def __init__(self) -> None:
         self.seen: list[dict[str, Any]] = []
@@ -107,11 +89,8 @@ class Pushes:
     async def until(
         self, token: str, predicate: Callable[[dict[str, Any]], bool], *, timeout: float
     ) -> dict[str, Any] | None:
-        """The first envelope of `token` satisfying `predicate`, or None once `timeout` runs out.
-
-        Waiting on the push itself rather than polling the store is the point: a check that fell back
-        to a read would pass on a socket that pushes nothing.
-        """
+        """The first pushed envelope of `token` satisfying `predicate`, or None once `timeout` runs
+        out. Reads no store."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
@@ -142,11 +121,7 @@ def shape(envelopes: list[dict[str, Any]]) -> str:
 
 
 async def call(peer: Any, method: str, path: str, body: Any = None) -> tuple[int, Any]:
-    """One viewset call over the socket, in the wire format fastapi-viewsets defines.
-
-    `reply_headers_arrived` is an `asyncio.Event` guarding the reply's `:status`; the body arrives
-    afterwards, so both are awaited and the pair is what a caller compares against REST.
-    """
+    """One viewset call over the socket; returns the reply's `:status` and body."""
     stream = peer.open(body, headers={":method": method, ":path": path}, end=True)
     await stream.reply_headers_arrived.wait()
     status = int(stream.reply_headers.get(":status"))
@@ -154,12 +129,7 @@ async def call(peer: Any, method: str, path: str, body: Any = None) -> tuple[int
 
 
 async def check_the_socket_carries_the_six_calls(peer: Any, http: httpx.AsyncClient) -> None:
-    """The register, a per-token read, and a malformed token - each answered by the REST routes.
-
-    `route_viewset` publishes the viewset on both wires at once, so the interesting assertion is not
-    that the socket answers but that it answers *identically*: one validation chain, no second
-    implementation.
-    """
+    """The register over the socket equals the one over HTTP, and a malformed token is 404."""
     status, register = await call(peer, "GET", "/taskwire")
     check("GET /taskwire over the socket", status == 200, f"status={status}")
     check(
@@ -168,8 +138,7 @@ async def check_the_socket_carries_the_six_calls(peer: Any, http: httpx.AsyncCli
         json.dumps(register)[:120],
     )
     over_http = (await http.get("/taskwire")).json()
-    # Everything but `server_time`, which is stamped per read and is the one field two reads of an
-    # unchanged register are *supposed* to disagree on.
+    # `server_time` is stamped per read.
     without_time = {key: value for key, value in over_http.items() if key != "server_time"}
     check(
         "both wires answer with the same register",
@@ -178,17 +147,13 @@ async def check_the_socket_carries_the_six_calls(peer: Any, http: httpx.AsyncCli
     )
 
     status, _ = await call(peer, "GET", "/taskwire/not-a-uuid")
-    # 404 rather than 400: a token this namespace may not see and one that never existed are one
-    # answer (TW-SEC-002), and validation does not get to distinguish them.
+    # 404, not 400: the same answer as for an unknown or foreign token (TW-SEC-002).
     check("a malformed token is 404 over the socket", status == 404, f"status={status}")
 
 
 async def check_watch(peer: Any) -> tuple[str | None, list[str] | None]:
-    """`watch` declares the whole override map and hands back the connection id (TW-DEL-022).
-
-    It reads no store in either direction (TW-DEL-007), which is why an override for a token that
-    does not exist is accepted and inert rather than an error.
-    """
+    """`watch` answers with the connection id (TW-DEL-022), accepts an override for an unknown token
+    (TW-DEL-007), rejects a malformed map, and an unknown kind is answered with status 2."""
     reply = await peer.request({"kind": "watch", "overrides": {}})
     connection = reply.get("connection") if isinstance(reply, dict) else None
     check(
@@ -203,13 +168,10 @@ async def check_watch(peer: Any) -> tuple[str | None, list[str] | None]:
     malformed = await peer.request({"kind": "watch", "overrides": "nonsense"})
     check("a malformed override map is rejected, not applied", malformed.get("status") == 2, json.dumps(malformed))
 
-    # The vocabulary is closed (TW-CORE-007): an unknown kind is answered rather than dropped, which
-    # is also what proves the composition - `process_command` declined it and taskwire's own handler
-    # took it.
+    # Declined by `process_command` and answered by taskwire's handler (TW-CORE-007).
     unknown = await peer.request({"kind": "no-such-kind"})
     check("an unknown kind is answered, not ignored", unknown.get("status") == 2, json.dumps(unknown))
 
-    # A rejected declaration leaves the connection unchanged, so the id survives all three.
     topics = reply.get("topics") if isinstance(reply, dict) else None
     return connection, topics if isinstance(topics, list) else None
 
@@ -237,11 +199,7 @@ async def check_event_topics(peer: Any, topics: list[str], socket_url: str, http
 
 
 async def start(http: httpx.AsyncClient, job: str, connection: str | None) -> str | None:
-    """Start one job over REST while the socket watches it. The token is the whole link (TW-CORE-007).
-
-    Started over the *other* wire on purpose: taskwire never carries the command, so the command may
-    travel by any route the application already has and the commentary still finds its way back.
-    """
+    """Start one job over REST while the socket watches its token (TW-CORE-007); return the token."""
     started = await http.post(f"/demo/jobs/{job}", headers={"X-Taskwire-Connection": connection or ""})
     if not check(f"{job} starts and returns its token", started.status_code == 200, str(started.status_code)):
         return None
@@ -249,14 +207,9 @@ async def start(http: httpx.AsyncClient, job: str, connection: str | None) -> st
 
 
 async def check_export_and_cancel(peer: Any, http: httpx.AsyncClient, pushes: Pushes, connection: str | None) -> None:
-    """Progress arrives unasked, and a cancel taken over the socket ends the operation.
-
-    The 202 is an acknowledgement and not a completion (TW-CANCEL-003): it says the flag was written,
-    and the job stops when its own next `set()` looks. The terminal write takes the operation out of
-    the register in the same step (TW-REG-007) and leaves the document at its own address for
-    `tombstone_ttl` (TW-RET-004), so the read after it is a `cancelled` document that no listing
-    mentions.
-    """
+    """Progress is pushed; a cancel over the socket answers 202 (TW-CANCEL-003) and ends the
+    operation `cancelled`, readable at its own address (TW-RET-004) and absent from the register
+    (TW-REG-007)."""
     token = await start(http, EXPORT_JOB, connection)
     if token is None:
         return
@@ -302,15 +255,12 @@ async def check_export_and_cancel(peer: Any, http: httpx.AsyncClient, pushes: Pu
 
 
 async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes, connection: str | None) -> None:
-    """The sequence: `snapshot`, `running`, `dialog.open`, `failed`.
+    """The sequence `snapshot`, `running`, `dialog.open`, `failed`, with no `dialog.close`.
 
-    The writes inside `push_delay` are not published; the executing process publishes one `snapshot`
-    when the delay is over (TW-THR-008).
-
-    Nobody answers, so the deadline in `jobs.py` expires - taskwire has none to offer and must never
-    grow one (TW-DLG-005). The terminal write withdraws the question in the same step (TW-CANCEL-011)
-    and publishes **no** `dialog.close`, which makes that last progress envelope the only notice a
-    client receives that the modal on its screen is pointing at nothing.
+    The writes inside `push_delay` are not published; the snapshot follows the delay (TW-THR-008).
+    No answer is sent, so the deadline in `jobs.py` expires (TW-DLG-005) and the terminal write
+    withdraws the question (TW-CANCEL-011). A late reply is 410, and the terminal document carries
+    the error and the cancelled dialog.
     """
     token = await start(http, HOLD_JOB, connection)
     if token is None:
@@ -346,7 +296,7 @@ async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes
     check("the question is opened after the work started", kinds.index("dialog.open") > 0, shape(envelopes))
     check("nothing follows the terminal envelope", envelopes[-1] is terminal, shape(envelopes))
     check("the operation ends failed", state_of(terminal) == "failed", str(state_of(terminal)))
-    # The one assertion the whole client design hangs on: the withdrawal is not announced.
+    # The withdrawal has no envelope of its own.
     check("no dialog.close is ever pushed", "dialog.close" not in kinds, shape(envelopes))
     check(
         "a progress body carries no dialogs array",
@@ -354,19 +304,15 @@ async def check_hold_the_line(peer: Any, http: httpx.AsyncClient, pushes: Pushes
         shape(envelopes),
     )
     revs = [envelope["rev"] for envelope in envelopes]
-    # A client gates the progress document on `rev` and applies a dialog by id regardless of it
-    # (TW-REV-006), so a sequence whose revs went backwards would silently drop half of itself.
+    # A client drops a progress document with an older `rev` (TW-REV-006).
     check("rev never goes backwards", all(b >= a for a, b in zip(revs, revs[1:], strict=False)), str(revs))
 
     reply = {"button": "release", "values": {}}
     status, _ = await call(peer, "POST", f"/taskwire/{token}/dialogs/{dialog.get('id')}", reply)
-    # A reply arriving after a withdrawal is ordinary and never a 500. It is a 410 rather than a 404
-    # because the document the question belonged to is still there to answer for it (TW-RET-004); the
-    # client closes its modal without a word either way (TW-DLG-011).
+    # 410 while the terminal document is readable (TW-RET-004, TW-DLG-011).
     check("answering a withdrawn question is 410", status == 410, f"status={status}")
 
-    # The reason the terminal document is worth keeping: a reader that was not here for any of the
-    # above still learns which ending this was and why. An absence carries neither.
+    # The terminal document carries the state, the error and the withdrawn dialog.
     status, remains = await call(peer, "GET", f"/taskwire/{token}")
     check("the ended operation is readable at its own address", status == 200, f"status={status}")
     progress = (remains or {}).get("progress") or {}
@@ -393,8 +339,7 @@ async def main() -> int:
 
     async with httpx.AsyncClient(base_url=base, timeout=10) as http:
         try:
-            # A namespace first: the socket is tagged with whatever the resolver returns for the
-            # handshake (TW-WS-007), and a handshake with no cookie is a socket no envelope can reach.
+            # The session cookie first: the socket is tagged with the handshake's namespace (TW-WS-007).
             seed = await http.get("/demo/book")
         except httpx.ConnectError:
             print(f"nothing is listening on {base}. Start the demo first: python demo.py --server-only")

@@ -1,44 +1,27 @@
-"""The demo's FastAPI app: one taskwire registration, four job endpoints, and a fake artefact.
+"""The demo's FastAPI app: taskwire's REST and socket registration, four job endpoints, a fake artefact.
 
-## What taskwire costs this application
+taskwire calls in this file: `taskwire.configure(...)` (store, namespace resolver, transport),
+`register_taskwire_rest(router)` (the six calls on REST and over muxws), `register_taskwire_events()`
+in events mode, and `register_taskwire_muxws(peer, session)` / `release_peer(...)` on the `/ws`
+endpoint. The jobs, the book and the browser session are the application's own.
 
-Three lines. `register_taskwire_rest(router)` publishes the six calls - on REST and on muxws, since
-`route_viewset` publishes a viewset on both at once; `register_taskwire_muxws(peer, session)` mounts
-the push half and `watch` on a connection this application accepted; and `configure(...)` tells
-taskwire where the store is and how to derive a namespace. Everything else in this file is the
-application's own - the jobs, the book, the browser session - and none of it imports a transport or
-knows one exists.
+The six calls answer over HTTP and over the WebSocket at `/ws`: `process_command` dispatches a stream
+into the routes the REST router mounts (TW-REST-004). The socket adds pushed envelopes and `watch`,
+which declares the connection's override map and returns its connection id (TW-DEL-022).
 
-## Both transports, at once
-
-The same six calls answer over HTTP and over the one WebSocket at `/ws`, because `route_viewset`
-publishes the viewset on both and `process_command` dispatches a stream into the same routes
-(TW-REST-004). The socket adds two things HTTP cannot do: envelopes pushed the instant a state
-changes, and `watch`, which declares this connection's override map and hands back its connection id
-(TW-DEL-022). The browser chooses between them at runtime and the jobs never learn which one is in
-use - the store is the truth on either (TW-CORE-002), so the choice costs latency and nothing else.
-
-## The workflow this demonstrates
+The workflow:
 
 1. the browser mints a token and sends it with the command (`X-Taskwire-Token`);
-2. the command endpoint writes `queued` and hands off, returning immediately;
+2. the command endpoint writes `queued`, hands off to a task and returns;
 3. the job runs and reports under that token;
-4. the browser awaits the token and watches its progress;
-5. the job finishes and parks a result; the browser collects or dismisses it.
+4. the browser watches the token's progress;
+5. the job parks a result; the browser collects or dismisses it.
 
-**The token is the entire link between the command and its commentary** (TW-CORE-007). taskwire
-never carries the command itself: `POST /demo/jobs/reconcile` is an ordinary endpoint with ordinary
-routing and ordinary authorization, and a protocol that carried it would have to know about actions,
-serialization and per-command permissions - at which point it would be the viewset layer with a
-progress bar bolted on.
+The token is the only link between the command and its progress (TW-CORE-007);
+`POST /demo/jobs/{name}` is an ordinary endpoint.
 
-## The namespace
-
-A cookie, because the demo has no accounts. `session_resolver` is the only producer of a namespace
-(TW-AMB-008), and returning a value for an anonymous visitor is correct: anonymity is not a reason to
-return `None` (TW-AMB-009). Two browsers get two namespaces and cannot see each other's work; two
-tabs of one browser share one, which is what makes the "answer it in the other tab" demonstration
-work.
+The namespace comes from a cookie, as the demo has no accounts; an anonymous visitor gets one too
+(TW-AMB-009). Two browsers get two namespaces; two tabs of one browser share one.
 """
 
 from __future__ import annotations
@@ -81,36 +64,22 @@ SESSION_COOKIE = "taskwire_demo_session"
 
 
 def resolve_session(connection: Request | WebSocket) -> str | None:
-    """The namespace, from a cookie this app sets on the first request it serves.
+    """The namespace: the `X-Demo-Session` header, else the cookie this app sets on the first request.
 
-    taskwire never learns how a namespace is derived - only what this returns (TW-AMB-008). A real
-    application would return an account id, a tenant, or an account plus a tenant.
-
-    **One resolver, both transports** (TW-WS-007). It reads only `headers` and `cookies`, which a
-    `Request` and a `WebSocket` both carry, so the handshake is resolved by exactly the code that
-    resolves a POST - and a command arriving over a stream is resolved by it again, since
-    `process_command` builds its synthetic request on the handshake's own headers. A second resolver
-    for the socket would be a second place the namespace could be decided differently, which is the
-    one difference between the transports nobody would find by reading either.
+    It serves both transports (TW-WS-007), so it reads only `headers` and `cookies`, which a `Request`
+    and a `WebSocket` both carry; `process_command` builds a stream's request on the handshake's
+    headers. The header lets `curl` drive a second namespace.
     """
-    # The header wins over the cookie, so a second namespace can be driven from `curl` without a
-    # second cookie jar. That ordering is the demo's own convenience and not a taskwire pattern -
-    # a real resolver reads whatever its authentication already established.
     return connection.headers.get("X-Demo-Session") or connection.cookies.get(SESSION_COOKIE)
 
 
-#: The one process-wide store. `MemoryStore` is enough because the demo is one process; a deployment
-#: with several web processes or a separate executor swaps in `RedisStore` and changes nothing else.
+#: The process-wide store; `MemoryStore` serves one process, `RedisStore` several.
 store = taskwire.MemoryStore()
 
-#: Every job this process has running, so the app can await them at shutdown rather than leaving a
-#: half-written operation behind. Not a taskwire concept - the store already holds the truth - but
-#: an ordinary application's own housekeeping.
+#: The job tasks this process is running, cancelled and awaited at shutdown.
 running: set[asyncio.Task] = set()
 
-#: Every live socket, indexed by the tags it carries. taskwire fans an envelope out over
-#: `peers_for(session=...)` and touches nothing else on it (TW-WS-001), so the registry stays the
-#: application's: it decides which connections exist, and joining the fan-out is `register()`.
+#: Every live socket, indexed by its tags; `MuxwsTransport` fans out over `peers_for(session=...)`.
 registry = PeerRegistry()
 
 
@@ -118,22 +87,15 @@ def create_app() -> FastAPI:
     """Configure taskwire, mount its two transports, and return the app with the demo's own routes."""
     taskwire.configure(store=store, session_resolver=resolve_session)
     if PUSH == "events":
-        # The envelopes travel as fastapi-viewsets events; `register_events` below mounts the viewset
-        # the browser subscribes through.
+        # Envelopes as fastapi-viewsets events; `register_events` below mounts the events viewset.
         register_taskwire_events()
     else:
-        # The push half. With no socket open this fans out to nobody and the browser learns from its
-        # own polling; with one open the same envelopes arrive the instant they are written. Nothing
-        # in `jobs.py` reads differently either way (TW-TR-001).
+        # Pushes to the registered sockets; with none open the browser polls (TW-TR-001).
         taskwire.configure(transport=MuxwsTransport(registry))
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
-        """Nothing to set up; on the way down, stop whatever is still running.
-
-        The store already holds the truth for every job in flight, so this is not about not losing
-        state - it is about not leaving a task pinned to a loop that is closing under it.
-        """
+        """On shutdown, cancel and await the running job tasks."""
         yield
         for task in list(running):
             task.cancel()
@@ -144,38 +106,28 @@ def create_app() -> FastAPI:
     app = FastAPI(title="taskwire demo", docs_url="/api-docs", redoc_url=None, lifespan=lifespan)
 
     router = APIRouter()
-    register_taskwire_rest(router)  # <- the six calls, on REST and on the socket both
+    register_taskwire_rest(router)  # the six calls, on REST and on the socket
     if PUSH == "events":
         register_events(router)
-    # The application's own viewset. Its calls are tracked because `register_taskwire_rest` listed
-    # `TaskwireMiddleware`; nothing here mentions taskwire.
+    # Tracked through the `TaskwireMiddleware` that `register_taskwire_rest` listed.
     route_viewset(router, "/demo/positions")(PositionsViewSet)
     app.include_router(router)
 
     @app.websocket("/ws")
     async def socket(websocket: WebSocket) -> None:
-        """One WebSocket, carrying the pushes down and the six calls back up.
+        """One WebSocket, carrying the pushes down and the six calls up.
 
-        muxws performs the upgrade itself, because only it knows which `muxws.v1.<codec>`
-        subprotocol to select - so `websocket.accept()` is never called here and calling it would
-        raise. What comes back is a peer that is not yet reading.
+        `accept()` performs the upgrade and selects the `muxws.v1.<codec>` subprotocol, so
+        `websocket.accept()` must not be called: it raises. The peer's one handler sends viewset commands to
+        `process_command` and the rest to taskwire's handler, which answers `watch` (TW-DEL-006).
 
-        A peer has exactly one handler slot and it belongs to the application, so the two dispatchers
-        are composed here: a viewset command goes into the same routes the REST router mounts, and
-        only a stream `process_command` declines reaches taskwire's own, which answers `watch` and
-        nothing else (TW-DEL-006, TW-DEL-016).
-
-        The order is load-bearing. `register_taskwire_muxws` tags the peer with its namespace, and
-        `PeerRegistry.register` indexes a peer under the tags it holds **at that moment**: registered
-        first, it would be indexed under nothing and receive no push, with everything else about the
-        deployment looking correct.
+        `register_taskwire_muxws` tags the peer and must run before `registry.register(peer)`: the
+        registry indexes a peer under the tags it holds at that moment.
         """
         peer = await accept(websocket)
         session = resolve_session(websocket)
         if session is None:
-            # Nothing to tag the socket with, and a socket that is not tagged is one no envelope can
-            # reach. The browser has been served a cookie by now in every ordinary case; closing is
-            # honest about the one where it has not (TW-AMB-008).
+            # No namespace to tag the socket with (TW-AMB-008); the next page load carries the cookie.
             await peer.close(reason="taskwire demo: no session yet; reload once")
             return
 
@@ -191,21 +143,14 @@ def create_app() -> FastAPI:
         try:
             await peer.serve()
         finally:
-            # A vanished watcher never affects the operation itself (TW-REG-008): this unsubscribes
-            # the process from a namespace it no longer holds a socket for, and cancels nothing.
+            # Unsubscribes the namespace once no socket of it remains; cancels nothing (TW-REG-008).
             await release_peer(peer, session, registry)
 
     demo = APIRouter(prefix="/demo")
 
     @app.middleware("http")
     async def ensure_session(request: Request, call_next):  # type: ignore[no-untyped-def]
-        """Hand every visitor a namespace, once.
-
-        Set before the response is returned rather than on a separate `/login` call, so the very
-        first register poll a freshly opened tab makes already has one. Without that the tab would
-        spend its first poll in a namespace it is about to stop being in, and an operation started
-        in that window would be invisible a second later.
-        """
+        """Set the session cookie on the first response to a visitor without one."""
         existing = request.cookies.get(SESSION_COOKIE)
         response: Response = await call_next(request)
         if existing is None:
@@ -214,7 +159,7 @@ def create_app() -> FastAPI:
 
     @demo.get("/book")
     async def book() -> dict:
-        """The application's own data. taskwire has no opinion about it and never sees it."""
+        """The book: every position with our and the custodian's figure, and the sector membership."""
         return {
             "positions": [
                 {
@@ -232,12 +177,10 @@ def create_app() -> FastAPI:
 
     @demo.post("/jobs/{name}")
     async def start_job(name: str, request: Request) -> dict:
-        """Start one job under the token the caller minted.
+        """Start job `name` under the caller's `X-Taskwire-Token` (minted here when absent).
 
-        **This endpoint does not open `operation()` around the work and then wait for it.** It writes
-        `queued`, hands off to a task, and returns - so the browser has a token to watch before the
-        first row is processed. A command that returned only when the work was done would make every
-        progress report arrive after the thing they describe.
+        Writes `queued`, starts the job in a task and returns `{"token", "job"}` at once. Answers 404
+        for an unknown job and 409 when the request carries no session.
         """
         job = JOBS.get(name)
         if job is None:
@@ -247,9 +190,7 @@ def create_app() -> FastAPI:
         if session is None:
             raise HTTPException(status_code=409, detail="no session yet; reload once")
 
-        # The caller mints it. Minting one here when it does not is a convenience for `curl`, not
-        # the workflow: a browser that let the server choose would have to wait for the reply before
-        # it could subscribe, and would miss whatever happened in between.
+        # Minted here only for a caller without one, such as `curl`.
         token = request.headers.get(taskwire.TOKEN_HEADER) or taskwire.new_token()
         connection = request.headers.get(taskwire.CONNECTION_HEADER)
 
@@ -262,9 +203,8 @@ def create_app() -> FastAPI:
         )
 
         async def run_job() -> None:
-            # The terminal write belongs to whoever ran the work, and this is that process
-            # (TW-INV-009). `operation()` writes `running` on the way in and exactly one terminal
-            # state on the way out, including when the body raises.
+            # `operation()` writes `running`, then exactly one terminal state, also when the body
+            # raises (TW-INV-009).
             try:
                 async with taskwire.operation(
                     token,
@@ -274,20 +214,11 @@ def create_app() -> FastAPI:
                 ) as reporter:
                     await job(reporter)
             except taskwire.OperationCancelled:
-                # **Swallowed here on purpose, and every application running jobs in a bare task
-                # needs this line.** `set()` raises by default (TW-CANCEL-002) so that a loop with no
-                # cancellation code still stops; by the time the exception reaches here the operation
-                # is already written `cancelled` and has left the register. Letting it escape a
-                # `create_task` would make asyncio log "Task exception was never retrieved" with a
-                # full traceback on every ordinary cancel - alarming, and about nothing.
+                # Already written `cancelled` (TW-CANCEL-002); caught so asyncio does not log
+                # "Task exception was never retrieved".
                 logger.info("taskwire: %s was cancelled", token)
             except Exception as error:
-                # The same reasoning for the other ending. `operation()` re-raises in every failure
-                # case (TW-API-001), and by the time the exception reaches here it has already
-                # written `failed`, published it and taken the entry out of the register - so the
-                # report the browser reads is complete, and one line is what is left to say. A bare
-                # task whose exception nobody retrieves has asyncio print a traceback at collection
-                # time instead, for a failure that was reported and handled.
+                # Already written `failed` (TW-API-001); caught for the same reason.
                 logger.warning("taskwire: %s failed: %r", token, error)
 
         task = asyncio.create_task(run_job(), name=f"demo-{name}-{token[:8]}")
@@ -298,12 +229,8 @@ def create_app() -> FastAPI:
 
     @demo.get("/artefacts/blotter.csv", response_class=PlainTextResponse)
     async def blotter(rows: int = 0) -> str:
-        """What a `Result.download` points at.
-
-        taskwire stores a pointer and never the file (TW-RES-007): it does not create, serve,
-        refresh, proxy, validate or delete what is behind `href`, and has no opinion about who may
-        fetch it. This endpoint is the application's, and its authorization would be too.
-        """
+        """The export job's blotter as CSV, the first `rows` trades; the target of its `Result.download`
+        (TW-RES-007)."""
         lines = ["seq,symbol,side,quantity,price"]
         for symbol, _, _ in SYMBOLS:
             for row in blotter_rows(symbol):

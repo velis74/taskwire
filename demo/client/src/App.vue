@@ -1,39 +1,8 @@
 <script setup lang="ts">
 /**
- * The night batch, from the browser's side.
- *
- * ## What to try
- *
- * 1. **Start "Reconcile positions".** It walks the book and stops four times to ask which figure
- *    stands. While it waits, its state reads `waiting_input` and a real worker is held - that cost
- *    is not hidden, because there is no timeout and no answer a library can invent for a user
- *    (TW-DLG-005).
- * 2. **Open a second tab and start nothing.** The question is in both, because a question belongs to
- *    the namespace rather than to a tab (TW-REG-001). The tab that started asks immediately; the
- *    other waits `dialogAdoptDelay` and presents only if the question is *still* open. Answer in
- *    either one and the job resumes.
- * 3. **Start "Export blotter" and cancel it.** Nothing in that job's loop is written for
- *    cancellation - `set()` raises by default (TW-CANCEL-002), so a loop that reports progress
- *    stops when asked.
- * 4. **Start all four at once.** The summary line carries counts and a dominated state, and
- *    deliberately no percentage: there is no unit in which four operations' self-reported
- *    percentages are commensurable, so any figure across them would be invented (TW-REG-011).
- * 5. **Let one finish.** It parks its result and stays in the list until you collect or dismiss it.
- *    Reload the page first if you like - the store is the truth, so the row is still there.
- * 6. **Start "Release settlement file" and answer nothing.** The worker's own deadline expires, the
- *    operation ends `failed`, and the question is withdrawn from every tab in the same step
- *    (TW-CANCEL-011) - the modal closes by itself and says nothing, because nothing failed *here*.
- * 7. **Switch the wire to WebSocket.** The same six calls now travel one socket instead of HTTP,
- *    envelopes arrive when they happen, and the polling ladder stops (TW-TS-007) - there is no
- *    periodic `GET` in the network tab while it reads *WebSocket*. The rows hold still while it
- *    does, because the client applies no envelope to a handle; switching back is one read and the
- *    page is current again, which is what "the store is the truth" buys (TW-CORE-002, TW-CORE-005).
- *
- * ## What this file does NOT do
- *
- * It does not poll, retry, back off, de-duplicate, or reconcile a push against a read. All of that
- * is the library's. What is left is what an application actually writes: a button, a table, a
- * decision about how a question should look, and which wire to dial.
+ * The night batch, from the browser's side: the job buttons, the register, the question, the wire
+ * switch (HTTP or WebSocket) and the dialog switch (this page's scrim or `taskwire/vuetify`).
+ * Polling, retries and applying pushes are the library's; demo/README.md lists what to try.
  */
 
 import { ModalView } from '@dynamicforms/vuetify-modal-form-kit';
@@ -71,13 +40,8 @@ onMounted(async () => {
 });
 
 /**
- * Start a job under a token this tab mints.
- *
- * `run()` mints it, binds it for the synchronous part of the callback so the request carries
- * `X-Taskwire-Token`, and hands back a handle that is a `PromiseLike` over **the request's own**
- * promise (TW-TS-002) - awaiting it gives back what the POST returned, not what the worker
- * eventually decided. The worker's outcome is on `op.progress`, which is the distinction that keeps
- * "did my command reach the server" separate from "did the work succeed".
+ * Start a job under a token `run()` mints and sends as `X-Taskwire-Token` (TW-TS-002). The handle
+ * settles with the POST's response; the worker's outcome is on its `progress`.
  */
 function start(name: string): void {
   tw.run((_token) => axios.post(`/demo/jobs/${name}`), {
@@ -109,10 +73,7 @@ const socketUrl = (): string => {
 
 /**
  * Back to HTTP: the six calls return to axios and every polling ladder resumes on its base rung.
- *
- * The socket is closed **here** and not by the library. taskwire never dialled it, and a library
- * that closed a connection it did not open would take an application's socket away from it
- * (TW-WS-001) - which is also why `detachMuxws` is a separate call from `peer.close()`.
+ * `detachMuxws` does not close the socket (TW-WS-001), so the page closes it.
  */
 function useHttp(): void {
   dropHealth?.();
@@ -127,15 +88,8 @@ function useHttp(): void {
 }
 
 /**
- * Choose the wire. **Exclusive**, and that is the whole point of the switch (TW-TS-007).
- *
- * A socket that pushes the instant a state changes and a ladder that asks again every few seconds
- * are two answers to one question, so `attachMuxws` suspends the ladder rather than adding to it -
- * open the network tab and there is no periodic `GET /taskwire` while this reads
- * *WebSocket*. What comes back on a loss is the ladder, because the store is the truth and one read
- * is the whole of the recovery (TW-CORE-005).
- *
- * The application dials; the library is handed a peer that is already connected.
+ * Choose the wire. `attachMuxws` suspends the polling ladder while the socket is healthy, and a lost
+ * socket resumes it (TW-TS-007, TW-CORE-005). The page dials; the library gets a connected peer.
  */
 async function chooseWire(next: Wire): Promise<void> {
   if (next === wire.value || dialling.value) return;
@@ -153,10 +107,8 @@ async function chooseWire(next: Wire): Promise<void> {
       socketHealthy.value = healthy;
     });
     wire.value = 'websocket';
-    // One `watch` with an empty declaration. It restores nothing - it asserts exactly the state the
-    // new socket already has - and its reply is how this connection learns its id (TW-REG-020).
-    // `attachMuxws` has already wired that id into the client, which stamps it on every request it
-    // makes; this ref is only what the switch displays.
+    // An empty `watch`; its reply carries the connection id (TW-REG-020), which `attachMuxws` already
+    // passes to the client. The ref only displays it.
     connection.value = await transport.announce();
   } catch (error) {
     socketError.value = error instanceof Error ? error.message : String(error);
@@ -179,18 +131,15 @@ type Ui = 'plain' | 'vuetify';
 const ui = ref<Ui>('plain');
 
 /**
- * `useTaskwireDialogs` registers its own teardown with `onScopeDispose`, which needs an active
- * effect scope to attach to - and a scope is only active while `setup()` runs synchronously, not
- * inside a click handler fired later. A detached `effectScope` gives it one to attach to on demand,
- * and `.stop()` runs that teardown exactly as unmounting the component would.
+ * A detached scope for `useTaskwireDialogs`, whose teardown needs an active effect scope, which a
+ * click handler does not have; `.stop()` runs the teardown.
  */
 let vuetifyDialogs: ReturnType<typeof effectScope> | null = null;
 
 function chooseUi(next: Ui): void {
   if (next === ui.value) return;
   if (next === 'vuetify') {
-    // One presenter per tab: the page's own stops before the shipped adapter starts, and the page's
-    // scrim comes down without answering.
+    // One presenter per tab: stop the page's own and close its scrim without answering.
     plainDialogs?.dispose();
     plainDialogs = null;
     settle(null);
@@ -229,9 +178,8 @@ function settle(button: string | null): void {
 }
 
 /**
- * The page's half of a dialog adapter: put the question in the scrim and settle with the chosen
- * button. Which question to present, in which tab and when (TW-TAB-003), and the answer itself are
- * `DialogPresenter`'s - the same class `useTaskwireDialogs` runs with the modal kit.
+ * Puts the question in the scrim and settles with the chosen button. `DialogPresenter` decides which
+ * question, in which tab and when (TW-TAB-003), and sends the answer.
  */
 const present: PresentDialog = (_operation, dialog) =>
   new Promise((resolve) => {
@@ -242,10 +190,8 @@ const present: PresentDialog = (_operation, dialog) =>
 
 let plainDialogs: DialogPresenter | null = new DialogPresenter({ client: tw, present });
 
-// Close the scrim when the question left `open` - answered in another tab, withdrawn because the
-// operation ended (TW-DLG-016), or replaced by the same operation's next question. `openDialogFor`
-// matches on dialog id, so an operation that moved on to a new dialog no longer answers for the id
-// this tab is holding, and the stale scrim comes down rather than silently relabelling itself.
+// Close the scrim when its dialog id is no longer open: answered in another tab, withdrawn
+// (TW-DLG-016), or replaced by the operation's next question.
 onScopeDispose(
   tw.onRegisterChange(() => {
     if (asking.value !== null && openDialogFor(asking.value) === null) settle(null);
@@ -253,12 +199,8 @@ onScopeDispose(
 );
 
 /**
- * The question's own facts, rendered as they arrive.
- *
- * `params` is free-form and its keys are the application's own (TW-TXT-003) - taskwire copies the
- * bag through and interpolates nothing. Two of these four jobs ask about entirely different things,
- * so the modal below reads the bag rather than a shape: markup written against one question's keys
- * renders the other's as blanks and `NaN`.
+ * The open question with its `params` as label/value rows. `params` is free-form (TW-TXT-003), and
+ * the jobs ask with different keys, so every key is rendered.
  */
 const question = computed(() => {
   const operation = asking.value !== null ? openDialogFor(asking.value) : null;
@@ -274,7 +216,7 @@ const question = computed(() => {
 });
 
 // ------------------------------------------------------------------------------------------------
-// Presentation helpers - the application's own, and none of them taskwire's business
+// Presentation helpers
 // ------------------------------------------------------------------------------------------------
 
 const fmt = new Intl.NumberFormat('en-GB');
@@ -292,8 +234,8 @@ function resultText(entry: Operation<unknown>): string | null {
 </script>
 
 <template>
-  <!-- `v-app` supplies the theme context `TaskwireFooter`'s and `ModalView`'s Vuetify components
-       read - present regardless of `ui`, since switching modes must not remount it mid-question. -->
+  <!-- Theme context for `TaskwireFooter` and `ModalView`; mounted in both modes so switching does
+       not remount it. -->
   <v-app>
   <main>
     <header>
@@ -305,8 +247,8 @@ function resultText(entry: Operation<unknown>): string | null {
       </p>
     </header>
 
-    <!-- One wire at a time. Choosing WebSocket routes the six calls over the socket and stops the
-         polling ladder; choosing HTTP puts both back (TW-TS-007). -->
+    <!-- WebSocket routes the six calls over the socket and suspends polling; HTTP restores both
+         (TW-TS-007). -->
     <section class="wire">
       <span class="label">Wire</span>
       <button type="button" :class="{ on: wire === 'http' }" :disabled="dialling" @click="chooseWire('http')">
@@ -329,9 +271,8 @@ function resultText(entry: Operation<unknown>): string | null {
       <small v-else>polling, 400&nbsp;ms to 5&nbsp;s</small>
     </section>
 
-    <!-- 'Plain' is this file's own hand-rolled scrim and bar; 'Vuetify' is `useTaskwireDialogs` and
-         `TaskwireFooter` from `taskwire/vuetify` - the two shipped deliverables that were mounted
-         nowhere else. Both read the same register; only the presentation changes. -->
+    <!-- 'Plain' is this file's own scrim; 'Vuetify' is `useTaskwireDialogs` and `TaskwireFooter` from
+         `taskwire/vuetify`. -->
     <section class="wire">
       <span class="label">Dialogs</span>
       <button type="button" :class="{ on: ui === 'plain' }" @click="chooseUi('plain')">Plain</button>
@@ -345,8 +286,7 @@ function resultText(entry: Operation<unknown>): string | null {
       </button>
     </section>
 
-    <!-- The summary carries counts and a dominated state. There is no percentage here and there
-         never will be (TW-REG-011). -->
+    <!-- Counts and the dominant state; the aggregate has no percentage (TW-REG-011). -->
     <section v-if="aggregate" class="aggregate" :data-state="aggregate.state">
       <strong>{{ aggregate.state.replace('_', ' ') }}</strong>
       <span>
@@ -355,8 +295,7 @@ function resultText(entry: Operation<unknown>): string | null {
       </span>
     </section>
 
-    <!-- The shipped footer: one bar for the selected operation's own percentage, never an aggregate
-         one (TW-REG-013). It hides itself when the register is empty. -->
+    <!-- The selected operation's own percentage (TW-REG-013); renders nothing on an empty register. -->
     <TaskwireFooter v-if="ui === 'vuetify'" />
 
     <section v-if="entries.length" class="register">
@@ -370,8 +309,7 @@ function resultText(entry: Operation<unknown>): string | null {
           <span class="state">{{ stateLabel(entry) }}</span>
         </div>
 
-        <!-- Indeterminate when the operation does not know its own percentage. Not zero, and not a
-             guess: "this operation cannot say" is a real answer and deserves its own rendering. -->
+        <!-- Indeterminate when the percentage is null. -->
         <div class="bar" :data-indeterminate="entry.progress?.percent == null">
           <div
             class="fill"
@@ -418,9 +356,7 @@ function resultText(entry: Operation<unknown>): string | null {
       </table>
     </section>
 
-    <!-- The question. `params` is everything the server sent about it; taskwire never composed a
-         sentence, and this markup is where the wording actually happens. Plain mode only - in
-         Vuetify mode the shipped adapter presents through the modal kit instead. -->
+    <!-- The question, in plain mode only; the wording is this markup's. -->
     <div v-if="question && ui === 'plain'" class="scrim">
       <div class="dialog" role="dialog" aria-modal="true">
         <h3>{{ question.title }}</h3>
@@ -440,8 +376,7 @@ function resultText(entry: Operation<unknown>): string | null {
             {{ button.label?.text ?? button.id }}
           </button>
         </div>
-        <!-- Deliberately no "cancel" on this modal: dismissing without choosing is not an answer,
-             and leaving the question open is correct (TW-DLG-007). Another tab may still adopt it. -->
+        <!-- No close button: only a declared button answers (TW-DLG-007). -->
       </div>
     </div>
 
@@ -495,11 +430,8 @@ h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; color: v
 .aggregate[data-state='waiting_input'] { border-color: var(--warn); }
 .aggregate span { color: var(--muted); font-size: .875rem; }
 
-/* `TaskwireFooter` ships no CSS of its own (TW-REG-013's honesty extends to the markup: nothing
-   here is invented on its behalf) - this is this page's own rendering of its classes. Grid, not
-   flex: the bar sets its own `width` as a percentage (or leaves it unset when indeterminate), and a
-   flex item's width competes with `flex-grow` for that same box - a grid column's track does not,
-   so the bar's percentage renders against a fixed track regardless. */
+/* `TaskwireFooter` ships no CSS. Grid, not flex: the bar's percentage `width` resolves against a
+   fixed grid track, where a flex item's width would compete with `flex-grow`. */
 .taskwire-footer { display: grid; grid-template-columns: auto 1fr auto; align-items: center;
   gap: .75rem; padding: .5rem .85rem; border: 1px solid var(--line); border-radius: .5rem;
   margin-bottom: 1rem; font-size: .875rem; }
