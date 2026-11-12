@@ -3,7 +3,7 @@
     "MD013": { "line_length": 120, "tables": false, "code_blocks": false },
     // Keep a Changelog repeats Added / Changed / Fixed under every version
     "MD024": { "siblings_only": true },
-    // the design documents carry their title in front matter as well as in the first heading
+    // design/taskwire-spec.md carries its title in front matter as well as in the first heading
     "MD025": { "front_matter_title": "" },
     // a numbered list continues its numbering across the paragraphs that interrupt it
     "MD029": false,
