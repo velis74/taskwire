@@ -1,14 +1,8 @@
-"""Acceptance tests for the register and its percentage-free aggregate (brief §7, tests 29-36).
+"""Acceptance tests for the register and its percentage-free aggregate.
 
-Two constructions recur here and both are deliberate.
-
-**`needs_attention` is built from the uncollected-result cause, never from a written state.** Of
-TW-PROG-013's two causes, a `result` sitting on a non-terminal document is the one these tests use:
-no code path may write `waiting_input` directly (TW-PROG-012), so a test that did would be asserting
-against a shape the library never produces.
-
-**Nothing here sleeps.** The clock the reporter throttles against is injected, and the register is a
-pure function of the snapshots handed to it.
+`needs_attention` is built from an uncollected result on a non-terminal document, one of
+TW-PROG-013's two causes; no code path writes `waiting_input` (TW-PROG-012). The reporter's clock is
+injected; nothing sleeps.
 """
 
 from __future__ import annotations
@@ -41,24 +35,24 @@ from taskwire.reporter import mark_queued, operation, OperationCancelled
 from taskwire.store import Commit, key, MemoryStore
 
 NS = "acct-7"
-"""The namespace under test. A resolved string and nothing else (TW-AMB-007)."""
+"""The namespace under test (TW-AMB-007)."""
 
 OTHER_NS = "acct-9"
 
 COUNT_KEYS = {"total", "queued", "running", "waiting_input"}
-"""TW-REG-014's four counts. `done` and `failed` went with the percentage (TW-REG-015)."""
+"""TW-REG-014's four counts; there is no `done` or `failed` count (TW-REG-015)."""
 
 
 @pytest.fixture(autouse=True)
 def _clean_configuration():
-    """`configured` is a process-wide singleton; no test may leak its wiring into the next one."""
+    """Reset the process-wide `configured` before and after each test."""
     taskwire.reset_configuration()
     yield
     taskwire.reset_configuration()
 
 
 class _Clock:
-    """An injected clock (TW-THR-002). Advanced by hand; never a `sleep`."""
+    """An injected clock (TW-THR-002), advanced by hand."""
 
     def __init__(self, start: float = 0.0) -> None:
         self.now = start
@@ -75,7 +69,7 @@ def _client(session: str = NS) -> Client:
 
 
 def _at(minute: int, second: int = 0) -> str:
-    """RFC 3339 UTC with a `Z` suffix (TW-CORE-010), spelled so ordering is obvious by eye."""
+    """An RFC 3339 UTC timestamp with a `Z` suffix (TW-CORE-010)."""
     return f"2026-08-11T10:{minute:02d}:{second:02d}.000Z"
 
 
@@ -89,11 +83,7 @@ def _snap(
     percent: float | None = None,
     rev: int = 1,
 ) -> Snapshot:
-    """One register entry, built directly.
-
-    `result` on a non-terminal document is one of TW-PROG-013's two causes of `needs_attention`:
-    an uncollected result holds nothing at all, and it is derived rather than written.
-    """
+    """One register entry, built directly. A `result` makes it `needs_attention` (TW-PROG-013)."""
     return Snapshot(
         token=token,
         rev=rev,
@@ -111,19 +101,16 @@ def _snap(
 
 
 def _uncollected(label: str = "acme.report") -> Result:
-    """A result nobody has collected yet - the half of `waiting_input` that pins no worker."""
+    """An uncollected result."""
     return Result(kind=label, value={"rows": 12})
 
 
-# ---------------------------------------------------------------------- 29
+# ---------------------------------------------------------------------- aggregate shape
 
 
 def test_aggregate_carries_no_percent_field():
-    """TW-REG-009, TW-REG-011: `Aggregate` is its own shape and carries no percentage, ever.
-
-    Absent from the wire, not `null` on it - a `percent: float | None` reads as an invitation to the
-    next person, which is why the field does not exist rather than being emitted empty.
-    """
+    """TW-REG-009, TW-REG-011: `Aggregate` is its own shape and has no `percent` field, on the wire
+    or off it."""
     snapshots = [
         _snap("a", created_at=_at(0), percent=40.0),
         _snap("b", created_at=_at(1), percent=90.0),
@@ -137,23 +124,18 @@ def test_aggregate_carries_no_percent_field():
 
     serialized = register.aggregate.to_dict()
     assert "percent" not in serialized, serialized
-    # Exact, not a subset: a subset assertion would also hold for an empty dict, and the point is
-    # that these keys and *only* these keys reach the wire. `label` is absent because neither entry
-    # carries a title, and TW-REG-014's `label` is optional.
+    # Exactly these keys; `label` is optional (TW-REG-014) and neither entry has a title.
     assert set(serialized) == {"state", "title", "data", "updated_at"}, serialized
     assert "percent" not in register.to_dict()["aggregate"]
     assert "percent" not in aggregate(snapshots).to_dict()
 
 
-# ---------------------------------------------------------------------- 30
+# ---------------------------------------------------------------------- domination
 
 
 def test_waiting_input_dominates_regardless_of_counts():
-    """TW-REG-012: the state is computed by domination, `waiting_input > running > queued`.
-
-    One blocked operation among nine running ones is exactly the case a majority rule would hide,
-    and lighting the indicator is the whole reason the aggregate has a state at all.
-    """
+    """TW-REG-012: the state is computed by domination, `waiting_input > running > queued`, whatever
+    the counts."""
     snapshots = [_snap(f"run-{i}", created_at=_at(i)) for i in range(9)]
     snapshots.append(_snap("waiting", created_at=_at(30), result=_uncollected()))
 
@@ -164,20 +146,18 @@ def test_waiting_input_dominates_regardless_of_counts():
     assert computed.data["waiting_input"] == 1
     assert computed.data["total"] == 10
 
-    # The other half of the ladder, and the half a majority rule would also get wrong: one `running`
-    # among nine `queued` dominates. Without this an inverted `running`/`queued` ordering - or a
-    # `max()` over the wrong key - passes every other assertion in this file.
+    # One `running` among nine `queued` dominates.
     mostly_queued = [_snap(f"q-{i}", created_at=_at(i), state=ProgressState.QUEUED) for i in range(9)]
     mostly_queued.append(_snap("run", created_at=_at(31)))
     dominated = aggregate(mostly_queued)
     assert dominated.state is ProgressState.RUNNING
     assert dominated.data == {"total": 10, "queued": 9, "running": 1, "waiting_input": 0}
 
-    # ...and a register of nothing but `queued` reports `queued`, so the ladder is read end to end.
+    # Only `queued` entries report `queued`.
     assert aggregate(mostly_queued[:9]).state is ProgressState.QUEUED
 
 
-# ---------------------------------------------------------------------- 31
+# ---------------------------------------------------------------------- counts and label
 
 
 def test_aggregate_counts_and_label():
@@ -189,7 +169,7 @@ def test_aggregate_counts_and_label():
         _snap("q-2", created_at=_at(1), state=ProgressState.QUEUED),
         _snap("run-2", created_at=_at(4)),
         _snap("run-3", created_at=_at(5)),
-        # Latest, so it never wins the FIFO selection: this entry is the `waiting_input` one.
+        # The `waiting_input` entry, and the newest.
         _snap("waiting", created_at=_at(9), result=_uncollected()),
     ]
 
@@ -203,16 +183,11 @@ def test_aggregate_counts_and_label():
     assert computed.label == Text(key="acme.import"), "TW-REG-013's FIFO pick names the aggregate"
 
 
-# ---------------------------------------------------------------------- 32
+# ---------------------------------------------------------------------- no terminal aggregate state
 
 
 class _AggregateRecordingStore(MemoryStore):
-    """A `MemoryStore` that samples the register at every publish.
-
-    Sampling here rather than after the fact is the point: `operation()`'s exit commits the terminal
-    state, publishes, then drops (TW-REG-007), so this hook observes the register at the one instant
-    a terminal document exists at all.
-    """
+    """A `MemoryStore` that samples the register at every publish, including the terminal one."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -232,7 +207,7 @@ class _AggregateRecordingStore(MemoryStore):
 
 
 async def _run_until_it_raises(store: MemoryStore, clock: _Clock, token: str, error: BaseException) -> None:
-    """An operation that reports a little and then blows up, so `operation()`'s exit writes a terminal state."""
+    """An operation that reports progress and then raises `error`."""
     async with operation(token, session=NS, result_kind="acme.report", store=store, clock=clock) as reporter:
         clock.advance(1.0)
         await reporter.set(percent=20.0)
@@ -240,17 +215,12 @@ async def _run_until_it_raises(store: MemoryStore, clock: _Clock, token: str, er
 
 
 async def test_aggregate_never_reports_done_or_failed():
-    """TW-REG-015: the server never emits a `done` or `failed` aggregate state.
-
-    Driven through real operations rather than hand-built snapshots, because the reason is a
-    lifecycle one: a terminal entry with nothing to collect has already left the register
-    (TW-REG-007, TW-INV-021), so no count and no domination can ever see one.
-    """
+    """TW-REG-015, TW-REG-007, TW-INV-021: through real operations, no register sample lists a
+    terminal entry or has a `done` or `failed` aggregate state."""
     store = _AggregateRecordingStore()
     clock = _Clock()
 
-    # One long-lived shared operation keeps the register non-empty while the others terminate, so
-    # every sample below is a real aggregate rather than the empty register's `None`.
+    # A long-lived shared operation keeps the register non-empty while the others end.
     async with operation("keeper", session=NS, result_kind="acme.report", store=store, clock=clock) as keeper:
         clock.advance(1.0)
         await keeper.set(percent=10.0)
@@ -278,8 +248,7 @@ async def test_aggregate_never_reports_done_or_failed():
             f"in the same step (TW-REG-007), so no read can ever catch one"
         )
         if sampled is None:
-            # The last operation of the namespace ending leaves an empty register, which reports
-            # nothing at all rather than a zeroed document (TW-REG-017).
+            # An empty register has no aggregate (TW-REG-017).
             assert not listed
             continue
         counted += 1
@@ -291,14 +260,11 @@ async def test_aggregate_never_reports_done_or_failed():
 
     assert counted, "every sample was an empty register; the assertions above proved nothing"
 
-    # And each of the three terminal envelopes was published while its own document was already out
-    # of the register - which is what leaves the aggregate with nothing terminal to dominate over.
+    # Each of the three terminal envelopes was sampled.
     terminal_samples = [state for state, _, _ in store.samples if state in terminal_names]
     assert terminal_names <= set(terminal_samples), f"a terminal envelope was never sampled: {store.samples}"
 
-    # ...and the reason: the entries left the register. The documents themselves are readable at
-    # their own addresses for `tombstone_ttl` (TW-RET-004), which is what tells a late reader that
-    # `breaks` failed rather than merely vanished.
+    # The entries left the register; the documents stay readable at their addresses (TW-RET-004).
     assert await store.list_operations(NS) == []
     broken = await store.snapshot(key(NS, "breaks"))
     assert broken is not None
@@ -306,11 +272,11 @@ async def test_aggregate_never_reports_done_or_failed():
     assert build_register([], _client()).aggregate is None
 
 
-# ---------------------------------------------------------------------- 33
+# ---------------------------------------------------------------------- empty register
 
 
 def test_empty_register_reports_no_aggregate():
-    """TW-REG-017: an empty register reports nothing, so the widget can hide itself."""
+    """TW-REG-017: an empty register has a null aggregate, not a zeroed one."""
     register = build_register([], _client())
 
     assert register.operations == []
@@ -322,16 +288,11 @@ def test_empty_register_reports_no_aggregate():
     assert serialized["aggregate"] != {"total": 0, "queued": 0, "running": 0, "waiting_input": 0}
 
 
-# ---------------------------------------------------------------------- 34
+# ---------------------------------------------------------------------- ordering
 
 
 def test_needs_attention_sorts_first_then_created_at_ascending():
-    """TW-REG-005: `needs_attention` first, `created_at` ascending within both groups, no third key.
-
-    The accepted consequence is that an old uncollected result sorts above a fresh question. The
-    result holds no worker and the aggregate's `waiting_input` state lights the indicator either
-    way, so a third key would buy nothing and would have to be explained.
-    """
+    """TW-REG-005: `needs_attention` first, `created_at` ascending within both groups, no third key."""
     flagged_old = _snap("flag-old", created_at=_at(1), result=_uncollected())
     flagged_new = _snap("flag-new", created_at=_at(8), result=_uncollected())
     plain_old = _snap("plain-old", created_at=_at(0))
@@ -343,23 +304,19 @@ def test_needs_attention_sorts_first_then_created_at_ascending():
     assert [s.needs_attention for s in ordered] == [True, True, False, False]
     assert build_register([plain_new, flagged_new, plain_old, flagged_old], _client()).operations[0].token == "flag-old"
 
-    # No third key: two entries agreeing on both keys keep the order they arrived in. Anything else -
-    # a percentage, a token, a rev - would reorder this pair.
+    # Entries equal on both keys keep their input order.
     tie_z = _snap("z-token", created_at=_at(5), percent=99.0)
     tie_a = _snap("a-token", created_at=_at(5), percent=1.0)
     assert [s.token for s in sort_entries([tie_z, tie_a])] == ["z-token", "a-token"]
     assert [s.token for s in sort_entries([tie_a, tie_z])] == ["a-token", "z-token"]
 
 
-# ---------------------------------------------------------------------- 35
+# ---------------------------------------------------------------------- privacy
 
 
 async def test_private_operations_are_not_in_the_register_or_the_aggregate():
-    """TW-PRIV-002, TW-PRIV-005, TW-REG-010: a private operation is unlisted and uncounted for its whole life.
-
-    Privacy is not authorization (TW-SEC-003): the document stays readable by token throughout, and
-    it is the listing and the aggregate - never the reach - that narrow.
-    """
+    """TW-PRIV-002, TW-PRIV-005, TW-REG-010: a private operation is unlisted and uncounted for its whole life,
+    and readable by token throughout (TW-SEC-003)."""
     store = MemoryStore()
     clock = _Clock()
     private = "private-1"
@@ -394,9 +351,8 @@ async def test_private_operations_are_not_in_the_register_or_the_aggregate():
             assert await register_tokens() == [shared]
             assert await total() == 1
 
-        # terminal: out of the register in the same step (TW-PRIV-005, TW-REG-007), and readable
-        # at its own address afterwards like any other tombstone - privacy governs listing and
-        # fan-out, never reach (TW-PRIV-002).
+        # terminal: out of the register (TW-PRIV-005, TW-REG-007), readable at its own address
+        # (TW-PRIV-002).
         ended = await store.snapshot(key(NS, private))
         assert ended is not None
         assert ended.progress.state is ProgressState.DONE
@@ -406,15 +362,12 @@ async def test_private_operations_are_not_in_the_register_or_the_aggregate():
     assert await register_tokens() == []
 
 
-# ---------------------------------------------------------------------- 36
+# ---------------------------------------------------------------------- reads write nothing
 
 
 class _NoWriteStore(MemoryStore):
-    """Every mutator on TW-STORE-001's surface, wired to fail rather than to record.
-
-    Comparing two reads only catches a read that wrote *visibly*. The `:seen` key TW-KEY-002 forbids
-    would be invisible to both reads and to `list_operations`, so the store itself has to object.
-    """
+    """A `MemoryStore` whose mutators raise `AssertionError` once `reads_are_open` is set
+    (TW-STORE-009, TW-KEY-002)."""
 
     def _forbid(self, name: str) -> None:
         if not self.reads_are_open:
@@ -451,11 +404,8 @@ class _NoWriteStore(MemoryStore):
 
 
 async def test_register_read_twice_is_stable():
-    """TW-REG-001, TW-REG-003, TW-INV-013: two reads agree, with no duplicates and no foreign entry.
-
-    A read that wrote - the `:seen` key TW-KEY-002 forbids - is exactly what a second read would
-    expose, and the namespace is the only authorization scope (TW-SEC-003).
-    """
+    """TW-REG-001, TW-REG-003, TW-INV-013, TW-SEC-003: two reads agree and write nothing, with no
+    duplicates, no private and no foreign entry."""
     store = _NoWriteStore()
     await mark_queued("alpha", session=NS, result_kind="acme.report", store=store)
     await mark_queued("beta", session=NS, result_kind="acme.report", store=store)
@@ -485,11 +435,8 @@ async def test_register_read_twice_is_stable():
 
 
 def test_poll_after_ms_is_400_when_active_and_5000_when_idle():
-    """TW-REST-010, TW-REST-014: base 400 ms while anything is active, the 5 s ceiling otherwise.
-
-    Never below the base interval. The client clamps upward anyway, but a server advertising `0` is
-    a server asking to be flooded.
-    """
+    """TW-REST-010, TW-REST-014: base 400 ms while anything is active, the 5 s ceiling otherwise;
+    never below the base."""
     assert (BASE_POLL_MS, CEILING_POLL_MS) == (400, 5000)
 
     active = [
@@ -517,11 +464,8 @@ def test_poll_after_ms_is_400_when_active_and_5000_when_idle():
 
 
 def test_fifo_selection_advances_when_the_selected_operation_leaves():
-    """TW-REG-013: the shipped default is FIFO - the oldest `queued` or `running` entry.
-
-    It advances to the next one when the selected operation leaves the register, and that is the
-    whole of the behaviour: no weights, no averaging, no figure derived across operations.
-    """
+    """TW-REG-013: FIFO selects the oldest `queued` or `running` entry and advances when it leaves
+    the register."""
     first = _snap("first", created_at=_at(0), state=ProgressState.QUEUED, title=Text(key="acme.first"))
     second = _snap("second", created_at=_at(1), title=Text(key="acme.second"))
     third = _snap("third", created_at=_at(2), title=Text(key="acme.third"))
@@ -542,31 +486,19 @@ def test_fifo_selection_advances_when_the_selected_operation_leaves():
     assert aggregate([parked]).state is ProgressState.WAITING_INPUT
 
 
-# --------------------------------------------------------- known divergence, recorded not sidestepped
+# ------------------------------------------------------------ derived state in FIFO selection and poll cadence
 
 
 def test_a_derived_waiting_input_entry_is_not_a_fifo_candidate_or_active():
-    """TW-REG-013, TW-REG-004, TW-PROG-010, §8.2: the register derives the state it selects on.
-
-    `waiting_input` has two causes and an uncollected result is one of them (TW-PROG-013). The
-    entry below is in `waiting_input` - `needs_attention` says so and the aggregate's own state says
-    so - so it is neither `queued` nor `running`, and TW-REG-013's FIFO default must skip it just as
-    it skips the entry whose *stored* state spells `waiting_input`.
-
-    This test was written red, against the rule rather than against the code: `select_fifo()` and
-    `poll_after_ms()` both read `progress.state` off the stored document, while `aggregate()` derived
-    it, so the three disagreed. The consequence was not cosmetic - TW-REST-010 says "poll at the
-    ceiling while a dialog is open", and an operation holding an open question keeps `running` on its
-    document by TW-PROG-010's own rule, so every dialog would have been polled at the 400 ms base for
-    its whole life.
-    """
+    """TW-REG-013, TW-REG-004, TW-PROG-010, §8.2: an entry whose derived state is `waiting_input`
+    (stored `running`, uncollected result) is not a FIFO candidate and polls at the ceiling."""
     parked = _snap("parked", created_at=_at(0), result=_uncollected(), title=Text(key="acme.parked"))
     runner = _snap("runner", created_at=_at(5), title=Text(key="acme.runner"))
 
     assert parked.needs_attention, "the premise: this entry is in waiting_input (TW-REG-004)"
     assert aggregate([parked]).state is ProgressState.WAITING_INPUT, "and the aggregate agrees"
 
-    # The oldest entry, but not the oldest *queued or running* one, so selection must pass it over.
+    # The oldest entry, but not `queued` or `running`.
     assert select_fifo([parked, runner]) is runner
     assert aggregate([parked, runner]).label == Text(key="acme.runner"), (
         "TW-REG-014's label names the selected entry; a footer must not draw a parked "

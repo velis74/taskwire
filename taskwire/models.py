@@ -1,18 +1,16 @@
 """The wire documents of specification §3, as plain dataclasses.
 
-No pydantic, no attrs, no typing_extensions: core has zero runtime dependencies and that is a hard
-constraint rather than an aspiration (TW-CORE-006). Every model hand-writes `to_dict` / `from_dict`.
+No pydantic, attrs or typing_extensions: core has zero runtime dependencies (TW-CORE-006). Every
+model hand-writes `to_dict` / `from_dict`.
 
 Two conventions run through the whole file:
 
-**Absent and null are the same thing to a parser** (TW-CORE-010). `to_dict` omits an optional field
+**Absent and null parse alike** (TW-CORE-010). `to_dict` omits an optional field
 that is `None` rather than writing `null`, which keeps the wire small; `from_dict` treats a missing
 key and a `null` identically. Required fields are always written, `null` included where the shape
 says the value may be null.
 
-**`Aggregate` is its own shape, not a `Progress` with a hole in it** (TW-REG-009, TW-REG-011). It
-carries no percentage and there is no field to set to `None`. Reusing `Progress` here is exactly how
-a percentage gets added back by someone reading `percent: float | None` as an invitation.
+**`Aggregate` is its own shape and has no percentage field** (TW-REG-009, TW-REG-011).
 """
 
 from __future__ import annotations
@@ -66,7 +64,7 @@ TERMINAL_STATES = frozenset({ProgressState.DONE, ProgressState.FAILED, ProgressS
 """The three states after which the store freezes `state` (TW-STORE-010, TW-INV-014)."""
 
 ACTIVE_STATES = frozenset({ProgressState.QUEUED, ProgressState.RUNNING})
-"""The two states that make a register "active" for the polling cadence and the FIFO selection."""
+"""`queued` and `running`: the states that make a register active."""
 
 
 class DialogState(str, Enum):
@@ -120,6 +118,7 @@ class Text:
     text: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {}
         if self.key is not None:
             out["key"] = self.key
@@ -131,6 +130,7 @@ class Text:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> Text | None:
+        """Parses the wire form; `None` gives `None`."""
         if raw is None:
             return None
         return cls(key=raw.get("key"), params=raw.get("params"), text=raw.get("text"))
@@ -146,8 +146,8 @@ ERROR_NAMESPACE = "taskwire"
 its last `.` into the namespace and the code."""
 
 ERROR_NAMESPACE_FASTAPI_VIEWSETS = "fastapi-viewsets"
-"""The namespace of the fastapi-viewsets codes `TaskwireMiddleware` writes into `error.code` verbatim:
-the `code` of the executor's error for a deferred call that failed around its execution."""
+"""The namespace of fastapi-viewsets error codes: a deferred call that failed around its execution
+carries the `code` of the executor's error in `error.code` verbatim."""
 
 DISPATCH_FAILED = f"{ERROR_NAMESPACE}.dispatch_failed"
 """The work could not be handed to the process that executes it. `retryable: true` (TW-CALL-005,
@@ -172,13 +172,13 @@ UNHANDLED_EXCEPTION = f"{ERROR_NAMESPACE}.unhandled_exception"
 (`exception_name()`). `retryable: false`."""
 
 FAILED = f"{ERROR_NAMESPACE}.failed"
-"""`TaskwireMiddleware.on_transition()` ended a deferred call the executor failed around, and the
-executor's error carries no `code`. `retryable: false`."""
+"""A deferred call failed around its execution and the executor's error carries no `code`.
+`retryable: false`."""
 
 CANCELLED = f"{ERROR_NAMESPACE}.cancelled"
-"""A cancellation: the `OperationFailed.code` of a `cancelled` operation (TypeScript), and the `detail`
-of a `410` reply to a dialog the operation withdrew. Never written into a document: a `cancelled`
-operation carries no `error`."""
+"""A cancellation: the client-side error code of a `cancelled` operation, and the `detail` of a `410`
+reply to a dialog the operation withdrew. Never written into a document: a `cancelled` operation
+carries no `error`."""
 
 _ACRONYM_BOUNDARY = re.compile(r"([A-Z])([A-Z][a-z])")
 _WORD_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
@@ -214,7 +214,7 @@ def unhandled_exception_error(exc_type: type[BaseException], exc: BaseException 
 
 @dataclass(frozen=True)
 class Error:
-    """TW-PROG-005. Carries no stack trace, deliberately: this document reaches a browser.
+    """TW-PROG-005. Carries no stack trace: this document reaches a browser.
 
     `code` is written as given. A code the application passes (`Reporter.fail()`, `name_error()`,
     `CallExecution.fail()`) is the application's to namespace.
@@ -225,10 +225,12 @@ class Error:
     retryable: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         return {"code": self.code, "message": self.message.to_dict(), "retryable": self.retryable}
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> Error | None:
+        """Parses the wire form; `None` gives `None`."""
         if raw is None:
             return None
         return cls(
@@ -252,6 +254,7 @@ class ResultRef:
     expires_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {"href": self.href}
         if self.mime is not None:
             out["mime"] = self.mime
@@ -263,6 +266,7 @@ class ResultRef:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> ResultRef | None:
+        """Parses the wire form; `None` gives `None`."""
         if raw is None:
             return None
         return cls(
@@ -288,6 +292,7 @@ class Result:
     ref: ResultRef | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {"kind": self.kind}
         if self.params is not None:
             out["params"] = self.params
@@ -301,6 +306,7 @@ class Result:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> Result | None:
+        """Parses the wire form; `None` gives `None`."""
         if raw is None:
             return None
         return cls(
@@ -345,8 +351,7 @@ class Result:
 class Button:
     """A choice on a dialog.
 
-    There is no `default` flag: a default button's only use is answering a timeout, and there are no
-    timeouts (TW-DLG-005).
+    There is no `default` flag: dialogs have no timeout (TW-DLG-005).
     """
 
     id: str
@@ -354,6 +359,7 @@ class Button:
     style: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {"id": self.id}
         if self.label is not None:
             out["label"] = self.label.to_dict()
@@ -363,6 +369,7 @@ class Button:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Button:
+        """Parses the wire form."""
         return cls(
             id=raw["id"],
             label=Text.from_dict(raw.get("label")),
@@ -384,6 +391,7 @@ class Input:
     label: Text | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {"name": self.name, "type": self.type, "required": self.required}
         if self.label is not None:
             out["label"] = self.label.to_dict()
@@ -391,10 +399,8 @@ class Input:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Input:
-        # `raw.get("type", "string")` would be wrong, and subtly: a default passed to `dict.get`
-        # fires only on a *missing* key, so an explicit `"type": null` would sail past it and
-        # produce an `Input` whose type is `None` - which is not one of TW-DLG-004's four. Absent
-        # and null must parse identically (TW-CORE-010), so the fallback has to be on the value.
+        """Parses the wire form."""
+        # `or`, not a `get` default: an explicit null parses as absent (TW-CORE-010).
         return cls(
             name=raw["name"],
             type=raw.get("type") or "string",
@@ -411,10 +417,12 @@ class DialogReply:
     values: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         return {"button": self.button, "values": self.values}
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> DialogReply | None:
+        """Parses the wire form; `None` gives `None`."""
         if raw is None:
             return None
         return cls(button=raw["button"], values=raw.get("values") or {})
@@ -424,8 +432,7 @@ class DialogReply:
 class DialogAnswer:
     """What `ask()` returns.
 
-    There is no `timed_out` flag, because there is no second way for `ask()` to return
-    (TW-DLG-007): it returns only when the store arbitrated a reply.
+    There is no `timed_out` flag: `ask()` returns only when the store arbitrated a reply (TW-DLG-007).
     """
 
     button: str
@@ -451,6 +458,7 @@ class DialogRequest:
     reply: DialogReply | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {
             "id": self.id,
             "dialog_id": self.dialog_id,
@@ -468,6 +476,7 @@ class DialogRequest:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> DialogRequest:
+        """Parses the wire form."""
         return cls(
             id=raw["id"],
             dialog_id=raw["dialog_id"],
@@ -505,6 +514,7 @@ class Progress:
     updated_at: str = field(default_factory=now_iso)
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {
             "state": ProgressState(self.state).value,
             "percent": self.percent,
@@ -529,6 +539,7 @@ class Progress:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Progress:
+        """Parses the wire form."""
         return cls(
             state=ProgressState(raw["state"]),
             percent=raw.get("percent"),
@@ -552,7 +563,7 @@ class Progress:
 
     @property
     def is_shared(self) -> bool:
-        """TW-PRIV-001: declaring a `result_kind` at start is the whole of being shared."""
+        """TW-PRIV-001: an operation is shared exactly when it declares a `result_kind` at start."""
         return self.result_kind is not None
 
 
@@ -570,9 +581,8 @@ class Snapshot:
     v: int = WIRE_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        # `v` is required and first: a client reading REST determines the wire version by the same
-        # path as one reading a push, and no document a client can receive is unversioned
-        # (TW-CORE-012).
+        """The wire form."""
+        # `v` is required and first, as in every document a client receives (TW-CORE-012).
         return {
             "v": self.v,
             "token": self.token,
@@ -586,6 +596,7 @@ class Snapshot:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Snapshot:
+        """Parses the wire form."""
         return cls(
             v=raw.get("v") or WIRE_VERSION,
             token=raw["token"],
@@ -604,12 +615,10 @@ class Snapshot:
 
     @property
     def needs_attention(self) -> bool:
-        """TW-REG-004: `waiting_input`, **derived** rather than read off `progress.state`.
+        """TW-REG-004: `waiting_input`, derived rather than read off `progress.state` (TW-PROG-010).
 
-        TW-PROG-013's two causes are not alike and both are checked here: an open dialog holds a
-        worker, an uncollected result holds nothing at all. Reading the stored `state` instead would
-        make this agree with whatever the last writer happened to put there, which is precisely the
-        bug TW-PROG-010 forbids.
+        True for either cause of TW-PROG-013: an open dialog, or an uncollected result on a
+        non-terminal operation.
         """
         if self.open_dialogs:
             return True
@@ -629,6 +638,7 @@ class OperationSummary:
     progress_delivery: bool = True
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         return {
             "token": self.token,
             "snapshot": self.snapshot.to_dict(),
@@ -641,6 +651,7 @@ class OperationSummary:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> OperationSummary:
+        """Parses the wire form."""
         return cls(
             token=raw["token"],
             snapshot=Snapshot.from_dict(raw["snapshot"]),
@@ -656,13 +667,12 @@ class OperationSummary:
 class Aggregate:
     """§3.8a. Counts and a dominated state.
 
-    **There is no `percent` here and no rule may reintroduce one** (TW-REG-011). There is no unit in
-    which two operations' self-reported percentages are commensurable, so there is no honest number
-    to publish; the field is absent from the wire rather than `null` on it. A footer that wants a
-    bar draws one selected operation's own percentage (TW-REG-013).
+    No `percent` (TW-REG-011): percentages of different operations are not commensurable. The field
+    is absent from the wire, not `null`. A footer bar shows one selected operation's own percentage
+    (TW-REG-013).
 
     The server never emits a `done` or `failed` state here (TW-REG-015): a terminal entry with
-    nothing to collect has already left the register, so no count and no domination can see one.
+    nothing to collect is no longer in the register.
     """
 
     state: ProgressState
@@ -672,6 +682,7 @@ class Aggregate:
     updated_at: str = field(default_factory=now_iso)
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         out: dict[str, Any] = {
             "state": ProgressState(self.state).value,
             "title": self.title.to_dict(),
@@ -684,6 +695,7 @@ class Aggregate:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Aggregate:
+        """Parses the wire form."""
         return cls(
             state=ProgressState(raw["state"]),
             data=raw.get("data") or {},
@@ -704,6 +716,7 @@ class Register:
     v: int = WIRE_VERSION
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         return {
             "v": self.v,
             "operations": [o.to_dict() for o in self.operations],
@@ -714,6 +727,7 @@ class Register:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Register:
+        """Parses the wire form."""
         raw_aggregate = raw.get("aggregate")
         return cls(
             v=raw.get("v") or WIRE_VERSION,
@@ -740,6 +754,7 @@ class Envelope:
     v: int = WIRE_VERSION
 
     def to_dict(self) -> dict[str, Any]:
+        """The wire form."""
         return {
             "v": self.v,
             "token": self.token,
@@ -750,6 +765,7 @@ class Envelope:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Envelope:
+        """Parses the wire form."""
         return cls(
             v=raw.get("v") or WIRE_VERSION,
             token=raw["token"],

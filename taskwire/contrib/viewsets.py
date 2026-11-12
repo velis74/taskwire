@@ -2,54 +2,33 @@
 
 Imports FastAPI and fastapi-viewsets; nothing in `taskwire/` outside `contrib` may (TW-CORE-006).
 
-## What an application does
+## Usage
 
-One call, and the whole REST surface exists::
+```python
+from fastapi import APIRouter, FastAPI
+from taskwire.contrib.viewsets import register_taskwire_rest
 
-    from fastapi import APIRouter, FastAPI
-    from taskwire.contrib.viewsets import register_taskwire_rest
+app = FastAPI()
+router = APIRouter()
+register_taskwire_rest(router)
+app.include_router(router)
+```
 
-    app = FastAPI()
-    router = APIRouter()
-    register_taskwire_rest(router)          # <- the entire REST transport
-    app.include_router(router)
+`register_taskwire_rest` applies `@route_viewset` and mounts six endpoints on REST and on muxws, and
+tracks the application's own viewset calls (`track_viewset_calls`): `taskwire_context_processor`
+names the call's token, and `TaskwireMiddleware` places `taskwire.calls`' `receive_call()` and
+`execute_call()` in the command middleware chain (TW-CALL-101).
 
-That call applies `@route_viewset` and mounts six endpoints - **on REST and on muxws both**, since
-`route_viewset` publishes a viewset on the two transports at once - and tracks the application's own
-viewset calls (`track_viewset_calls`): `taskwire_context_processor` names the call's token, and
-`TaskwireMiddleware` places `taskwire.calls`' `receive_call()` and `execute_call()` in the command
-middleware chain (TW-CALL-101).
+The endpoints run through fastapi-viewsets' middleware chain and appear in its `/schema`.
+`@action_configuration({TaskwireMiddleware: False})` leaves an application's action untracked, and
+`{TaskwireMiddleware: {"result_kind": kind}}` declares its result kind.
 
-## Why a viewset rather than a hand-rolled router
-
-Three things fall out of it that are awkward to build twice:
-
-- **`@action_configuration`** supplies the middle level of `raise_on_cancel`'s three-level
-  resolution (settings -> per-viewset/per-action -> per-call keyword). taskwire's core knows only
-  the outer two, because a mechanism resolving configuration from settings through a class to a
-  method is meaningless without viewsets - so this level exists only here.
-- **The middleware chain** - auth, session, rate limiting - applies to taskwire's endpoints the same
-  way it applies to the application's own, instead of taskwire inventing a second way to be
-  protected.
-- **One schema.** The FE proxy validates itself against `/schema`, so an endpoint that moved and a
-  client that did not find each other at startup rather than in production.
-
-## What is NOT here
-
-`taskwire.rest` holds every decision these endpoints make and imports no framework at all
+`taskwire.rest` makes every decision these endpoints answer with and imports no framework
 (TW-REST-001). This module builds a `Client`, calls a handler and translates `(status, payload)`.
-That split is why the same behaviour is testable with no server running, why `contrib/asgi.py` can
-serve the identical protocol with nothing installed but Python, and why the muxws transport can
-reach the same handlers over a stream instead of over HTTP.
 """
 
-# NO `from __future__ import annotations` in this module, deliberately.
-#
-# `route_viewset` introspects these signatures with a plain `inspect.signature()` and hands the
-# return annotation on as the response model. Under the future import every annotation is a *string*,
-# so `-> None` arrives as the truthy `"None"` and FastAPI rejects it against a 204. The rule is
-# narrow but it has teeth: a module a third-party decorator reads signatures off must expose real
-# objects, not text. Everything else in `taskwire/` keeps the import.
+# No `from __future__ import annotations`: `route_viewset` reads return annotations as objects, and
+# the string "None" it would get makes FastAPI reject the 204 routes.
 
 import os
 
@@ -83,8 +62,7 @@ from ..rest import collect_result, dismiss_result, get_operations, get_snapshot,
 from ..settings import configure_executor, configured, settings
 from . import schema
 
-# The three keys the context processor contributes. Namespaced, because the context dict is shared
-# with every other processor the application has configured.
+# The keys the context processor sets, prefixed because other processors share the context.
 SESSION_KEY = "taskwire_session"
 """Where the namespace `session_resolver` returned sits in the context."""
 
@@ -98,13 +76,7 @@ TOKEN_KEY = "taskwire_token"
 async def taskwire_context_processor(request: Request, _viewset: Any = None) -> dict[str, Any]:
     """Lift the namespace, the connection id and the token off the live request, once, per action.
 
-    A viewset endpoint never receives the `Request` - `route_viewset` reserves that parameter name
-    and strips it before FastAPI sees the signature - so this processor is the supported way in, and
-    it is the *only* place taskwire calls `session_resolver` on the REST path.
-
-    A `None` namespace is legal and means the application opted this caller out entirely
-    (TW-AMB-009). It does not mean "nobody is logged in": an anonymous visitor still has a session,
-    and conflating the two would hand every anonymous visitor the same register.
+    Calls `session_resolver` with the request. A `None` namespace opts the caller out (TW-AMB-009).
     """
     resolver = configured.session_resolver
     return {
@@ -349,10 +321,8 @@ class TaskwireMiddleware(Middleware):
     `execute_call()` around the action where the action executes, and `end_call()` for an execution
     its executor ended from outside (TW-CALL-101, TW-CALL-105).
 
-    `register_taskwire_rest` and `track_viewset_calls` append an instance to
-    `settings.viewsets_command_middleware` when none is listed. Listed by the application, it goes
-    after `Idempotency`: a repeat `Idempotency` answers from a stored or running call then does not
-    reach it.
+    Listed by the application in `settings.viewsets_command_middleware`, it goes after
+    `Idempotency`: a repeat `Idempotency` answers from a stored or running call then does not reach it.
 
     - `__call__` receives the call: `queued` before the rest of the chain, and `failed` when the chain
       ends with the operation still `queued` and the action not executed in this process -
@@ -460,8 +430,8 @@ def track_viewset_calls() -> None:
     """Append `taskwire_context_processor` to `viewsets_context_processors` and a `TaskwireMiddleware`
     to `viewsets_command_middleware`, each when absent.
 
-    `register_taskwire_rest` calls it. A process that executes deferred actions calls it too, since
-    the executor's process runs the same command middleware (TW-CALL-101, TW-CALL-105).
+    Required in a process that executes deferred actions, which runs the same command middleware
+    (TW-CALL-101, TW-CALL-105).
     """
     if taskwire_context_processor not in viewset_settings.viewsets_context_processors:
         viewset_settings.viewsets_context_processors.append(taskwire_context_processor)
@@ -480,7 +450,7 @@ def register_taskwire_rest(
     register_muxws: bool | None = None,
     track_calls: bool = True,
 ) -> type[TaskwireViewSet]:
-    """Mount the whole request/response surface on `router`. The only call an application makes.
+    """Mount the six endpoints of TW-REST-004 on `router`, on REST and on muxws.
 
     ```python
     router = APIRouter()
@@ -488,29 +458,17 @@ def register_taskwire_rest(
     app.include_router(router)
     ```
 
-    **The same six endpoints answer over both transports.** `route_viewset` publishes them on REST
-    and - through `fastapi_viewsets.mux_ws` - on muxws, where `process_command` dispatches a stream
-    into the identical routes with the identical validation, middleware chain and response models.
-    A client speaking only WebSocket therefore reaches exactly the surface a client speaking only
-    HTTP does, and there is no second implementation to keep in step.
+    On muxws, `fastapi_viewsets.mux_ws.process_command` dispatches a stream into the same routes.
+    `register_muxws=None` defers to fastapi-viewsets' `viewsets_register_muxws`; `False` publishes
+    REST only.
 
-    `register_muxws` decides whether the muxws half is published: `None` defers to fastapi-viewsets'
-    own `viewsets_register_muxws` (True unless the application says otherwise), and `False`
-    leaves a deployment with REST alone. It is the only knob, because the two transports differ in
-    nothing else.
-
-    The context processor is **transport-blind**. `process_command` supplies the WebSocket
-    handshake's own headers as the baseline for every command, so `session_resolver` reads the same
-    cookie or `Authorization` header on a stream that it reads on a request, and `CONNECTION_HEADER`
-    arrives the same way - stated on the stream when the client states it. Nothing here branches on
-    how the call arrived, and nothing may.
+    `process_command` supplies the WebSocket handshake's headers as the baseline for every command,
+    so `session_resolver` and `CONNECTION_HEADER` read the same values on a stream as on a request.
 
     With `track_calls` (the default) it calls `track_viewset_calls()`, which tracks every viewset call
     of the application that carries a token (TW-CALL-101).
 
-    Idempotent per router: calling it twice mounts one copy, because `route_viewset` registers
-    routes as a side effect and a doubly-mounted viewset answers every request twice through two
-    middleware chains.
+    Idempotent per router: a second call with the same router mounts nothing.
     """
     if track_calls:
         track_viewset_calls()

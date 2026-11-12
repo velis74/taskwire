@@ -2,8 +2,7 @@
 `settings.push_delay`.
 
 An operation that ends inside the delay is answered by its own call, and a client shows nothing for
-it (`progressUi.delay`), so its envelopes would be traffic nobody reads. The store is written as
-always (TW-CORE-001); only the publish waits.
+it (`progressUi.delay`). The store is written as always (TW-CORE-001); only the publish waits.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from .models import Envelope, EnvelopeKind, Progress, Snapshot
 from .settings import settings
 
 _FORCED = (EnvelopeKind.DIALOG_OPEN, EnvelopeKind.CANCEL)
-"""Published inside the delay too, as a `snapshot`: a question nobody sees is a worker nobody frees."""
+"""Envelope kinds published inside the delay too, as a `snapshot`."""
 
 
 def push_delay_left(progress: Progress) -> float:

@@ -1,11 +1,7 @@
-"""The Celery worker entry (M4's second half, TW-CELERY-*).
+"""The Celery worker entry (TW-CELERY-*). Skips when celery is absent.
 
-Skips - never errors - when celery is absent.
-
-The rule these tests exist for is TW-CELERY-004: **exactly one process owns the terminal write, and
-it is the worker.** The web side writes `queued` and, only if dispatch itself failed, `failed`. Two
-processes both writing a terminal state is how a label-less web-side `done` lands on top of the
-worker's real one.
+TW-CELERY-004: the worker owns the terminal write. The web side writes `queued` and, only if dispatch
+failed, `failed`.
 """
 
 from __future__ import annotations
@@ -59,12 +55,7 @@ class FakeTask:
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_the_web_side_writes_queued_and_hands_off():
-    """TW-CELERY-004: the web process writes `queued` and stops there.
-
-    It must NOT open `operation()` (TW-CELERY-005): the block would close when the request ends,
-    long before the worker started, and its terminal write would land on top of the worker's real
-    one.
-    """
+    """TW-CELERY-004, TW-CELERY-005: `dispatch` writes `queued` and passes token and namespace as strings."""
     store = MemoryStore()
     configure(store=store)
     try:
@@ -87,15 +78,8 @@ async def test_the_web_side_writes_queued_and_hands_off():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_only_the_web_side_wired_up_leaves_progress_a_silent_no_op():
-    """TW-CELERY-005, the arrangement its own docstring warns against: no worker-side entry.
-
-    The web side writes `queued` and hands off, exactly as above. If nothing on the worker side
-    opens `operation()` - no `taskwire_task` applied - the task body's
-    own `progress.set()` calls hit the ambient proxy with nothing bound. TW-AMB-002 makes that
-    silent rather than an error, so the failure mode is not a crash: it is a bar that never moves,
-    and the store must show exactly that - `queued`, unrevised - not a `running` write that leaked
-    through some other path.
-    """
+    """TW-CELERY-005, TW-AMB-002: a task body without `taskwire_task` reports nothing; the operation
+    stays `queued` at the same rev."""
     store = MemoryStore()
     configure(store=store)
     try:
@@ -107,8 +91,7 @@ async def test_only_the_web_side_wired_up_leaves_progress_a_silent_no_op():
         assert queued is not None
         assert ProgressState(queued.progress.state) is ProgressState.QUEUED
 
-        # The worker task body, called the way Celery would call it - but with no `taskwire_task`
-        # around it, so nothing bound the ambient reporter first.
+        # A task body with no `taskwire_task`: no ambient reporter is bound.
         assert taskwire.current_reporter() is None
         await taskwire.progress.set(percent=50, label=taskwire.Text(text="halfway"))
 
@@ -122,11 +105,7 @@ async def test_only_the_web_side_wired_up_leaves_progress_a_silent_no_op():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_dispatch_failure_is_retryable():
-    """TW-CELERY-004: `dispatch_failed`, `retryable: true`.
-
-    An unreachable broker is transient, so a frontend may legitimately offer the user a retry rather
-    than reporting a dead operation.
-    """
+    """TW-CELERY-004: a broker failure ends the operation `dispatch_failed`, `retryable: true`."""
     store = MemoryStore()
     seen: list = []
 
@@ -154,11 +133,8 @@ async def test_a_dispatch_failure_is_retryable():
 
 @pytest.mark.usefixtures("_unthrottled")
 def test_the_worker_owns_the_terminal_write_and_runs_without_a_loop():
-    """TW-CELERY-001 / TW-CELERY-008: the synchronous form, from a thread with no event loop.
-
-    A Celery worker has no loop of its own, so `operation()` creates and owns a private one for that
-    thread. Every blocking primitive has to work under it.
-    """
+    """TW-CELERY-001, TW-CELERY-008: the synchronous form runs in a thread with no event loop and
+    ends the operation `done`."""
     store = MemoryStore()
     configure_worker(store)
     token = new_token()
@@ -191,8 +167,7 @@ def test_the_worker_owns_the_terminal_write_and_runs_without_a_loop():
     assert observed == ["body ran"]
     assert result == ["imported"]
 
-    # The worker owns the terminal write, and it takes the entry out of the register while leaving
-    # the document readable (TW-REG-007, TW-RET-004).
+    # The terminal document stays readable (TW-REG-007, TW-RET-004).
     ended = asyncio.run(store.snapshot(make_key(NS, token)))
     assert ended is not None
     assert ended.progress.state is ProgressState.DONE
@@ -201,23 +176,14 @@ def test_the_worker_owns_the_terminal_write_and_runs_without_a_loop():
 
 @pytest.mark.usefixtures("_unthrottled")
 class _KilledWhileAsking(MemoryStore):
-    """A store whose wait never returns: the worker is killed inside it.
-
-    Which is what a soft time limit does to a worker parked in `ask()` - the signal is raised at
-    whatever the thread is executing, and the thread is executing the wait.
-    """
+    """A store whose dialog wait raises `SoftTimeLimitExceeded`, as a soft time limit in `ask()` does."""
 
     async def await_dialog(self, key: str, did: str):  # noqa: A002, ANN201, ARG002
         raise SoftTimeLimitExceeded
 
 
 def test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable():
-    """TW-DLG-006 / TW-CELERY-010: the blocked-worker problem is DELIBERATELY UNSOLVED.
-
-    This is what it looks like from the outside. Celery's own execution timeout kills the task, and
-    taskwire's job is to make that legible rather than to pretend it prevented it: `dialog_timeout`,
-    `retryable: true`, and the open dialogs withdrawn.
-    """
+    """TW-DLG-006, TW-CELERY-010: a soft time limit inside `ask()` ends the operation `dialog_timeout`."""
     store = _KilledWhileAsking()
     configure_worker(store)
     token = new_token()
@@ -241,8 +207,7 @@ def test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable():
     thread.join(timeout=15)
     assert not failures, failures
 
-    # The error is observed on the envelope, which is how a watching client sees it, and on the
-    # tombstone, which is how one that was not watching reads it afterwards.
+    # The tombstone carries the error.
     ended = asyncio.run(store.snapshot(make_key(NS, token)))
     assert ended is not None
     assert ended.progress.error.code == DIALOG_TIMEOUT
@@ -251,7 +216,7 @@ def test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable():
 
 @pytest.mark.usefixtures("_unthrottled")
 def test_the_dialog_timeout_error_reaches_the_client():
-    """The same run, watched through a transport, so the reserved code is actually asserted."""
+    """TW-DLG-006: the one terminal envelope carries `dialog_timeout`, `retryable: true`."""
     store = _KilledWhileAsking()
     seen: list = []
 
@@ -276,9 +241,7 @@ def test_the_dialog_timeout_error_reaches_the_client():
     thread.start()
     thread.join(timeout=15)
 
-    # The LAST envelope, not any envelope: exactly one terminal write leaves an operation
-    # (TW-API-001), and a code that is correct only in an envelope some later one replaces is a code
-    # no reader ever sees.
+    # Exactly one terminal write leaves an operation (TW-API-001).
     terminal = [e for e in seen if e.body.get("state") in {"done", "failed", "cancelled"}]
     assert len(terminal) == 1, f"one terminal envelope, got {[e.body.get('state') for e in terminal]}"
     assert terminal[-1].body["error"]["code"] == DIALOG_TIMEOUT
@@ -287,11 +250,7 @@ def test_the_dialog_timeout_error_reaches_the_client():
 
 
 def test_a_worker_configures_null_transport_and_never_pushes():
-    """TW-CELERY-002. The worker writes; the web process's reader pushes.
-
-    A worker that pushed would duplicate every envelope the reader is already delivering
-    (TW-INV-002), and duplicate dialog.open envelopes re-render answered dialogs.
-    """
+    """TW-CELERY-002, TW-INV-002: `configure_worker` configures the store and `NullTransport`."""
     store = MemoryStore()
     configure_worker(store)
     try:
@@ -302,11 +261,7 @@ def test_a_worker_configures_null_transport_and_never_pushes():
 
 
 def test_a_task_without_a_namespace_still_does_its_work():
-    """TW-AMB-009: `session_resolver` returning None opts the caller out of taskwire, not out of work.
-
-    Refusing to run because nobody is watching would be the wrong failure - reporting is an
-    accelerator, and the import still needs doing.
-    """
+    """TW-AMB-009: with no namespace the body runs with `reporter=None`."""
     ran: list[str] = []
 
     @taskwire_task()

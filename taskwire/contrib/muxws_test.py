@@ -1,13 +1,4 @@
-"""`MuxwsTransport` (TW-WS-*).
-
-Skips - never errors - when muxws is absent, because the rest of the suite is required to pass with
-no optional extra installed at all.
-
-The assertion that matters most is `test_taskwire_uses_exactly_two_muxws_calls`: the whole point of
-this transport is that the dependency is two calls wide. That narrowness is what lets muxws change
-everything else about itself without touching taskwire, and what lets an application replace muxws by
-writing forty lines against `TaskwireTransport`.
-"""
+"""`MuxwsTransport` (TW-WS-*). Skips when muxws is absent."""
 
 from __future__ import annotations
 
@@ -54,8 +45,7 @@ class FakeRegistry:
 
 
 def _progress(**overrides) -> dict:
-    """A real `Progress` document. The transport parses the body to make the delivery decision, so a
-    hand-waved dict would exercise the defensive path rather than the one under test."""
+    """A real `Progress` document, which the transport parses for the delivery decision."""
     from taskwire.models import Progress, ProgressState
 
     document = Progress(
@@ -73,11 +63,7 @@ def _envelope(**overrides) -> Envelope:
 
 
 async def test_one_envelope_becomes_one_notify_per_peer() -> None:
-    """TW-WS-003: one stream opened and ended in one frame, per peer.
-
-    A long-lived per-session stream would leave a ten-minute import holding a stream for ten
-    minutes; the criterion is that a fan-out leaves zero open streams behind.
-    """
+    """TW-WS-003, TW-BP-003: one notify per peer of the namespace, none to another namespace."""
     a, b = FakePeer("a"), FakePeer("b")
     tag_peer(a, "acct-42")
     tag_peer(b, "acct-42")
@@ -109,7 +95,7 @@ async def test_a_dying_peer_does_not_cost_the_others_their_envelope() -> None:
 
 
 async def test_notify_never_blocks_past_push_timeout() -> None:
-    """TW-TR-003 / TW-INV-012: a degradation in the accelerator must not become a stall in the operation."""
+    """TW-TR-003, TW-INV-012: a hanging peer is cut off at `push_timeout`; the next peer still receives."""
     previous = taskwire.settings.push_timeout
     taskwire.settings.push_timeout = 0.05
     try:
@@ -130,7 +116,7 @@ async def test_notify_never_blocks_past_push_timeout() -> None:
 
 
 async def test_notify_never_raises_whatever_the_registry_does() -> None:
-    """TW-TR-002. The state was written before this ran; a failure here costs latency and nothing else."""
+    """TW-TR-002: `notify` does not raise when the registry raises."""
 
     class BrokenRegistry:
         def peers_for(self, **_tags: object) -> list[FakePeer]:
@@ -140,13 +126,8 @@ async def test_notify_never_raises_whatever_the_registry_does() -> None:
 
 
 async def test_taskwire_uses_exactly_two_muxws_calls() -> None:
-    """TW-WS-001/002/005, asserted by source inspection.
-
-    Two calls: `PeerRegistry.peers_for(session=...)` and `peer.notify(payload)`. `open()`,
-    `stream.send()` and `stream.cancel()` MUST NOT be used on the delivery path, and taskwire must
-    know nothing about muxws's frame format, stream id space or codec selection - the server side
-    never sees or stores a stream id.
-    """
+    """TW-WS-001, TW-WS-002, TW-WS-005, by source inspection: the module calls `peers_for(` and
+    `peer.notify(`, and has no `open()`, `stream.send()`, `stream.cancel()`, stream id, codec or frame."""
     import io
     import tokenize
 
@@ -154,9 +135,7 @@ async def test_taskwire_uses_exactly_two_muxws_calls() -> None:
 
     from taskwire.contrib import muxws as module
 
-    # Blank out comments and string literals first. The module's own docstring NAMES the calls it
-    # refuses to make, in order to explain the rule - prose is allowed to do that, and a scan that
-    # counted it would be a test failing for being right about the wrong thing.
+    # Comments and strings are blanked: the module's docstring names the forbidden calls.
     source = Path(module.__file__).read_text(encoding="utf-8")
     lines = source.splitlines()
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
@@ -182,11 +161,7 @@ async def test_the_session_tag_is_the_namespace_and_there_is_no_tab_tag() -> Non
 
 
 async def test_swapping_the_transport_changes_latency_and_nothing_else() -> None:
-    """The claim the whole layering rests on, driven end to end.
-
-    The same operation, run twice with different transports, leaves the store in the same state. If
-    swapping a transport could change what a later read returns, the store would not be the truth.
-    """
+    """The same operation under `NullTransport` and `MuxwsTransport` leaves the same document in the store."""
     from taskwire.reporter import new_token, operation
     from taskwire.store import key as make_key, MemoryStore
 
@@ -221,11 +196,8 @@ async def test_swapping_the_transport_changes_latency_and_nothing_else() -> None
 
 
 async def test_an_override_suppresses_only_this_socket() -> None:
-    """TW-DEL-017: two sockets of one namespace may hold OPPOSITE overrides for one token.
-
-    Nothing arbitrates between them and each reads its own answer. An implementation keying the map
-    by account passes every single-socket test and fails exactly this one.
-    """
+    """TW-DEL-017: two sockets of one namespace hold opposite overrides for one token, and each gets
+    its own delivery."""
     from taskwire.contrib.muxws import handle_watch
 
     quiet, loud = FakePeer("quiet"), FakePeer("loud")
@@ -243,12 +215,8 @@ async def test_an_override_suppresses_only_this_socket() -> None:
 
 
 async def test_only_non_terminal_progress_can_be_suppressed() -> None:
-    """TW-DEL-010 / TW-INV-005, enumerated kind by kind.
-
-    A dialog nobody can see is a worker nobody can free, and a terminal state nobody hears about is a
-    bar frozen at 97 %. A display preference must never be able to wedge a worker pool, which is why
-    these four go out whatever the map says.
-    """
+    """TW-DEL-010, TW-INV-005: an override suppresses non-terminal progress; dialog open/close,
+    cancel and terminal progress are delivered."""
     from taskwire.contrib.muxws import handle_watch
     from taskwire.models import ProgressState
 
@@ -275,11 +243,7 @@ async def test_only_non_terminal_progress_can_be_suppressed() -> None:
 
 
 async def test_a_terminal_envelope_prunes_its_override_everywhere() -> None:
-    """TW-DEL-023. **Behaviour, not tidiness.**
-
-    Without it a long-lived socket's map grows monotonically toward `max_overrides` and eventually
-    rejects a declaration the user meant - over tokens that finished days ago.
-    """
+    """TW-DEL-023: a terminal envelope removes its token, and only it, from every peer's override map."""
     from taskwire.contrib.muxws import handle_watch
     from taskwire.delivery import overrides_of
     from taskwire.models import ProgressState
@@ -298,12 +262,8 @@ async def test_a_terminal_envelope_prunes_its_override_everywhere() -> None:
 
 
 async def test_watch_reply_shape_for_all_three_statuses() -> None:
-    """TW-DEL-022, named in the specification: `{v, status, connection}`, status 0 / 1 / 2.
-
-    A rejected declaration still carries the connection id, since the socket is unchanged - and a
-    client may send `{"overrides": {}}` purely to obtain that id, which is what a reconnecting one
-    does (TW-REG-020).
-    """
+    """TW-DEL-022: `{v, status, connection}` with status 0, 1 and 2; a rejected declaration carries
+    the same connection id and leaves the previous map (TW-DEL-008, TW-REG-020)."""
     from taskwire.contrib.muxws import handle_watch
 
     peer = FakePeer("p")
@@ -314,8 +274,7 @@ async def test_watch_reply_shape_for_all_three_statuses() -> None:
     assert accepted["status"] == 0
     assert isinstance(accepted["connection"], str)
 
-    # TW-DEL-008: rejected rather than truncated, and the previous map stays in force. A truncated
-    # map is one the user asked for and did not get, with no way to tell which half survived.
+    # TW-DEL-008: rejected, not truncated; the previous map stays in force.
     too_many = handle_watch(peer, {"overrides": {f"t{n}": False for n in range(taskwire.settings.max_overrides + 1)}})
     assert too_many["status"] == 1
     assert too_many["connection"] == accepted["connection"], "the socket is unchanged, so its id is too"
@@ -326,18 +285,14 @@ async def test_watch_reply_shape_for_all_three_statuses() -> None:
     malformed = handle_watch(peer, {"overrides": {"tok": "yes please"}})
     assert malformed["status"] == 2
 
-    # An empty declaration is not a restoration: it asserts exactly the state a new socket has.
+    # An empty declaration clears the map.
     emptied = handle_watch(peer, {"overrides": {}})
     assert emptied["status"] == 0
     assert overrides_of(peer) == {}
 
 
 async def test_watch_performs_no_store_reads() -> None:
-    """TW-DEL-007: no store reads, in either direction.
-
-    A `true` or `false` for a token that does not exist is accepted and inert. Reading the store here
-    would put a per-tab display preference on the path of every socket's first message.
-    """
+    """TW-DEL-007: `handle_watch` reads no store; an override for an unknown token is accepted."""
     from taskwire.contrib.muxws import handle_watch
 
     reads: list[str] = []
@@ -363,12 +318,8 @@ async def test_watch_performs_no_store_reads() -> None:
 
 
 async def test_a_private_operations_progress_reaches_only_its_own_connection() -> None:
-    """TW-PRIV-003. Terminal states included.
-
-    With `origin_connection` null - every caller in a deployment with no socket - no socket receives
-    it at all and the originating client learns from its own per-token poll. That is a latency
-    degradation, never a functional one, and the same one already accepted for a dropped push.
-    """
+    """TW-PRIV-003: private progress reaches only the origin connection, and no socket when
+    `origin_connection` is null."""
     from taskwire.contrib.muxws import connection_id
 
     origin, bystander = FakePeer("origin"), FakePeer("bystander")
@@ -383,7 +334,7 @@ async def test_a_private_operations_progress_reaches_only_its_own_connection() -
     assert len(origin.notified) == 1
     assert bystander.notified == [], "a private operation's progress is not a namespace-wide fact"
 
-    # Anchored to no connection: nobody gets the push, and polling covers it.
+    # No origin connection: no socket gets the push.
     origin.notified.clear()
     await transport.notify("acct-42", _envelope(result_kind=None, origin_connection=None))
     assert origin.notified == []
@@ -391,11 +342,8 @@ async def test_a_private_operations_progress_reaches_only_its_own_connection() -
 
 
 async def test_a_suppressed_operation_stays_in_the_register_in_full() -> None:
-    """TW-DEL-013 / TW-INV-017: the predicate governs delivery, never existence.
-
-    An operation no user can ever ask to see would be worse than a noisy one, and a toggle that
-    removed the row it lives on would leave nothing to toggle back.
-    """
+    """TW-DEL-013, TW-INV-017: a suppressed operation stays in the register with its state and
+    `progress_delivery: false`."""
     from taskwire.contrib.muxws import handle_watch
     from taskwire.delivery import Client as DeliveryClient
     from taskwire.register import build_register
@@ -429,8 +377,7 @@ async def test_a_suppressed_operation_stays_in_the_register_in_full() -> None:
 
 
 class FakeStream:
-    """A muxws `Stream` reduced to the one call this handler makes. `reply` is a coroutine, as the
-    real one is - a handler that forgot to await it would leave the stream open forever."""
+    """A muxws `Stream` with only `reply`, a coroutine as in muxws."""
 
     def __init__(self) -> None:
         self.replies: list = []
@@ -440,11 +387,7 @@ class FakeStream:
 
 
 class ServingPeer(FakePeer):
-    """A peer with the handshake-path calls: `close`, and the single `on_stream` slot.
-
-    The slot records rather than accepts, because the assertion that matters is that taskwire never
-    takes it.
-    """
+    """A peer with `close` and an `on_stream` slot that records what is installed."""
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
@@ -471,12 +414,8 @@ async def deliver(handler, payload) -> FakeStream:
 
 
 async def test_the_socket_carries_watch_up_and_answers_it():
-    """Without this handler the socket is half a socket.
-
-    Envelopes push down, but `watch` reaches nothing. A client that cannot `watch` never obtains a
-    connection id, so `origin_connection` stays null, a private operation's progress reaches no
-    socket (TW-PRIV-003), and muting silently does nothing.
-    """
+    """`register_taskwire_muxws` tags the peer, and its handler answers `watch` with the connection
+    id and stores the overrides on the peer."""
     from taskwire.contrib.muxws import register_taskwire_muxws
     from taskwire.delivery import overrides_of
 
@@ -492,12 +431,7 @@ async def test_the_socket_carries_watch_up_and_answers_it():
 
 
 async def test_taskwire_leaves_the_peers_single_handler_slot_to_the_application():
-    """A muxws peer has exactly one `on_stream` slot, and taskwire may not be the one holding it.
-
-    The application composes: `process_command` first, taskwire's handler for what it does not
-    claim. Installing the handler here would make it impossible for the six viewset endpoints to be
-    reachable over the same socket at all.
-    """
+    """`serve_peer` and `register_taskwire_muxws` return the handler and install nothing on the peer."""
     from taskwire.contrib.muxws import register_taskwire_muxws, serve_peer
 
     peer = ServingPeer("p")
@@ -507,11 +441,7 @@ async def test_taskwire_leaves_the_peers_single_handler_slot_to_the_application(
 
 
 async def test_an_unknown_kind_is_answered_rather_than_ignored():
-    """TW-CORE-007: the vocabulary is closed, and silence would leave a client waiting on a stream.
-
-    A viewset command never gets here - `process_command` answers it and returns True - so what
-    reaches this branch really is a kind nobody serves.
-    """
+    """TW-CORE-007: an unknown kind, `dialog.reply` included, is answered `status: 2`."""
     from taskwire.contrib.muxws import register_taskwire_muxws
 
     peer = ServingPeer("p")
@@ -521,19 +451,13 @@ async def test_an_unknown_kind_is_answered_rather_than_ignored():
     assert answered["status"] == 2
     assert "command" in answered["detail"]
 
-    # `dialog.reply` is not a stream kind: it is POST {token}/dialogs/{did} on the viewset, which
-    # the socket carries like every other call.
+    # `dialog.reply` is not a stream kind: it is POST {token}/dialogs/{did} on the viewset.
     refused = (await deliver(taskwire_stream, {"kind": "dialog.reply", "token": "t", "id": "d"})).replies[0]
     assert refused["status"] == 2
 
 
 async def test_a_stale_socket_is_closed_rather_than_retagged():
-    """TW-WS-007 / TW-AMB-012: `goaway`, never a retag.
-
-    Retagging would leave a socket authorised for a namespace nobody re-checked. The client's next
-    register read under the new namespace is the whole of the recovery - there is nothing worth
-    preserving by keeping the connection.
-    """
+    """TW-WS-007, TW-AMB-012: a peer tagged with another namespace is closed and keeps its tag."""
     from taskwire.contrib.muxws import goaway_if_stale
 
     peer = ServingPeer("p")
@@ -548,12 +472,8 @@ async def test_a_stale_socket_is_closed_rather_than_retagged():
 
 
 async def test_a_released_peer_leaves_the_real_registry():
-    """Against `muxws.PeerRegistry` itself, because the call has to be the one that library has.
-
-    A misspelled deregistration is swallowed - the release path may not raise on a socket that is
-    closing anyway - so the peer would stay indexed, this process would believe it still holds a
-    connection for the namespace, and it would stay subscribed to that channel forever.
-    """
+    """`release_peer` deregisters the peer from a real `muxws.PeerRegistry`; release swallows errors,
+    so only a real registry shows the call is right."""
     from muxws import PeerRegistry
 
     from taskwire.contrib.muxws import release_peer
@@ -570,13 +490,7 @@ async def test_a_released_peer_leaves_the_real_registry():
 
 
 async def test_the_socket_handler_never_reads_a_namespace_off_the_message():
-    """TW-WS-007 / TW-SEC-003: the namespace is the handshake's, never the message's.
-
-    A client that could name its own namespace over the socket would have found a way around the one
-    authorization scope the system has. `watch` needs no namespace at all - it writes to the peer's
-    own tags - and every other call resolves one from the handshake headers `process_command`
-    carries.
-    """
+    """TW-WS-007, TW-SEC-003: `serve_peer` reads no session, namespace or token off a message."""
     import inspect
 
     from taskwire.contrib import muxws as module

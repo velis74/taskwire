@@ -1,13 +1,13 @@
 """taskwire - progress reporting and awaitable dialogs for long-running operations.
 
-The store is the truth; a push is only an accelerator. Every state change is written before anything
-is sent anywhere, so a dropped, coalesced or suppressed push never changes what the next read
-returns - which is what lets the transport be swapped without changing behaviour.
+The store is the source of truth; a push only lowers latency. Every state change is written before
+anything is sent, so a dropped, coalesced or suppressed push never changes what the next read
+returns, and the transport can be swapped without changing behaviour.
 
-The layering is: one **protocol** (the documents of §3 and the state machines of §4, in `models`),
-then three independent **implementations** of it - local (`transport.LocalTransport`), REST
-(`rest`), and WebSocket (`contrib.muxws`) - each with one **adapter** binding it to the world
-outside. Nothing in the core imports a framework, a driver or a UI library (TW-CORE-006).
+One protocol (the documents of §3 and the state machines of §4, in `models`) and three transports:
+local (`transport.LocalTransport`), REST (`rest`, `contrib.viewsets`) and WebSocket
+(`contrib.muxws`); REST and WebSocket share the calls of TW-REST-004. Nothing in the core imports a
+framework, a driver or a UI library (TW-CORE-006).
 """
 
 from __future__ import annotations

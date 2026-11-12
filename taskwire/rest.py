@@ -1,12 +1,10 @@
-"""Framework-free REST handlers: `(client, token, body) -> (status, payload)`.
+"""Framework-free REST handlers: async functions of a `Client` and the path parameters that return
+`(status, payload)`.
 
-TW-REST-001: the REST path works with **zero** optional dependencies installed. Nothing in this
-module imports a web framework, and nothing in it knows what one looks like; `contrib.fastapi` and
-`contrib.asgi` are the only places a framework is imported, and they do nothing but translate.
-
-That split is what makes the REST implementation of the protocol testable without a server, and it
-is why an application on a framework taskwire has never heard of can mount these handlers in about
-twenty lines.
+TW-REST-001: the REST path works with no optional dependency installed. Nothing in this module
+imports a web framework; the adapters in `taskwire.contrib` (`viewsets`, `fastapi`, `asgi`, `wsgi`)
+translate requests into these calls. The handlers are testable without a server and mountable on any
+framework.
 """
 
 from __future__ import annotations
@@ -66,11 +64,8 @@ _RESOLUTION_DETAIL = {DialogResolution.ALREADY_ANSWERED: ALREADY_ANSWERED, Dialo
 
 
 def _is_uuid(token: str) -> bool:
-    """TW-REST-006: reject a malformed token **before** touching the store.
-
-    An unclaimed token is simply unknown (TW-REST-005); a malformed one never gets far enough to
-    ask, which keeps a scan of the token space from costing a store read each.
-    """
+    """TW-REST-006: whether `token` is a UUID; a malformed token is rejected without a store read.
+    An unclaimed well-formed token is unknown (TW-REST-005)."""
     try:
         uuid.UUID(str(token))
     except (ValueError, AttributeError, TypeError):
@@ -79,24 +74,15 @@ def _is_uuid(token: str) -> bool:
 
 
 def _not_found() -> Response:
-    """TW-SEC-002: unknown and foreign tokens both return 404, never 403.
-
-    A 403 would confirm that the token exists in somebody's namespace, which turns the endpoint into
-    an oracle for enumerating other people's operations.
-    """
+    """TW-SEC-002: unknown and foreign tokens both return 404, never 403, so a response does not
+    reveal whether a token exists in another namespace."""
     return 404, {"detail": NOT_FOUND}
 
 
 async def get_operations(client: Client) -> Response:
-    """`GET {prefix}` - the central endpoint, and the one an ordinary client polls.
-
-    Always returns the whole register and takes no parameters (TW-REG-003), so there is none that
-    could name another namespace.
-    """
+    """`GET {prefix}`: the whole register of the client's namespace; takes no parameters (TW-REG-003)."""
     if client.session is None:
-        # A `session_resolver` that returned None means the application opted this caller out of
-        # taskwire entirely (TW-AMB-009). 404, never 401 or 403.
-        # NOTE: not a spec rule - the status is this module's choice.
+        # TW-AMB-009: a `session_resolver` that returned None opts the caller out; 404.
         return _not_found()
 
     store = configured.store
@@ -114,14 +100,11 @@ async def get_operations(client: Client) -> Response:
 
 
 async def get_snapshot(client: Client, token: str) -> Response:
-    """`GET {prefix}/{token}` - one operation, private or shared.
+    """`GET {prefix}/{token}`: one operation, private or shared.
 
-    Privacy governs listing and fan-out, never reach (TW-PRIV-002, TW-SEC-003): a private operation
-    is served unchanged to any caller of its namespace that holds the token. The token is an
-    address, and the namespace is the only authorization scope.
-
-    The payload carries no `progress_delivery` (TW-REST-007) - that is a fact about a *pair*, a
-    client and an operation, not about a document.
+    Privacy governs listing and fan-out, not reach (TW-PRIV-002, TW-SEC-003): a private operation is
+    served to any caller of its namespace that holds the token. The namespace is the only
+    authorisation scope. The payload carries no `progress_delivery` (TW-REST-007).
     """
     if client.session is None:
         return _not_found()
@@ -142,13 +125,8 @@ async def get_snapshot(client: Client, token: str) -> Response:
 
 
 def _validate_reply(dialog: Any, body: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    """TW-DLG-015: validate **before** touching the store, and reject with 422.
-
-    Returns the English text and the `params` of `taskwire.invalid_reply`, or None for a valid reply.
-    Validating afterwards would mean the arbiter had already flipped the dialog to `answered` on a
-    reply the operation cannot use - and first-answer-wins makes that irreversible: the tab that
-    could have answered correctly gets a 409.
-    """
+    """TW-DLG-015: the English text and `params` of `taskwire.invalid_reply`, or None for a valid
+    reply. Runs before the store is touched, so an invalid reply never resolves the dialog."""
     button = body.get("button")
     if not isinstance(button, str):
         return "button is required", {"reason": "button_required"}
@@ -188,21 +166,17 @@ _EXPECTED_TYPE: dict[str, tuple[str, type | tuple[type, ...]]] = {
 
 
 async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, Any]) -> Response:
-    """`POST {prefix}/{token}/dialogs/{did}` - the reply path (TW-REST-004).
+    """`POST {prefix}/{token}/dialogs/{did}`: reply to a dialog (TW-REST-004, section 6.2).
 
-    The status matrix is the whole contract (section 6.2):
-
-    | outcome | status | why |
+    | outcome | status | body |
     |---|---|---|
-    | accepted | `204` | this caller won the race |
-    | unknown token or `did` | `404` | and never 403 (TW-SEC-002) |
-    | another tab answered first | `409` | body carries the dialog and the WINNING reply (TW-DLG-010) |
-    | the dialog was withdrawn | `410` | the operation ended or was cancelled under it |
-    | malformed reply | `422` | `taskwire.invalid_reply`, rejected before the store is touched (TW-DLG-015) |
+    | accepted | `204` | none |
+    | unknown token or `did` | `404` | never 403 (TW-SEC-002) |
+    | another reply won | `409` | the dialog with the winning reply (TW-DLG-010) |
+    | the dialog was withdrawn | `410` | the dialog |
+    | malformed reply | `422` | `taskwire.invalid_reply` (TW-DLG-015) |
 
-    A losing client must close its dialog **quietly** on the 409 and surface nothing - no error, no
-    toast, no stack trace. A second tab answering first is a normal outcome of a namespace-wide
-    question, not a fault, and the client library resolves rather than rejects on it (TW-DLG-011).
+    The client library resolves, not rejects, on a 409 and shows nothing (TW-DLG-011).
     """
     if client.session is None or not _is_uuid(token):
         return _not_found()
@@ -230,7 +204,7 @@ async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, 
     if resolution is DialogResolution.NOT_FOUND:
         return _not_found()
 
-    # The loser is told who won, so it can render the answer rather than merely closing (TW-DLG-010).
+    # TW-DLG-010: the losing reply receives the dialog with the winning reply.
     after = await store.snapshot(key)
     settled = next((d for d in (after.dialogs if after else []) if d.id == did), None)
     payload = {"detail": _RESOLUTION_DETAIL[resolution], "dialog": settled.to_dict() if settled else None}
@@ -242,16 +216,12 @@ async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, 
 
 
 async def request_cancel(client: Client, token: str) -> Response:
-    """`POST {prefix}/{token}/cancel` - **202, not 200** (TW-REST-009).
+    """`POST {prefix}/{token}/cancel`: request a cancel; answers 202 (TW-REST-009).
 
-    The cancel was *requested*. Only the terminal `cancelled` state confirms it happened, and it may
-    never happen at all: cancellation is cooperative (TW-CANCEL-009), so taskwire does not revoke a
-    Celery task, send a signal or kill a thread. It writes a sticky flag and the operation notices at
-    its next progress call.
-
-    The flag is never cleared (TW-CANCEL-001). An operation holding an uncollected result refuses
-    with 409 (TW-CANCEL-010): its work is over and there is nothing left to interrupt, so the
-    affordance on such an entry is dismiss rather than cancel.
+    Cancellation is cooperative (TW-CANCEL-009): this writes a sticky flag, never cleared
+    (TW-CANCEL-001), that the operation sees at its next progress call; only the terminal `cancelled`
+    state confirms it. Nothing is revoked, signalled or killed. An ended operation answers 409
+    `already_terminal`; one holding an uncollected result answers 409 (TW-CANCEL-010).
     """
     if client.session is None or not _is_uuid(token):
         return _not_found()
@@ -278,12 +248,9 @@ async def request_cancel(client: Client, token: str) -> Response:
 
 
 async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
-    """The shared body of collect and dismiss (TW-REST-008).
+    """Release the result and write `done` (TW-REST-008); `idempotent` makes a repeat answer 204.
 
-    **They are the same act with two names.** Collect is "I have taken it", dismiss is "I do not
-    want it"; both release the result, both fire `result_released`, and both remove the entry for
-    every tab at once. Only their idempotence differs, and for a concrete reason: dismissing twice is
-    harmless, but an application that fires `result_released` twice deletes its artefact twice.
+    `result_released` fires once per released result.
     """
     if client.session is None or not _is_uuid(token):
         return _not_found()
@@ -294,16 +261,12 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
     key = make_key(client.session, token)
     snapshot = await store.snapshot(key)
     if snapshot is None:
-        # Nothing at this address: unknown, foreign, or a tombstone whose TTL is up. Dismiss is
-        # idempotent, and that is exactly the state a dismissing caller asked for. Collect is not -
-        # there is nothing to hand back.
+        # Unknown, foreign, or a tombstone whose TTL is up: 204 for dismiss, 404 for collect.
         return (204, None) if idempotent else _not_found()
 
     if snapshot.progress.result is None:
-        # Nothing to release. A document that has already ended is a tombstone (TW-RET-004), and
-        # that is exactly the state a dismissing caller asked for, so dismiss stays idempotent; a
-        # queued, running or asking one is not, because releasing is not cancelling and a blocked
-        # worker is not a collectable result (TW-REST-008).
+        # Nothing to release: dismiss of a tombstone (TW-RET-004) is 204; anything else is 409
+        # (TW-REST-008).
         if idempotent and snapshot.progress.is_terminal:
             return 204, None
         return 409, {"detail": NO_UNCOLLECTED_RESULT}
@@ -312,10 +275,8 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
     if released is None:
         return (204, None) if idempotent else (409, {"detail": NO_UNCOLLECTED_RESULT})
 
-    # TW-RES-010: the release is what ends the operation, so this is where `done` is written. One
-    # write and one envelope: it takes the entry out of the register (TW-REG-007) and leaves the
-    # tombstone a client that was not watching reads afterwards (TW-RET-004) - which is the only
-    # thing that can tell it "collected and finished" from "expired".
+    # TW-RES-010: the release writes `done`, in one write and one envelope: the entry leaves the
+    # register (TW-REG-007) and the tombstone remains (TW-RET-004).
     after = await store.snapshot(key)
     if after is not None:
         ended = replace(after.progress, state=ProgressState.DONE, updated_at=now_iso())
@@ -327,39 +288,32 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
             Envelope(token=token, rev=written.rev, kind=EnvelopeKind.PROGRESS, body=ended.to_dict()),
             ended,
         )
-    # TW-RES-010: the event must CARRY THE RELEASED RESULT. `release_result` clears `result` off the
-    # document as part of the same atomic step, so a snapshot read afterwards has none - and an
-    # application that deletes its own artefact in this hook would have nothing to delete it by.
-    # The released Result is put back on the copy the hook is handed.
+    # TW-RES-010: the hook receives the released result; `release_result` clears it off the document.
     _fire_result_released(after, released)
     return 204, None
 
 
 def _fire_result_released(snapshot: Any, released: Any) -> None:
-    """TW-RES-011: the application's hook, and it may not prevent the release.
+    """TW-RES-011: call the `result_released` hook with `released` put back on the snapshot.
 
-    taskwire deletes nothing on an application's behalf - it stores a pointer, never a file
-    (TW-RES-007) - so this is where an application deletes its own artefact. An exception out of it
-    is swallowed and logged: the result is already released, and raising here would leave the caller
-    believing a release failed that in fact happened.
+    taskwire stores a pointer and deletes nothing (TW-RES-007). An exception from the hook is logged
+    and swallowed; the release stands.
     """
     hook = configured.result_released
     if hook is None or snapshot is None:
         return
-    # The hook is given the operation as it was when it still held the result, because that is the
-    # only form in which the `ref` it needs is present.
     snapshot.progress = replace(snapshot.progress, result=released)
     try:
         hook(snapshot)
-    except Exception:  # noqa: BLE001 - deliberately swallowed; see TW-RES-011
+    except Exception:  # noqa: BLE001 - TW-RES-011
         logger.warning("taskwire: result_released hook raised; the result is released regardless", exc_info=True)
 
 
 async def collect_result(client: Client, token: str) -> Response:
-    """`POST {prefix}/{token}/collect` - "I have taken it". Not idempotent (TW-REST-008)."""
+    """`POST {prefix}/{token}/collect`: release the result. Not idempotent (TW-REST-008)."""
     return await _release(client, token, idempotent=False)
 
 
 async def dismiss_result(client: Client, token: str) -> Response:
-    """`POST {prefix}/{token}/dismiss` - "I do not want it". Idempotent (TW-REST-008)."""
+    """`POST {prefix}/{token}/dismiss`: release the result. Idempotent (TW-REST-008)."""
     return await _release(client, token, idempotent=True)

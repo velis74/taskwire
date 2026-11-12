@@ -1,20 +1,17 @@
 """The ambient reporter: `taskwire.progress` and `taskwire.ask`.
 
-Deep in a call stack, threading a `Reporter` through six functions that have no other reason to know
-about progress is the kind of change people decline to make. The ambient proxy is the answer: bind
-once at the top, and `await progress.set(...)` works anywhere underneath.
+Binds a `Reporter` for the current context, so code below `operation()` reports through
+`progress` without receiving a reporter argument.
 
-**Python only.** TW-SYM-004 forbids a TypeScript twin: `contextvars` has no browser equivalent, and
-TW-AMB-002 makes an unbound proxy a *silent* no-op - so a proxy that worked under Node and no-opped
-in a browser would fail as a progress bar that never moves, with nothing logged anywhere.
+Python only (TW-SYM-004): `contextvars` has no browser equivalent.
 
-## The trap this module exists to avoid
+## Concurrent siblings
 
-Concurrent siblings MUST each receive their own reporter **explicitly** (TW-NEST-014). The ambient
+Concurrent siblings MUST each receive their own reporter explicitly (TW-NEST-014). The ambient
 binding is one variable; a `gather` is many tasks sharing it.
 
 ```python
-# WRONG - every branch writes through one binding, and the ranges interleave into nonsense
+# WRONG - every branch writes through one binding, onto one range
 async def wrong(reporter):
     with reporter.subtask(0, 50):
         await asyncio.gather(load_a(), load_b(), load_c())   # all three use `progress`
@@ -25,8 +22,8 @@ async def right(reporter):
     await asyncio.gather(load_a(a), load_b(b), load_c(c))
 ```
 
-`contextvars` copies its context per task, so the `gather` form is not merely *untidy* - each task
-gets a snapshot of the same binding and their contributions land on one child's range.
+`contextvars` copies the context per task: every task of the `gather` reports through the same
+binding, onto one range.
 """
 
 from __future__ import annotations
@@ -46,9 +43,8 @@ def bind(reporter: Any) -> contextvars.Token:
 def unbind(token: contextvars.Token | None) -> None:
     """Reset via the `Token` (TW-AMB-005).
 
-    Resetting rather than overwriting is the whole rule. A raising task that merely wrote `None` back
-    would leave the *next* task on the same pooled thread holding a stale binding, and operation A's
-    progress would land on operation B's key (TW-INV-011).
+    Writing `None` back instead would leave a raising task's binding to the next task on the same
+    pooled thread, and its progress would land on another operation's key (TW-INV-011).
     """
     if token is not None:
         _current.reset(token)
@@ -62,16 +58,15 @@ def current_reporter() -> Any:
 class _AmbientProgress:
     """The module-level singleton exposing the identical `Reporter` surface (TW-AMB-001).
 
-    Every method is a **silent async no-op when nothing is bound** (TW-AMB-002). Silence is the
-    point: library code that reports progress must be callable from a caller that never opened an
-    operation, without that caller having to care and without a warning on every line.
+    Each method mirrors the `Reporter` member of the same name. With nothing bound, every method is
+    a silent no-op (TW-AMB-002), so library code that reports progress runs outside an operation
+    without a warning.
     """
 
     async def set(self, **kwargs: Any) -> None:  # noqa: A003 - mirrors Reporter.set
         reporter = _current.get()
         if reporter is None:
-            # Still reject `state`, even unbound. Code that would be rejected inside an operation
-            # must not pass merely because it ran outside one (TW-PROG-012).
+            # `state` is rejected unbound too, as inside an operation (TW-PROG-012).
             if "state" in kwargs:
                 raise ValueError("taskwire: Reporter.set() has no `state` keyword (TW-PROG-012)")
             return None
@@ -80,8 +75,7 @@ class _AmbientProgress:
     async def ask(self, dialog_id: str, **kwargs: Any) -> Any:
         """TW-AMB-003: `taskwire.ask` is this.
 
-        Unbound, there is nobody to ask and nothing to wait for, so this returns `None` rather than
-        blocking forever - the one place where the no-op is visible in a return value.
+        Unbound, returns `None` without waiting.
         """
         reporter = _current.get()
         if reporter is None:
@@ -158,4 +152,4 @@ progress = _AmbientProgress()
 """The ambient reporter (TW-AMB-001). Bound by `operation()` and by `with reporter.subtask(a, b):`."""
 
 ask = progress.ask
-"""TW-AMB-003: `taskwire.ask` is `progress.ask`, and is not a second mechanism."""
+"""TW-AMB-003: `taskwire.ask` is `progress.ask`."""

@@ -1,16 +1,14 @@
 """The store port (§5.3) and the in-process implementation.
 
-The store is the truth. Everything else in the library is an accelerator over it, and the two rules
-that make that hold are worth stating before any code:
+The store is the source of truth; everything else in the library is an accelerator over it.
 
-**No read writes anything** (TW-STORE-009, TW-INV-013). `snapshot()` and `list_operations()` leave
-every key's TTL and content byte-identical. This is why expiry is a stored deadline compared on
-read rather than a background sweeper - a sweeper is a write, and a store that writes on read grows
-a `:seen` key eventually.
+No read writes anything (TW-STORE-009, TW-INV-013): `snapshot()` and `list_operations()` leave every
+key's TTL and content byte-identical. Expiry is a stored deadline compared on read; there is no
+background sweeper.
 
-**`rev` and the document it labels are written together** (TW-REV-003). `commit` returns the same
-`rev` a concurrent `snapshot()` reads alongside that same body, so a client can never see a `rev`
-that belongs to a document it did not receive.
+`rev` and the document it labels are written together (TW-REV-003): `commit` returns the same `rev`
+a concurrent `snapshot()` reads alongside that body, so a client never sees a `rev` without its
+document.
 """
 
 from __future__ import annotations
@@ -39,8 +37,8 @@ from .models import (
 def key(ns: str, token: str) -> str:
     """TW-SEC-001 / TW-INV-007: `f"{ns}:{token}"`, always.
 
-    There is no code path that reaches the store without a namespace. The namespace is the only
-    authorization scope (TW-SEC-003); the token is an address inside it, never a grant.
+    Every store key carries a namespace. The namespace is the only authorisation scope
+    (TW-SEC-003); the token is an address inside it, never a grant.
     """
     return f"{ns}:{token}"
 
@@ -48,9 +46,7 @@ def key(ns: str, token: str) -> str:
 def split_key(k: str) -> tuple[str, str]:
     """Recover `(ns, token)` from a key.
 
-    Split on the **last** colon: a token is a UUID and contains none, but an application's namespace
-    may well contain one (`tenant:42`), and splitting on the first would silently mis-attribute
-    every one of that tenant's operations.
+    Splits on the last colon: a token contains none, a namespace may (`tenant:42`).
     """
     ns, _, token = k.rpartition(":")
     return ns, token
@@ -58,20 +54,15 @@ def split_key(k: str) -> tuple[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class Commit:
-    """What one commit reports back: the new `rev`, and the cancel flag that write saw.
-
-    Both in one return because both are read on every commit and a networked store must not be
-    asked twice for one write's outcome (TW-STORE-014). The flag is the sticky one
-    (TW-CANCEL-001) as it stood when the document was written, which is what `Reporter.cancelled`
-    then answers for free.
-    """
+    """What one commit reports back: the new `rev`, and the sticky cancel flag (TW-CANCEL-001) as
+    that write saw it, in one round trip (TW-STORE-014)."""
 
     rev: int
     cancelled: bool
 
 
 class DialogResolution(Enum):
-    """The only signal any caller may trust about who won a dialog race (TW-STORE-003)."""
+    """The outcome of `resolve_dialog`, the only signal of who won a dialog race (TW-STORE-003)."""
 
     ACCEPTED = "accepted"
     NOT_FOUND = "not_found"
@@ -82,45 +73,34 @@ class DialogResolution(Enum):
 CANCELLED_BUTTON = "__taskwire_cancelled__"
 """The reserved button a withdrawal pushes onto a dialog's reply channel (TW-CANCEL-007).
 
-A dialog has no deadline (TW-DLG-005), so a sentinel on the reply channel is the ONLY thing that can
-wake a worker blocked in `ask()`. It is spelled with a reserved name rather than by a second channel
-or a separate flag so that the waking path and the answering path are the same code - a second path
-is a second place to forget to wake somebody.
-
-`ask()` recognises it and raises `OperationCancelled` whatever `raise_on_cancel` says (TW-DLG-012);
-it is never returned to an application as an answer.
+It wakes a worker blocked in `ask()` through the same channel a reply uses. `ask()` recognises it
+and raises `OperationCancelled` whatever `raise_on_cancel` says (TW-DLG-012); it is never returned to
+an application as an answer.
 """
 
 _CANCELLED_SENTINEL = DialogReply(button=CANCELLED_BUTTON, values={})
 
 _AWAIT_POLL_SECONDS = 0.05
-"""How long `await_dialog` blocks before re-reading (TW-BP-008).
-
-A liveness device inside the store, never a deadline offered to `ask()` - the loop it bounds has no
-overall deadline at all. A lost wakeup costs this much latency instead of hanging forever.
-"""
+"""How long `await_dialog` blocks before re-reading (TW-BP-008). Not a deadline: a lost wakeup costs
+this much latency."""
 
 
 class DialogVanished(Exception):  # noqa: N818 - the name is specified (TW-DLG-008)
-    """The dialog document no longer exists.
-
-    A distinguishable fault, never an answer nobody gave (TW-DLG-008).
-    """
+    """The dialog document no longer exists (TW-DLG-008)."""
 
 
 class TaskwireStore(ABC):
     """TW-STORE-001: exactly these methods.
 
     Per-operation methods take an already-namespaced `key`; `list_operations` and `publish` take a
-    bare `ns`. That asymmetry is deliberate and is the shape of the authorization boundary.
+    bare `ns`. The namespace is the authorisation boundary.
     """
 
     @abstractmethod
     async def commit(self, key: str, progress: Progress, ttl: float) -> Commit:
         """Write the document and bump `rev` in one indivisible step.
 
-        Returns the new `rev` and the cancel flag the same write saw, so a caller that refreshes
-        `cancelled` after every commit needs no second round trip (TW-STORE-014).
+        Returns the new `rev` and the cancel flag the same write saw (TW-STORE-014).
         """
 
     @abstractmethod
@@ -133,9 +113,9 @@ class TaskwireStore(ABC):
 
     @abstractmethod
     async def list_operations(self, ns: str) -> list[Snapshot]:
-        """Every live **shared** operation of `ns`, plus anything of `ns` holding an open dialog.
+        """Every live shared operation of `ns`, plus anything of `ns` holding an open dialog.
 
-        Unfiltered, with no parameter by which a caller could ask for less (TW-STORE-006).
+        Unfiltered (TW-STORE-006).
         """
 
     @abstractmethod
@@ -152,7 +132,7 @@ class TaskwireStore(ABC):
 
     @abstractmethod
     async def await_dialog(self, key: str, did: str) -> DialogReply:
-        """Block until resolved. Takes **no deadline** - the caller has none to give (TW-DLG-005)."""
+        """Block until resolved. Takes no deadline (TW-DLG-005)."""
 
     @abstractmethod
     async def release_result(self, key: str) -> Result | None:
@@ -168,7 +148,7 @@ class TaskwireStore(ABC):
 
     @abstractmethod
     async def publish(self, ns: str, envelope: Envelope) -> None:
-        """Drive the reader. MUST NOT raise (TW-STORE-008)."""
+        """Drive the reader. Never raises (TW-STORE-008)."""
 
     @abstractmethod
     async def drop(self, key: str) -> None:
@@ -190,25 +170,22 @@ class _Entry:
         self.expires_at = expires_at
         self.dialogs: dict[str, DialogRequest] = {}
         self.cancel_requested = False
-        # One queue per dialog id: what wakes a worker blocked in `ask()`. `drop` clears it with the
-        # rest of the entry.
+        # One queue per dialog id; wakes a worker blocked in `ask()`.
         self.replies: dict[str, asyncio.Queue] = {}
 
 
 class MemoryStore(TaskwireStore):
     """Single-process store. Ships in core (TW-STORE-011); the conformance suite runs against it.
 
-    A single lock rather than one per key: this store is single-process by definition, the critical
-    sections are microseconds long, and one lock makes `commit`'s read-modify-write provably atomic
-    against `list_operations`' pruning without a lock-ordering argument.
+    One lock for all keys makes `commit`'s read-modify-write atomic against `list_operations`'
+    pruning.
     """
 
     def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
         self._clock = clock or time.time
         self._lock = asyncio.Lock()
         self._entries: dict[str, _Entry] = {}
-        # TW-KEY-003: shared operations only. A private operation is addressable but unlisted, and
-        # that is the whole of its privacy in the store (TW-PRIV-002).
+        # TW-KEY-003: shared operations only; a private one is addressable but unlisted (TW-PRIV-002).
         self._index: dict[str, dict[str, str]] = {}
         # TW-KEY-005: tokens currently holding at least one open dialog, private ones included.
         self._asking: dict[str, set[str]] = {}
@@ -230,9 +207,7 @@ class MemoryStore(TaskwireStore):
     def _prune(self, ns: str) -> None:
         """Lazy pruning of the two index structures (TW-KEY-003, TW-KEY-005).
 
-        This is not a read side effect on the documents - it drops index members whose document has
-        already expired, which is exactly what TW-STORE-006 requires of a listing read. The
-        documents themselves are untouched.
+        Drops index members whose document has expired (TW-STORE-006); documents are untouched.
         """
         index = self._index.get(ns)
         if index:
@@ -257,21 +232,14 @@ class MemoryStore(TaskwireStore):
     def _derived_progress(entry: _Entry) -> Progress:
         """Present `waiting_input` while a dialog is open, without ever having written it.
 
-        TW-DLG-009 says the state is `waiting_input` while a dialog is open and `running` again on
-        resolution. TW-PROG-010 and TW-PROG-012 say the state must be **derived** and that no caller
-        may write it. Both hold at once only if the derivation happens here, on the way out.
-
-        The copy is not tidiness. The reporter reads a snapshot, mutates the `Progress` it finds and
-        commits it back; handing it the same object with a derived state would persist that state,
-        and an operation would stay `waiting_input` after its last question closed - parked forever,
-        with nothing to release it (TW-INV-006).
+        The state is `waiting_input` while a dialog is open or a result is uncollected (TW-DLG-009,
+        TW-PROG-010, TW-PROG-012). Returns a copy, so a committed snapshot never persists the derived
+        state (TW-INV-006).
         """
         progress = entry.progress
         if progress.is_terminal:
             return progress
-        # TW-PROG-013: an open dialog holds a worker; an uncollected result holds nothing at all.
-        # Both derive the same state and neither is written by a caller, and any code that reasons
-        # "waiting_input implies a pinned worker" is wrong about the second one.
+        # TW-PROG-013: an open dialog holds a worker; an uncollected result holds none.
         has_open_dialog = any(DialogState(d.state) is DialogState.OPEN for d in entry.dialogs.values())
         if not has_open_dialog and progress.result is None:
             return progress
@@ -282,19 +250,14 @@ class MemoryStore(TaskwireStore):
     async def commit(self, key: str, progress: Progress, ttl: float) -> Commit:  # noqa: A002
         """TW-STORE-002: bump rev and write the document in one indivisible step.
 
-        Three rules meet here and each is easy to lose:
+        TW-STORE-010: `state` is frozen once terminal; a later commit may still update `label`,
+        `data` and `updated_at` (TW-INV-014).
 
-        TW-STORE-010 freezes `state` once terminal - a later commit may still update `label`, `data`
-        and `updated_at`, and the store enforces that rather than trusting the caller, so a cleanup
-        `set()` cannot flip a cancelled operation back to `running` (TW-INV-014).
+        TW-PROG-006: `result_kind`, `origin_session` and `origin_connection` are fixed by the
+        opening write; an operation is private or shared from start to finish.
 
-        TW-PROG-006 freezes `result_kind`, `origin_session` and `origin_connection` at the opening
-        write. There is no promotion rule: an operation is private or shared from start to finish.
-
-        TW-REV-002 seeds a new document's `rev` from `max(now_ms, previous + 1)`. Seeding from zero
-        would let a key that expired under a live operation resurrect below the client's last-seen
-        value, and every subsequent envelope would be dropped by client dedup - a bar frozen at 97 %
-        with no error anywhere.
+        TW-REV-002: `rev` is `max(now_ms, previous + 1)`, so a key that expired under a live
+        operation does not come back below the client's last-seen `rev`.
         """
         async with self._lock:
             k = key
@@ -320,7 +283,7 @@ class MemoryStore(TaskwireStore):
 
             if existing is not None:
                 if existing.progress.is_terminal:
-                    # Terminal is final. Display fields may still be corrected; the state may not.
+                    # Terminal is final: display fields may change, the state may not.
                     written.state = existing.progress.state
                     written.error = existing.progress.error
                     written.result = existing.progress.result
@@ -337,12 +300,8 @@ class MemoryStore(TaskwireStore):
             entry.expires_at = self._clock() + ttl
             self._entries[k] = entry
 
-            # TW-KEY-003: indexed only if shared. The privacy decision was made at the opening
-            # write and is read back off the stored document, never off this call's argument.
-            #
-            # A terminal document is never in the register (TW-REG-007), and the store enforces that
-            # rather than trusting the caller to follow a write with a de-registration: the two would
-            # be two steps, and a reader between them would see a `failed` row.
+            # TW-KEY-003: indexed only if shared, as the stored document says. A terminal write
+            # leaves the register in the same step (TW-REG-007).
             if written.is_terminal:
                 self._index.get(ns, {}).pop(token, None)
             elif written.is_shared:
@@ -350,7 +309,7 @@ class MemoryStore(TaskwireStore):
             return Commit(rev=rev, cancelled=entry.cancel_requested)
 
     async def touch(self, key: str, ttl: float) -> bool:  # noqa: A002
-        """TW-RET-002's half of the keepalive. Refreshing an expiry is a write, and is not a read."""
+        """Refresh the expiry of a live key (TW-RET-002). Returns False when it is gone."""
         async with self._lock:
             entry = self._live(key)
             if entry is None:
@@ -367,10 +326,7 @@ class MemoryStore(TaskwireStore):
             entry.cancel_requested = True
             entry.rev = max(self._now_ms(), entry.rev + 1)
 
-            # TW-CANCEL-007: a worker blocked in `ask()` must wake IMMEDIATELY. A dialog has no
-            # deadline (TW-DLG-005), so a sentinel on the reply channel is the only thing that can
-            # wake it - otherwise a cancelled operation would sit on a question until Celery's
-            # execution timeout killed the task, which is minutes of a pinned worker for a click.
+            # TW-CANCEL-007: withdraw open dialogs, waking a worker blocked in `ask()` at once.
             for did, dialog in entry.dialogs.items():
                 if DialogState(dialog.state) is DialogState.OPEN:
                     dialog.state = DialogState.CANCELLED
@@ -389,15 +345,11 @@ class MemoryStore(TaskwireStore):
                 self._asking[ns].discard(token)
 
     async def migrate(self, from_ns: str, to_ns: str) -> int:
-        """TW-STORE-015. Idempotent by construction: a token already under `to_ns` is left alone.
+        """TW-STORE-015: re-key every operation of `from_ns` onto `to_ns`. Returns the number moved.
 
-        That skip is the whole of the idempotence, and it is also what makes the call unable to
-        clobber the destination - which matters because the one caller is an application merging an
-        anonymous session onto a freshly established account (TW-AMB-011, TW-SEC-008).
-
-        Publishes nothing. A migration is a bulk re-keying, not a state change any client is waiting
-        to hear about; the client's next register read under the new namespace is the recovery
-        (TW-AMB-012).
+        A token already under `to_ns` keeps the destination's document; the source is discarded. That
+        makes the call idempotent and never overwrites the destination (TW-AMB-011, TW-SEC-008).
+        Publishes nothing (TW-AMB-012).
         """
         async with self._lock:
             prefix = f"{from_ns}:"
@@ -406,7 +358,6 @@ class MemoryStore(TaskwireStore):
                 _ns, token = split_key(source)
                 destination = key(to_ns, token)
                 if destination in self._entries:
-                    # Destination wins; the source is discarded rather than merged.
                     self._entries.pop(source, None)
                     continue
                 entry = self._entries.pop(source)
@@ -423,11 +374,9 @@ class MemoryStore(TaskwireStore):
     async def publish(self, ns: str, envelope: Envelope) -> None:
         """TW-CORE-004: drives the reader, synchronously and in process.
 
-        TW-STORE-008: MUST NOT raise. A publish is a notification that state already changed; the
-        state is safely written by the time we get here, so a failure to announce it is a latency
-        problem and never a correctness one (TW-CORE-002).
+        TW-STORE-008: never raises; the state is already written (TW-CORE-002).
         """
-        from . import reader  # local import: reader imports models, and this avoids a cycle
+        from . import reader
 
         with contextlib.suppress(Exception):
             await reader.dispatch(ns, envelope)
@@ -446,11 +395,8 @@ class MemoryStore(TaskwireStore):
         return bool(entry and entry.cancel_requested)
 
     async def list_operations(self, ns: str) -> list[Snapshot]:
-        """TW-STORE-006: the shared index UNION anything asking.
-
-        The index holds shared operations only, and a private operation holding an open dialog is
-        listed for exactly as long as it asks (TW-PRIV-004).
-        """
+        """TW-STORE-006: the shared index together with every operation holding an open dialog; a
+        private operation is listed while it asks (TW-PRIV-004)."""
         self._prune(ns)
         tokens = list(self._index.get(ns, {}).keys())
         for token in self._asking.get(ns, set()):
@@ -462,8 +408,7 @@ class MemoryStore(TaskwireStore):
             k = key(ns, token)
             entry = self._live(k)
             if entry is None:
-                # Pruned above, but a document can expire between the prune and here. Silently drop
-                # it rather than returning a hole.
+                # Expired after the prune.
                 continue
             snapshots.append(self._build_snapshot(k, entry))
         return snapshots
@@ -473,10 +418,8 @@ class MemoryStore(TaskwireStore):
     async def put_dialog(self, key: str, dialog: DialogRequest, ttl: float) -> int:  # noqa: A002
         """Write a dialog and bump `rev` atomically (TW-STORE-002).
 
-        Adds the token to the asking set, which is the ONLY thing that set is for (TW-KEY-005): it
-        answers TW-STORE-006's second term, so a private operation is listed for exactly as long as
-        it holds a question and no longer. It is not a subscription, not a watcher list, and never an
-        authorization scope.
+        Adds the token to the asking set (TW-KEY-005), which lists a private operation while it holds
+        an open dialog (TW-STORE-006).
         """
         async with self._lock:
             ns, token = split_key(key)
@@ -487,21 +430,15 @@ class MemoryStore(TaskwireStore):
             entry.replies.setdefault(dialog.id, asyncio.Queue())
             entry.rev = max(self._now_ms(), entry.rev + 1)
             entry.expires_at = self._clock() + ttl
-            # TW-PRIV-004: privacy never narrows the dialog family. A private operation asking a
-            # question joins the register for as long as it asks, because a question nobody can see
-            # is a worker nobody can free (TW-INV-005).
+            # TW-PRIV-004, TW-INV-005: a private operation is in the register while it asks.
             self._asking.setdefault(ns, set()).add(token)
             return entry.rev
 
     async def resolve_dialog(self, key: str, did: str, reply: DialogReply) -> DialogResolution:  # noqa: A002
-        """**The single arbiter of first-answer-wins** (TW-STORE-003).
+        """The arbiter of first-answer-wins (TW-STORE-003).
 
         Atomically: verify the dialog is still `open`, record the reply, flip it to `answered`, bump
-        `rev`, wake any waiter, return ACCEPTED. Otherwise return the reason and change NOTHING.
-
-        Its return value is the ONLY signal any caller may trust about who won. A caller that read
-        the document instead would be reading it after the race, not during it, and two tabs
-        answering at once would both believe they had.
+        `rev`, wake any waiter, return ACCEPTED. Otherwise return the reason and change nothing.
         """
         async with self._lock:
             entry = self._live(key)
@@ -527,11 +464,7 @@ class MemoryStore(TaskwireStore):
     async def withdraw_dialogs(self, key: str) -> list[str]:  # noqa: A002
         """Flip every still-open dialog to `cancelled`, through the same arbiter (TW-STORE-004).
 
-        A dialog a reply reached first is left `answered` - the two paths race and exactly one wins,
-        which is why they share the lock rather than each having their own idea of the state.
-
-        Called when an operation reaches a terminal state (TW-CANCEL-011) and when a cancel is
-        observed, so a dialog can never outlive the operation that asked it.
+        A dialog a reply reached first stays `answered`; replies and withdrawals share one lock.
         """
         async with self._lock:
             entry = self._live(key)
@@ -545,22 +478,16 @@ class MemoryStore(TaskwireStore):
                 withdrawn.append(did)
                 self._wake(entry, did, _CANCELLED_SENTINEL)
             if withdrawn:
-                # One bump for the whole withdrawal, not one per dialog: it is a single change of
-                # the operation's situation, and `rev` labels the document, not the dialogs.
+                # One `rev` bump for the whole withdrawal.
                 entry.rev = max(self._now_ms(), entry.rev + 1)
                 self._release_asking_if_quiet(key, entry)
             return withdrawn
 
     async def await_dialog(self, key: str, did: str) -> DialogReply:  # noqa: A002
-        """Block until the dialog is resolved. **Takes no deadline** (TW-DLG-005, TW-STORE-005).
+        """Block until the dialog is answered or withdrawn; raises `DialogVanished` if it disappears.
+        No deadline (TW-DLG-005, TW-STORE-005).
 
-        The caller has none to give: `ask()` has no timeout, no default answer and no
-        `DialogTimeout`, and their absence is the design rather than an omission. What ends this wait
-        is a reply, a withdrawal, or the document disappearing.
-
-        The wait is a bounded loop that RE-READS the dialog on every wakeup (TW-BP-008), so a lost
-        notification degrades to poll latency instead of hanging forever. The bound is a liveness
-        device inside the store; it is never a deadline offered to `ask()`.
+        Re-reads the dialog every `_AWAIT_POLL_SECONDS` (TW-BP-008), so a lost wakeup costs latency.
         """
         while True:
             async with self._lock:
@@ -578,9 +505,7 @@ class MemoryStore(TaskwireStore):
             try:
                 return await asyncio.wait_for(queue.get(), timeout=_AWAIT_POLL_SECONDS)
             except (TimeoutError, asyncio.TimeoutError):
-                # Re-read and wait again. No overall deadline is consumed by this.
-                # `asyncio.TimeoutError` is only a distinct class from the builtin before Python
-                # 3.11; both are named here so `wait_for` is caught on every supported version.
+                # `asyncio.TimeoutError` differs from the builtin before Python 3.11.
                 continue
 
     def _wake(self, entry: _Entry, did: str, reply: DialogReply) -> None:
@@ -591,9 +516,8 @@ class MemoryStore(TaskwireStore):
     def _release_asking_if_quiet(self, key: str, entry: _Entry) -> None:
         """Leave the asking set once no dialog under this token is still `open` (TW-KEY-005).
 
-        Membership is a fact about a token's *dialogs*, so it never makes a private operation shared:
-        the moment its last question closes it leaves the set and the entry leaves the register,
-        while `result_kind` stays what it was at start (TW-PROG-006).
+        A private operation leaves the register with its last open dialog; `result_kind` is unchanged
+        (TW-PROG-006).
         """
         if any(DialogState(d.state) is DialogState.OPEN for d in entry.dialogs.values()):
             return
@@ -602,12 +526,10 @@ class MemoryStore(TaskwireStore):
             self._asking[ns].discard(token)
 
     async def release_result(self, key: str) -> Result | None:  # noqa: A002
-        """**The single arbiter of the three release paths** (TW-STORE-016, TW-RES-010).
+        """The arbiter of the three release paths (TW-STORE-016, TW-RES-010).
 
-        Collection, dismissal and the `result_ttl` backstop all come through here, so a collect
-        racing a dismiss releases exactly once. That matters more than it looks: each release fires
-        `result_released`, and an application that deletes its own artefact in that hook would
-        otherwise delete it twice.
+        Collection, dismissal and the `result_ttl` backstop all release here, exactly once, so
+        `result_released` fires once per result.
 
         Atomically: verify the operation is in `waiting_input` holding an uncollected result, write
         the terminal `done`, bump `rev`, and return the released `Result`. Otherwise change nothing
@@ -621,17 +543,14 @@ class MemoryStore(TaskwireStore):
             if progress.result is None or progress.is_terminal:
                 return None
             if any(DialogState(d.state) is DialogState.OPEN for d in entry.dialogs.values()):
-                # A blocked worker is not a collectable result (TW-REST-008). The operation is in
-                # `waiting_input` for the other reason, and releasing here would end a job that is
-                # still running.
+                # TW-REST-008: an operation with an open dialog is still running.
                 return None
 
             released = progress.result
             progress.result = None
             progress.state = ProgressState.DONE
             entry.rev = max(self._now_ms(), entry.rev + 1)
-            # The write that ends an operation takes it out of the register, wherever that write
-            # happens (TW-REG-007). This one ends it as surely as a terminal `commit` does.
+            # TW-REG-007: the write that ends an operation takes it out of the register.
             ns, token = split_key(key)
             self._index.get(ns, {}).pop(token, None)
             return released

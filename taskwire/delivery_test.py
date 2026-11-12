@@ -1,8 +1,4 @@
-"""Acceptance tests for the delivery decision and for the two shipped in-core transports.
-
-The centrepiece is `test_only_reader_calls_notify`: a static assertion over the package's own source
-that no runtime test can replace.
-"""
+"""Tests for the delivery decision and for the two in-core transports."""
 
 from __future__ import annotations
 
@@ -29,9 +25,8 @@ NS = "acct-7"
 OTHER_NS = "acct-8"
 TOKEN = "6f1c9e2a-0000-4000-8000-000000000001"
 
-# The bound a slow subscriber is held to, and the sleep it would otherwise take. The two are two
-# orders of magnitude apart so that an unbounded `await` fails the elapsed-time assertion instead of
-# hanging the suite: the test costs `TEST_PUSH_TIMEOUT`, a regression costs `SLOW_SUBSCRIBER_SLEEP`.
+# The bound a slow subscriber is held to, and the sleep it would otherwise take; an unbounded `await`
+# fails the elapsed-time assertion after `SLOW_SUBSCRIBER_SLEEP` instead of hanging the suite.
 TEST_PUSH_TIMEOUT = 0.02
 SLOW_SUBSCRIBER_SLEEP = 2.0
 
@@ -41,7 +36,7 @@ NOTIFY_CALL = re.compile(r"\.notify\s*\(")
 
 @pytest.fixture
 def clean_configuration():
-    """`configured` is a process-wide singleton; no test may leak its wiring into the next one."""
+    """Resets the process-wide `configured` before and after the test."""
     taskwire.reset_configuration()
     yield
     taskwire.reset_configuration()
@@ -65,11 +60,7 @@ def _progress(**overrides) -> Progress:
 
 
 def _without_strings(source: str) -> str:
-    """Blank out comments, docstrings and string literals, keeping line numbers intact.
-
-    A textual scan that counts prose finds the rule's own explanation and calls it a violation, which
-    is a test that fails for being right about the wrong thing.
-    """
+    """Blank out comments, docstrings and string literals, keeping line numbers intact."""
     import io
     import tokenize
 
@@ -84,34 +75,16 @@ def _without_strings(source: str) -> str:
 
 
 def test_only_reader_calls_notify():
-    """TW-CORE-003 / TW-CORE-004: a transport's `notify()` is called from `reader.py` and nowhere else.
+    """TW-CORE-003 / TW-CORE-004: only `reader.py` and transport implementations reach a transport's
+    `notify()`; a second caller delivers every envelope twice (TW-INV-002).
 
-    A `Reporter` writes to the store and calls `store.publish()`; `store.publish()` drives the
-    reader; the reader is the only caller of `transport.notify()`. A reporter that pushed directly
-    "because the transport is right there" would, in a single-process deployment that later gains
-    Redis and a socket, deliver every envelope twice - once from the reporter and once from the
-    reader consuming the backplane. Duplicate envelopes re-render dialogs that were already answered
-    (TW-INV-002), and the failure only appears in the deployment nobody tests in.
-
-    What is matched, precisely, and what is not:
-
-    * every `ast.Attribute` named `notify` - `transport.notify(...)`, and also a bare
-      `f = transport.notify` that would be called a line later. A `def`/`async def notify` is an
-      `ast.FunctionDef` and is never an `Attribute`, so the transport **definitions** in
-      `transport.py` (the ABC, `NullTransport`, `LocalTransport`) and the stub in `conformance.py`
-      are allowed - as is `LocalTransport` calling its subscribers, which is not a transport call.
-    * textually, `.notify(` - a plain grep over the source with comments and string literals
-      blanked out, as a second opinion on the AST pass.
+    Matched: every `ast.Attribute` named `notify` (a `def notify` is not one), and textually `.notify(`
+    with comments and string literals blanked out.
     """
     sources = _package_sources()
     assert len(sources) > 5, f"the scan found only {len(sources)} source files; the glob is wrong"
 
-    # A transport IMPLEMENTATION is allowed to call its own downstream: `MuxwsTransport.notify()`
-    # calls `peer.notify()`, and `LocalTransport.notify()` calls its subscribers. That is not the
-    # thing TW-CORE-003 forbids - what it forbids is anything other than the reader calling *a
-    # transport's* notify, because a reporter->transport shortcut delivers every envelope twice once
-    # Redis and a socket are both present, and duplicate dialog.open envelopes re-render answered
-    # dialogs (TW-INV-002). These two files define the method they call through.
+    # Transport implementations call their own downstream `notify`.
     transport_implementations = {"transport.py", "contrib/muxws.py"}
 
     ast_offenders: dict[str, list[int]] = {}
@@ -126,10 +99,7 @@ def test_only_reader_calls_notify():
         ]
         if attribute_lines:
             ast_offenders[relative] = attribute_lines
-        # Strip comments and string literals before the textual scan. The AST pass above is the
-        # authoritative one; this is the same grep the done-when checklist runs, and prose is
-        # allowed to *name* `transport.notify()` while explaining who may call it - which is exactly
-        # what reader.py's and RedisReader's docstrings do.
+        # Comments and strings are blanked first: prose may name `transport.notify()`.
         literal_lines = [
             n for n, line in enumerate(_without_strings(source).splitlines(), start=1) if NOTIFY_CALL.search(line)
         ]
@@ -144,8 +114,7 @@ def test_only_reader_calls_notify():
         f"{text_offenders} (TW-CORE-003, TW-CORE-004)"
     )
 
-    # ...and the allowance is narrow: each permitted file must actually BE a transport, defining the
-    # method rather than merely calling somebody else's. Otherwise the exemption becomes a hole.
+    # Each exempt file defines `notify` itself.
     for relative in transport_implementations & set(ast_offenders):
         source = (PACKAGE_ROOT / relative).read_text(encoding="utf-8")
         assert "async def notify(" in source, f"{relative} is exempt only because it IS a transport"
@@ -153,13 +122,8 @@ def test_only_reader_calls_notify():
 
 
 def test_effective_delivery_is_true_by_default(clean_configuration):  # noqa: ARG001 - fixture is state, not data
-    """TW-DEL-019: the shipped default is "send" on both halves, so every entry delivers.
-
-    The shipped `push_filter` answers `True` for every pair, and a connection that has declared no
-    override defers to it (TW-DEL-001). Until an application configures a predicate or a socket
-    declares an override, no state, no `result_kind` and no shape of `Client` may make the answer
-    anything but `True`.
-    """
+    """TW-DEL-019: with the default predicate and no override, `effective_delivery` is `True` for
+    every state, `result_kind` and shape of `Client`."""
     clients = [
         Client(session=NS),
         Client(session=NS, connection="conn-1"),
@@ -180,15 +144,8 @@ def test_effective_delivery_is_true_by_default(clean_configuration):  # noqa: AR
 
 
 def test_delivery_decision_is_routed_through_the_configured_predicate(clean_configuration):  # noqa: ARG001
-    """TW-DEL-001 / TW-DEL-002: the answer is the configured predicate's, not a constant.
-
-    The shipped predicate answers `True` for everything (TW-DEL-019), and a hardcoded `return True`
-    would imitate that perfectly. So: an application predicate that answers `False` must be able to
-    reach the answer, it must be shown the very `Client` and `OperationRef` the caller passed
-    rather than a reconstruction, and a predicate that
-    answers something merely truthy must be normalised to a real `bool` (TW-DEL-002's signature is
-    `-> bool`, and `progress_delivery` is serialized).
-    """
+    """TW-DEL-001 / TW-DEL-002: the configured predicate's answer is returned, normalised to `bool`,
+    and the predicate receives the caller's own `Client` and `OperationRef`."""
     seen: list[tuple[Client, OperationRef]] = []
 
     def refusing(client: Client, operation: OperationRef) -> bool:
@@ -214,13 +171,7 @@ def test_delivery_decision_is_routed_through_the_configured_predicate(clean_conf
 
 
 def test_raising_push_filter_treated_as_true(clean_configuration):  # noqa: ARG001 - fixture is state, not data
-    """TW-DEL-003: an exception out of the predicate is swallowed and treated as `True`.
-
-    The predicate is a display optimisation, never access control (TW-DEL-021): the namespace has
-    already decided what the caller may read by the time it runs. A broken one must therefore
-    degrade to sending **more**, never to sending less - a filter that failed closed would silently
-    freeze bars for every operation it touched.
-    """
+    """TW-DEL-003: an exception out of the predicate is swallowed and treated as `True`."""
     calls: list[str] = []
 
     def exploding_filter(_client: Client, operation: OperationRef) -> bool:
@@ -237,14 +188,8 @@ def test_raising_push_filter_treated_as_true(clean_configuration):  # noqa: ARG0
 
 
 def test_a_client_comes_from_a_peer_or_a_request_never_both(clean_configuration):  # noqa: ARG001 - fixture is state
-    """TW-DEL-005: a `Client` comes from a live socket peer **or** an HTTP request, never both.
-
-    `session` is populated the same way on both paths - by `session_resolver`, the only producer of
-    a namespace (TW-AMB-008) - so a delivery decision cannot depend on which path the caller arrived
-    by. The load-bearing half is therefore not the shape of the two constructions but what the
-    predicate is *shown*: the same namespace and the same connection either way, with only the
-    handle differing, and a `session` nothing downstream of the resolver can rewrite.
-    """
+    """TW-DEL-005: a `Client` carries a peer, a request or neither, never both; the predicate is shown
+    the same `session` and connection on both paths, and `session` is frozen (TW-AMB-008)."""
     peer = object()
     request = object()
     from_peer = Client(session=NS, connection="conn-1", peer=peer)
@@ -258,20 +203,18 @@ def test_a_client_comes_from_a_peer_or_a_request_never_both(clean_configuration)
     for client in (from_peer, from_request):
         assert (client.peer is None) != (client.request is None), "one of peer / request is set"
 
-    # Both together is refused rather than merely discouraged: `effective_delivery` reads the peer's
-    # override map, and a Client carrying both would apply a socket's declarations to an HTTP read.
+    # Both together are refused: `effective_delivery` would read a socket's overrides for an HTTP read.
     with pytest.raises(ValueError, match="never both"):
         Client(session=NS, peer=peer, request=request)
 
-    # Neither is legal and ordinary: a caller reaching `taskwire.rest` directly - a server-rendered
-    # page, a script, this test - has a namespace and nothing else.
+    # Neither is valid: a direct caller of `taskwire.rest` has only a namespace.
     bare = Client(session=NS)
     assert bare.peer is None
     assert bare.request is None
 
     assert Client(session=NS).connection is None
     with pytest.raises(FrozenInstanceError):
-        from_peer.session = OTHER_NS  # who is asking is settled by the resolver and never rewritten
+        from_peer.session = OTHER_NS  # set by the resolver only
 
     witnessed: list[Client] = []
 
@@ -290,7 +233,7 @@ def test_a_client_comes_from_a_peer_or_a_request_never_both(clean_configuration)
 
 
 def test_operation_ref_exposes_data_shorthand():
-    """TW-DEL-004: `OperationRef.data` is the free-form bag a predicate almost always keys on."""
+    """TW-DEL-004: `OperationRef.data` and `result_kind` are the progress document's own."""
     progress = _progress(data={"kind": "export", "rows": 12})
     ref = OperationRef(token=TOKEN, progress=progress)
 
@@ -301,11 +244,8 @@ def test_operation_ref_exposes_data_shorthand():
 
 
 async def test_local_transport_delivers_to_every_subscriber_in_order(clean_configuration):  # noqa: ARG001 - fixture
-    """TW-TR-008: in-process delivery reaches every subscriber of the namespace, in registration order.
-
-    LocalTransport is a first-class deployment, not a test double (TW-SYM-001): an application that
-    never leaves its own process uses every feature of taskwire through it.
-    """
+    """TW-TR-008: in-process delivery reaches every subscriber of the namespace, in registration
+    order, and none of another namespace."""
     transport = LocalTransport()
     seen: list[str] = []
 
@@ -338,14 +278,8 @@ async def test_local_transport_delivers_to_every_subscriber_in_order(clean_confi
 
 
 async def test_subscriber_mutation_is_contained(clean_configuration):  # noqa: ARG001 - fixture is state, not data
-    """TW-TR-009: a subscriber cannot alter what another subscriber - or the store - sees.
-
-    In-process delivery is the only path where a live reference could leak where a wire transport
-    would have serialized and therefore copied. `Progress.to_dict()` hands out the very `data` dict
-    the store holds, so without a copy a subscriber writing to the envelope it received would be
-    writing into the store itself, and TW-CORE-002 - the store is the truth and a push never changes
-    what a later read returns - would hold on one transport and not on another.
-    """
+    """TW-TR-009: a subscriber that mutates its envelope changes neither another subscriber's copy,
+    the publisher's envelope nor the store (TW-CORE-002)."""
     store = MemoryStore()
     transport = LocalTransport()
     taskwire.configure(store=store, transport=transport)
@@ -388,12 +322,8 @@ async def test_subscriber_mutation_is_contained(clean_configuration):  # noqa: A
 
 
 async def test_raising_subscriber_does_not_starve_the_others(clean_configuration):  # noqa: ARG001 - fixture is state
-    """TW-TR-010: a subscriber that raises is a dropped push, and nothing more.
-
-    It does not propagate to `notify()`'s caller - the state was written before any of this ran
-    (TW-CORE-001) - and it does not stop the remaining subscribers being called. One dead browser
-    tab may not silence every other tab of the namespace.
-    """
+    """TW-TR-010: a raising subscriber is a dropped push: `notify()` does not raise, the other
+    subscribers are called, and it stays subscribed (TW-CORE-001)."""
     transport = LocalTransport()
     seen: list[str] = []
 
@@ -422,18 +352,8 @@ async def test_raising_subscriber_does_not_starve_the_others(clean_configuration
 
 
 async def test_slow_subscriber_is_bounded_by_push_timeout(clean_configuration, monkeypatch):  # noqa: ARG001
-    """TW-TR-010 / TW-TR-003: a subscriber that outlasts `push_timeout` is a dropped push too.
-
-    This is the second half of TW-TR-010 and the half that has no visible symptom: a subscriber that
-    raises fails loudly the first time, while one that merely hangs - a browser tab whose socket went
-    away without an RST, a callback that awaits a lock - stalls `notify()`, and through it the
-    reporter, for as long as it likes. TW-INV-012 is exactly this: a degradation in the accelerator
-    must not become a stall in the operation.
-
-    The timeout is *injected*, not waited out: `push_timeout` is dropped to a hundredth of the sleep
-    the subscriber would otherwise take, so a correct implementation costs milliseconds and one that
-    lost its `wait_for` fails the elapsed-time assertion instead of hanging the suite.
-    """
+    """TW-TR-010 / TW-TR-003: a subscriber that outlasts `push_timeout` is cancelled and dropped;
+    `notify()` returns within the bound and the other subscribers receive the push (TW-INV-012)."""
     monkeypatch.setattr(settings, "push_timeout", TEST_PUSH_TIMEOUT)
     transport = LocalTransport()
     seen: list[str] = []
@@ -467,11 +387,8 @@ async def test_slow_subscriber_is_bounded_by_push_timeout(clean_configuration, m
 
 
 async def test_null_transport_notify_is_inert(clean_configuration):  # noqa: ARG001 - fixture is state, not data
-    """TW-TR-007: `NullTransport.notify` is `pass` - polling does all the work and every feature works.
-
-    This is the baseline deployment: no socket, no extra installed. `publish()` still must not raise
-    (TW-STORE-008) and the stored document must be exactly what it was before the push.
-    """
+    """TW-TR-007: `NullTransport.notify` does nothing; `publish()` through it does not raise and
+    leaves the stored document unchanged (TW-STORE-008)."""
     transport = NullTransport()
     envelope = Envelope(token=TOKEN, rev=1, kind=EnvelopeKind.PROGRESS, body=_progress().to_dict())
 

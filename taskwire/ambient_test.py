@@ -1,11 +1,4 @@
-"""Acceptance tests for the ambient reporter (M2, TW-AMB-*).
-
-The important one is `test_contextvar_does_not_leak_across_sequential_operations`. Everything else
-here is ordinary surface checking; that one is the reason the binding is reset through its `Token`
-instead of being overwritten, and the failure it prevents - operation A's progress landing on
-operation B's key (TW-INV-011) - is invisible to any test that does not deliberately raise in the
-middle of one operation and then run another on the same thread.
-"""
+"""Tests for the ambient reporter (TW-AMB-*)."""
 
 from __future__ import annotations
 
@@ -32,12 +25,7 @@ def _unthrottled():
 
 
 async def test_unbound_proxy_is_a_silent_no_op():
-    """TW-AMB-002.
-
-    Silence is the design, not laziness: library code that reports progress has to be callable from
-    a caller that never opened an operation, without that caller caring and without a warning on
-    every line.
-    """
+    """TW-AMB-002: every method of the unbound proxy is a silent no-op."""
     assert current_reporter() is None
     assert await progress.set(percent=10, label=Text(text="nowhere")) is None
     assert await progress.done() is None
@@ -48,12 +36,7 @@ async def test_unbound_proxy_is_a_silent_no_op():
 
 
 async def test_unbound_proxy_still_rejects_a_state_keyword():
-    """TW-PROG-012 does not relax when nothing is bound.
-
-    Code that would be rejected inside an operation must not pass merely because it ran outside one;
-    otherwise the error surfaces for the first time in production, on the one run that has a
-    namespace.
-    """
+    """TW-PROG-012: the unbound proxy rejects a `state` keyword."""
     with pytest.raises(ValueError, match="no `state` keyword"):
         await progress.set(state="running")
 
@@ -78,11 +61,9 @@ async def test_operation_binds_the_ambient_reporter():
 
 
 async def test_ask_is_progress_ask():
-    """TW-AMB-003: one mechanism with two names, never two mechanisms.
+    """TW-AMB-003: `taskwire.ask` is `progress.ask`.
 
-    Compared by underlying function and bound instance rather than with `is`: attribute access on an
-    object mints a fresh bound method every time, so `progress.ask is progress.ask` is already False
-    and would prove nothing either way.
+    Compared by function and instance: every attribute access creates a new bound method.
     """
     assert taskwire.ask.__self__ is progress
     assert taskwire.ask.__func__ is type(progress).ask
@@ -106,13 +87,7 @@ async def test_subtask_binds_the_ambient_reporter_for_the_block():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_contextvar_does_not_leak_across_sequential_operations():
-    """TW-AMB-005 / TW-INV-011, named in the specification.
-
-    The first operation RAISES. If its binding were merely overwritten rather than reset through the
-    `Token`, the next task on the same thread would inherit it, and the second operation's progress
-    would be written to the FIRST operation's key - silently, and forever, since neither operation
-    reports an error and both bars keep moving.
-    """
+    """TW-AMB-005 / TW-INV-011: the first operation raises; the second reports under its own key."""
     store = MemoryStore()
     first_token, second_token = new_token(), new_token()
 
@@ -136,8 +111,7 @@ async def test_contextvar_does_not_leak_across_sequential_operations():
 
     assert current_reporter() is None
 
-    # The first operation is terminal, so nothing of the second's could have landed on it - but read
-    # its tombstone rather than inferring it: it failed at its own 10 %, not at the second's 77 %.
+    # The first operation's tombstone keeps its own 10 %.
     first = await store.snapshot(make_key("ns", first_token))
     assert first is not None
     assert first.progress.state is ProgressState.FAILED
@@ -146,7 +120,7 @@ async def test_contextvar_does_not_leak_across_sequential_operations():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_raising_operation_ends_failed_and_reraises():
-    """TW-API-001, restated here because the leak test above depends on the raise propagating."""
+    """TW-API-001: a raising operation ends `failed` with `taskwire.unhandled_exception` and re-raises."""
     store = MemoryStore()
     token = new_token()
     seen: list = []
@@ -175,11 +149,8 @@ async def test_a_raising_operation_ends_failed_and_reraises():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_run_in_executor_propagates_with_helper():
-    """TW-AMB-006: `loop.run_in_executor` is the trap, and `copy_context_to` is the way through it.
-
-    Both halves are asserted. Without the helper the reporting in the worker vanishes silently, which
-    is precisely why the docs have to name this call rather than leaving it to be discovered.
-    """
+    """TW-AMB-006: `loop.run_in_executor` does not carry the binding; `copy_context_to` and
+    `asyncio.to_thread` do."""
     store = MemoryStore()
     token = new_token()
     loop = asyncio.get_running_loop()

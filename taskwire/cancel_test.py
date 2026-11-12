@@ -1,14 +1,4 @@
-"""Acceptance tests for cancellation (M6, TW-CANCEL-*).
-
-`test_loop_with_no_cancellation_code_raises_and_ends_cancelled` is the whole argument for the raising
-default, and the brief says it must fail loudly if raising is ever made opt-in. Everything else here
-supports it: a loop that contains no cancellation handling at all still stops, and still ends
-`cancelled` rather than running to completion after the user pressed the button.
-
-That is what a polling API cannot give you. `if reporter.cancelled: break` works right up until
-somebody forgets it in one of forty loops, and then that one operation ignores the user forever with
-nothing in the logs.
-"""
+"""Tests for cancellation (TW-CANCEL-*)."""
 
 from __future__ import annotations
 
@@ -46,13 +36,8 @@ def _raising_default():
 
 @pytest.mark.usefixtures("_unthrottled", "_raising_default")
 async def test_loop_with_no_cancellation_code_raises_and_ends_cancelled():
-    """TW-CANCEL-002, named in the specification. **This one assertion is the argument.**
-
-    Note what the loop below does NOT contain: no `if reporter.cancelled`, no `was_aborted()`, no
-    try/except, no cooperation of any kind. It still stops, and the operation still ends `cancelled`.
-
-    If raising is ever made opt-in, this test must fail loudly rather than being quietly adjusted.
-    """
+    """TW-CANCEL-002: a loop with no cancellation handling stops at the next `set()` and ends
+    `cancelled`."""
     store = MemoryStore()
     token = new_token()
     key = make_key(NS, token)
@@ -73,7 +58,7 @@ async def test_loop_with_no_cancellation_code_raises_and_ends_cancelled():
                 rows_processed = row
     except OperationCancelled:
         pass
-    else:  # pragma: no cover - the whole point is that this branch is unreachable
+    else:  # pragma: no cover - unreachable
         raise AssertionError("a cancelled operation must not run to completion")
     finally:
         reset_configuration()
@@ -83,9 +68,7 @@ async def test_loop_with_no_cancellation_code_raises_and_ends_cancelled():
     terminal = [e for e in seen if e.kind is EnvelopeKind.PROGRESS and e.body.get("state") in {"cancelled", "failed"}]
     assert terminal, "no terminal envelope was published"
     assert terminal[-1].body["state"] == ProgressState.CANCELLED.value
-    # TW-REG-007 takes it out of the register; TW-RET-004 leaves the terminal document readable at
-    # its own address, which is the only way a client that was not watching learns it was cancelled
-    # rather than merely gone.
+    # TW-REG-007: out of the register; TW-RET-004: the terminal document stays readable at its key.
     tombstone = await store.snapshot(key)
     assert tombstone is not None, "the terminal document is readable for tombstone_ttl"
     assert tombstone.progress.state is ProgressState.CANCELLED
@@ -94,11 +77,8 @@ async def test_loop_with_no_cancellation_code_raises_and_ends_cancelled():
 
 @pytest.mark.usefixtures("_unthrottled", "_raising_default")
 async def test_operation_cancelled_not_swallowed_as_failed():
-    """TW-CANCEL-006, named in the specification.
-
-    Collapsing the two would make a user pressing stop indistinguishable from a crash in every
-    dashboard that reads the terminal state - and the two call for opposite responses.
-    """
+    """TW-CANCEL-006: `OperationCancelled` ends the operation `cancelled` with no `error`, not
+    `failed`."""
     store = MemoryStore()
     token = new_token()
     seen: list = []
@@ -126,11 +106,8 @@ async def test_operation_cancelled_not_swallowed_as_failed():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_raise_on_cancel_precedence():
-    """TW-CANCEL-003: per-call, then the operation's, then `settings.raise_on_cancel`.
-
-    Most specific wins. The global default is `True` (TW-CANCEL-002), and an operation that opts out
-    is choosing to poll `reporter.cancelled` itself.
-    """
+    """TW-CANCEL-003: per-call, then the operation's, then `settings.raise_on_cancel`; the most
+    specific wins."""
     store = MemoryStore()
     previous = settings.raise_on_cancel
     try:
@@ -139,7 +116,7 @@ async def test_raise_on_cancel_precedence():
         token = new_token()
         async with operation(token, session=NS, result_kind="k", store=store, raise_on_cancel=False) as reporter:
             await store.request_cancel(make_key(NS, token))
-            await reporter.set(percent=1)  # must NOT raise
+            await reporter.set(percent=1)  # must not raise
             assert reporter.cancelled is True, "the flag is still visible to a caller that polls it"
 
         # 2. The per-call keyword beats the operation's setting.
@@ -149,7 +126,7 @@ async def test_raise_on_cancel_precedence():
             with pytest.raises(OperationCancelled):
                 await reporter.set(percent=1, raise_on_cancel=True)
 
-        # 3. With nothing said anywhere, the global default decides - and it is True.
+        # 3. With nothing said per call or per operation, `settings.raise_on_cancel` decides.
         settings.raise_on_cancel = False
         token = new_token()
         async with operation(token, session=NS, result_kind="k", store=store) as reporter:
@@ -161,11 +138,9 @@ async def test_raise_on_cancel_precedence():
 
 @pytest.mark.usefixtures("_unthrottled", "_raising_default")
 async def test_cancel_wakes_dialog_blocked_worker():
-    """TW-CANCEL-007, named in the specification.
+    """TW-CANCEL-007: a cancel wakes a worker blocked in `ask()`, which raises `OperationCancelled`.
 
-    With dialog timeouts gone (TW-DLG-005), a sentinel on the reply channel is the ONLY thing that
-    can wake a worker blocked in `ask()`. Without it a cancelled operation would sit on its question
-    until Celery's execution timeout killed the task - minutes of a pinned worker for one click.
+    Dialogs have no timeout (TW-DLG-005); the sentinel on the reply channel wakes the worker.
     """
     store = MemoryStore()
     token = new_token()
@@ -187,18 +162,14 @@ async def test_cancel_wakes_dialog_blocked_worker():
 
     await store.request_cancel(key)
 
-    # No timeout on this await: the point is that it returns promptly on its own.
+    # The timeout only bounds a regression; the task ends on the cancel.
     with pytest.raises(OperationCancelled):
         await asyncio.wait_for(task, timeout=5)
 
 
 @pytest.mark.usefixtures("_unthrottled", "_raising_default")
 async def test_a_terminal_write_withdraws_open_dialogs():
-    """TW-CANCEL-011: a dialog can never outlive the operation that asked it.
-
-    Otherwise a question sits in a namespace whose operation has already ended, and every tab that
-    answers it gets a 404 for a dialog it can see.
-    """
+    """TW-CANCEL-011: withdrawing the dialogs cancels the open one and wakes the asking worker."""
     store = MemoryStore()
     token = new_token()
     key = make_key(NS, token)
@@ -231,11 +202,7 @@ async def test_a_terminal_write_withdraws_open_dialogs():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_the_cancel_flag_is_sticky_and_never_cleared():
-    """TW-CANCEL-001. There is no code path that clears it, and there must not be one.
-
-    A clearable flag is a flag two writers race over, and the loser is a user whose cancel was
-    forgotten.
-    """
+    """TW-CANCEL-001: no write clears the cancel flag."""
     store = MemoryStore()
     token = new_token()
     key = make_key(NS, token)
@@ -256,10 +223,9 @@ async def test_the_cancel_flag_is_sticky_and_never_cleared():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_cancellation_is_cooperative_and_kills_nothing():
-    """TW-CANCEL-009: no revoke, no signal, no thread killed - and it cannot interrupt blocking code.
+    """TW-CANCEL-009: no shipped module revokes a task, sends a signal or interrupts a thread.
 
-    Asserted by source inspection, because the failure mode is a library that reaches past its own
-    abstraction and takes a worker down with it.
+    Asserted by source inspection.
     """
     from pathlib import Path
 
@@ -285,11 +251,8 @@ def configured_store():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_cancel_endpoint_returns_202_not_200(configured_store):
-    """TW-REST-009: the cancel was *requested*. Only the terminal state confirms it happened.
-
-    200 would claim the operation stopped, which this endpoint cannot know: cancellation is
-    cooperative and the operation notices at its next progress call, which may be a while.
-    """
+    """TW-REST-009: the cancel endpoint answers `202` and sets the flag; an unknown or malformed
+    token is `404`."""
     store = configured_store
     client = Client(session=NS)
     token = new_token()
@@ -307,7 +270,7 @@ async def test_cancel_endpoint_returns_202_not_200(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_cancel_publishes_a_cancel_envelope(configured_store):
-    """The `cancel` kind is one of the six, and a client treats it as idempotent (TW-REV-006)."""
+    """A cancel request publishes one `cancel` envelope with an empty body (TW-REV-006)."""
     store = configured_store
     seen: list = []
 
@@ -327,12 +290,8 @@ async def test_cancel_publishes_a_cancel_envelope(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_terminal_operation_refuses_a_cancel_with_409(configured_store):
-    """There is nothing left to interrupt, and 202 would promise something that cannot happen.
-
-    The tombstone is what makes this a `409` rather than a `404` (TW-RET-004): for as long as the
-    terminal document is readable, the endpoint can say *why* it refuses, and a caller can tell a
-    finished operation from a token that was never written.
-    """
+    """A cancel on a terminal operation is `409 taskwire.already_terminal`, read from its tombstone
+    (TW-RET-004)."""
     store = configured_store
     token = new_token()
     async with operation(token, session=NS, result_kind="k", store=store):
@@ -344,7 +303,7 @@ async def test_a_terminal_operation_refuses_a_cancel_with_409(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_dialog_reply_after_a_cancel_is_410(configured_store):
-    """The question is gone rather than answered by somebody else (section 6.2)."""
+    """A reply to a dialog the cancel withdrew is `410` (section 6.2)."""
     from taskwire.rest import reply_to_dialog
 
     store = configured_store
@@ -376,7 +335,8 @@ async def test_dialog_reply_after_a_cancel_is_410(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_request_cancel_on_a_gone_document_is_harmless():
-    """The store answers rather than raising: losing a race with expiry is not a programming error."""
+    """`request_cancel`, `is_cancelled` and `resolve_dialog` on an absent document answer without
+    raising."""
     store = MemoryStore()
     assert await store.request_cancel(make_key(NS, new_token())) == 0
     assert await store.is_cancelled(make_key(NS, new_token())) is False

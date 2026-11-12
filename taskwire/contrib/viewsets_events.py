@@ -15,9 +15,10 @@ each side of the socket and one Redis channel family.
 Every envelope is published as one `EnvelopeEvent` to one of two topics of the source `taskwire`:
 
 - the namespace topic, `taskwire:ns.{sha256(ns)}`: every envelope except a private operation's
-  `progress` (TW-PRIV-004). Admitted to a caller whose `session_resolver` answers `ns`;
-- the connection topic, `taskwire:c.{sha256(ns, connection id)}`: a private operation's `progress`,
-  when its `origin_connection` is set (TW-PRIV-003). Admitted to the socket that holds that
+  `progress` and `snapshot` (TW-PRIV-004). Admitted to a caller whose `session_resolver` answers `ns`;
+- the connection topic, `taskwire:c.{sha256(ns, connection id)}`: a private operation's `progress`
+  and `snapshot`, when its `origin_connection` is set (TW-PRIV-003); with no `origin_connection`
+  they are not published. Admitted to the socket that holds that
   connection id in that namespace, and to nothing over REST.
 
 The topic keys are digests, so neither a namespace nor a connection id reaches a client in a topic
@@ -57,7 +58,10 @@ SOURCE_NAME = "taskwire"
 """The fastapi-viewsets source every taskwire topic belongs to."""
 
 NAMESPACE_PREFIX = "ns."
+"""The prefix of a namespace topic's key."""
+
 CONNECTION_PREFIX = "c."
+"""The prefix of a connection topic's key."""
 
 
 class EnvelopeEvent(Event):
@@ -81,7 +85,7 @@ def namespace_topic(ns: str) -> str:
 
 
 def connection_topic(ns: str, connection: str) -> str:
-    """The topic of the private operations' `progress` of one socket of the namespace `ns`."""
+    """The topic of the private operations' `progress` and `snapshot` of one socket of the namespace `ns`."""
     return f"{SOURCE_NAME}:{CONNECTION_PREFIX}{_digest(ns, connection)}"
 
 
@@ -128,8 +132,7 @@ class ViewsetEventsTransport(TaskwireTransport):
         self._tasks: set[asyncio.Task] = set()
 
     async def notify(self, session: str, envelope: Envelope) -> None:
-        """Publishes one envelope. Never raises (TW-TR-002); `reader.dispatch` bounds it by
-        `settings.push_timeout` (TW-TR-003)."""
+        """Publishes one envelope. Never raises (TW-TR-002)."""
         try:
             topic = envelope_topic(session, envelope)
             if topic is None:

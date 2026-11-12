@@ -1,15 +1,9 @@
 """The namespace register and its percentage-free aggregate.
 
-**The aggregate carries no percentage and no rule may reintroduce one** (TW-REG-011). There is no
-unit in which two operations' self-reported percentages are commensurable - one is 40 % through a
-row count, the other 40 % through a byte count - so any figure derived across them is invented. A
-footer that wants a bar draws one *selected* operation's own percentage (TW-REG-013), and this
-module computes that selection server-side so a non-JavaScript consumer gets the same answer as the
-shipped client.
-
-The aggregate is built as its own dataclass rather than a `Progress` with a null percent, because a
-shared shape is precisely how a percentage gets added back by someone reading `percent: float | None`
-as an invitation (TW-REG-009).
+The aggregate carries no percentage (TW-REG-011): operations' self-reported percentages have no
+common unit. A footer that draws a bar uses one selected operation's own percentage (TW-REG-013);
+this module computes the selection server-side, with the same result as the shipped client.
+`Aggregate` is a dataclass of its own, not a `Progress` (TW-REG-009).
 """
 
 from __future__ import annotations
@@ -37,21 +31,12 @@ _DOMINANCE = {
     ProgressState.RUNNING: 1,
     ProgressState.WAITING_INPUT: 2,
 }
-"""TW-REG-012: `waiting_input > running > queued`, by domination and never by majority.
-
-`waiting_input` dominating is what lights the indicator: one operation blocked on a question among
-nine running ones is the whole reason a user needs to look at the widget.
-"""
+"""TW-REG-012: `waiting_input > running > queued`, by domination and never by majority."""
 
 
 def _entry_state(snapshot: Snapshot) -> ProgressState:
-    """The state the register reasons about, **derived** rather than read off the document.
-
-    TW-REG-004 and TW-PROG-010 both say the same thing from different directions: `waiting_input`
-    comes from the entry's own open dialogs and its uncollected result, never from whatever the last
-    writer left in `progress.state`. Reading the stored state instead would make the indicator agree
-    with a stale write.
-    """
+    """The entry's derived state: `waiting_input` when it has an open dialog or an uncollected result,
+    otherwise its stored active state (TW-REG-004, TW-PROG-010)."""
     if snapshot.needs_attention:
         return ProgressState.WAITING_INPUT
     state = ProgressState(snapshot.progress.state)
@@ -59,38 +44,19 @@ def _entry_state(snapshot: Snapshot) -> ProgressState:
 
 
 def poll_after_ms(snapshots: list[Snapshot]) -> int:
-    """The server's advice, which may only ever **slow a client down** (TW-REST-014).
+    """The poll advice: the base interval while any entry is active, otherwise the ceiling; never
+    below the base (TW-REST-014).
 
-    A server that advertises `0` is a server asking to be flooded; the client clamps upward anyway,
-    but the value emitted here never goes below the base interval.
-
-    "Active" is the **derived** state, not the stored one (TW-REG-004, TW-PROG-010). Reading
-    `progress.state` here instead would break TW-REST-010's "poll at the ceiling while a dialog is
-    open": an operation holding an open question keeps `running` on its document - that is exactly
-    what TW-PROG-010 requires - so the base interval would be advertised for the whole life of every
-    dialog, which is the one situation the cadence singles out for the ceiling. A blocked worker
-    would then be polled twelve times a second per tab instead of once every five seconds.
-
-    NOTE: not a spec rule - §8.2 fixes the base and the ceiling, and choosing between them on this
-    test is this module's.
+    Active means the derived state (TW-REG-004, TW-PROG-010): an operation with an open dialog polls
+    at the ceiling (TW-REST-010).
     """
     active = any(_entry_state(s) in ACTIVE_STATES for s in snapshots)
     return BASE_POLL_MS if active else CEILING_POLL_MS
 
 
 def select_fifo(snapshots: list[Snapshot]) -> Snapshot | None:
-    """TW-REG-013's shipped default: the oldest entry that is `queued` or `running`.
-
-    It advances to the next one on its own when the selected operation leaves the register, which is
-    the whole of the behaviour - there is no `aggregate(ops, {weights})` helper and no averaging
-    anywhere.
-
-    Candidacy is decided on the **derived** state, exactly as `aggregate()` and `poll_after_ms()`
-    decide theirs (TW-REG-004, TW-PROG-010). An entry parked on an uncollected result, or blocked on
-    an open question, keeps `running` on its stored document; selecting it anyway would put a footer
-    in the position of drawing a parked operation's frozen percentage while the aggregate beside it
-    reports `waiting_input`.
-    """
+    """TW-REG-013: the oldest entry whose derived state is `queued` or `running`, or None
+    (TW-REG-004, TW-PROG-010)."""
     active = [s for s in snapshots if _entry_state(s) in ACTIVE_STATES]
     if not active:
         return None
@@ -105,14 +71,11 @@ def _label_for(snapshot: Snapshot | None) -> Text | None:
 
 
 def aggregate(snapshots: list[Snapshot]) -> Aggregate | None:
-    """Counts and a dominated state over **every** entry in the register (TW-REG-010).
+    """Counts and a dominated state over every entry in the register (TW-REG-010).
 
-    Returns `None` for an empty register so the widget can hide itself rather than render a zeroed
-    document (TW-REG-017).
-
-    The server never emits `done` or `failed` here (TW-REG-015): a terminal entry with nothing to
-    collect left the register in the same step that made it terminal, so no count and no domination
-    can ever see one.
+    Returns `None` for an empty register (TW-REG-017). The state is never `done` or `failed`
+    (TW-REG-015): a terminal entry with nothing to collect leaves the register in the step that makes
+    it terminal.
     """
     if not snapshots:
         return None
@@ -135,21 +98,12 @@ def aggregate(snapshots: list[Snapshot]) -> Aggregate | None:
 
 
 def sort_entries(snapshots: list[Snapshot]) -> list[Snapshot]:
-    """TW-REG-005: `needs_attention` first, then `created_at` ascending. There is no third key.
-
-    The consequence is accepted rather than worked around: an old uncollected result sorts above a
-    fresh question. The result holds no worker, and the aggregate's `waiting_input` state lights the
-    indicator either way, so a third key would buy nothing and would have to be explained.
-    """
+    """TW-REG-005: `needs_attention` first, then `created_at` ascending."""
     return sorted(snapshots, key=lambda s: (not s.needs_attention, s.progress.created_at))
 
 
 def summarize(snapshot: Snapshot, client: Client) -> OperationSummary:
-    """One register row: the whole snapshot, plus what a list view needs lifted out of it.
-
-    Carrying the entire snapshot is deliberate (TW-REG-002) - one request renders an operations UI
-    with no follow-up per-token GETs.
-    """
+    """One register row: the whole snapshot (TW-REG-002) plus fields lifted out of it."""
     progress = snapshot.progress
     return OperationSummary(
         token=snapshot.token,
@@ -165,10 +119,8 @@ def summarize(snapshot: Snapshot, client: Client) -> OperationSummary:
 def build_register(snapshots: list[Snapshot], client: Client) -> Register:
     """Assemble the document `GET {prefix}` returns.
 
-    Always the whole register (TW-REG-003). There is no parameter by which a caller could ask for
-    less, and therefore none that could name another namespace. A suppressed operation still appears
-    here in full, with its state, its questions and its result - the delivery decision governs
-    delivery, never existence (TW-DEL-013, TW-INV-017).
+    Always the whole register of the client's namespace (TW-REG-003). A suppressed operation appears
+    in full; the delivery decision governs delivery, not listing (TW-DEL-013, TW-INV-017).
     """
     ordered = sort_entries(snapshots)
     advice = poll_after_ms(snapshots)

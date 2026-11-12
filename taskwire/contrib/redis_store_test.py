@@ -1,11 +1,6 @@
-"""`RedisStore` against a real Redis, running the **exported conformance suite unchanged**.
+"""`RedisStore` against a real Redis, running the exported conformance suite unchanged (TW-STORE-011).
 
-That is the whole acceptance criterion (TW-STORE-011): RedisStore gets no weakened copy of the
-suite. If a rule in it cannot be satisfied by a real backend then the rule is wrong and the
-specification changes, not the suite.
-
-Skips - never errors - when no Redis is reachable, so the requirement that the whole test suite
-passes with no optional extra installed keeps holding.
+Skips when no Redis is reachable.
 """
 
 from __future__ import annotations
@@ -49,12 +44,8 @@ async def redis_url() -> str:
 
 @pytest.mark.parametrize("check", CHECKS, ids=[c.__name__ for c in CHECKS])
 async def test_redis_store_passes_the_exported_conformance_suite(check, redis_url) -> None:
-    """TW-STORE-011: unchanged, one pytest test per check so a failure names the rule.
-
-    Four checks drive an injected clock to move time forward. Redis has its own clock and its own
-    expiry, so those are skipped here rather than weakened - the store cannot lie about wall time,
-    and a suite that let it would be testing a fake.
-    """
+    """TW-STORE-011: one pytest test per check. The checks that drive an injected clock are skipped:
+    Redis owns its expiry."""
     clock_driven = {
         "test_ttl_expiry_removes_key_and_touch_prevents_it",
         "test_commit_after_expiry_exceeds_previous_max",
@@ -63,7 +54,9 @@ async def test_redis_store_passes_the_exported_conformance_suite(check, redis_ur
         "test_migrate_is_idempotent_and_preserves_rev",
     }
     if check.__name__ in clock_driven:
-        pytest.skip("drives an injected clock; Redis owns its own expiry (see redis_expiry_test below)")
+        pytest.skip(
+            "drives an injected clock; Redis owns its own expiry (see test_expiry_is_redis_own_and_touch_pushes_it_out)"
+        )
 
     def make_store(**_ignored) -> RedisStore:
         return RedisStore(redis_url)
@@ -72,11 +65,8 @@ async def test_redis_store_passes_the_exported_conformance_suite(check, redis_ur
 
 
 async def test_expiry_is_redis_own_and_touch_pushes_it_out(redis_url) -> None:
-    """The clock-driven checks above, restated against Redis's real expiry.
-
-    Short TTLs and one real wait, because there is nothing to inject: the point of this store is that
-    the deadline is the server's.
-    """
+    """The clock-driven checks against Redis's real expiry: a key expires after its TTL, and `touch`
+    extends it."""
     import asyncio
 
     store = RedisStore(redis_url)
@@ -97,11 +87,7 @@ async def test_expiry_is_redis_own_and_touch_pushes_it_out(redis_url) -> None:
 
 
 async def test_commit_returns_the_cancel_flag_in_one_round_trip(redis_url) -> None:
-    """TW-STORE-014, asserted against a COUNTING client.
-
-    The reporter refreshes `cancelled` on every commit. Doing that as a second read would double the
-    round trips of the hottest write in the system, which is why the Lua script returns both.
-    """
+    """TW-STORE-014: `commit` returns the cancel flag with no separate `exists` call."""
     calls: list[str] = []
 
     class Counting:
@@ -152,7 +138,7 @@ async def test_the_keyspace_is_exactly_the_specified_one(redis_url) -> None:
 
 
 async def test_publish_never_raises_even_with_redis_gone(redis_url) -> None:
-    """TW-STORE-008. A publish announces a change that is already durable."""
+    """TW-STORE-008: `publish` does not raise on a closed connection."""
     from taskwire.models import Envelope, EnvelopeKind
 
     store = RedisStore(redis_url)
@@ -161,12 +147,8 @@ async def test_publish_never_raises_even_with_redis_gone(redis_url) -> None:
 
 
 async def test_the_backplane_carries_an_envelope_between_processes(redis_url) -> None:
-    """TW-BP-003: an envelope published for a namespace reaches that namespace and no other.
-
-    Two `RedisStore` instances stand in for two web processes. In a single process
-    `MemoryStore.publish` drives the reader directly, and nothing proves the cross-process path
-    until two of them are in the room.
-    """
+    """TW-BP-003: an envelope published by one `RedisStore` reaches the reader of another for the
+    watched namespace only."""
     import asyncio
 
     import taskwire
@@ -209,7 +191,7 @@ async def test_the_backplane_carries_an_envelope_between_processes(redis_url) ->
 
 
 async def test_the_missing_reader_diagnostic_names_the_call_you_forgot(redis_url, caplog) -> None:
-    """TW-BP-006. The symptom otherwise is a latency regression that polling hides well enough to ship."""
+    """TW-BP-006: with no reader running, the warning names `start_taskwire_reader`; none once it runs."""
     import logging
 
     import taskwire
@@ -234,7 +216,7 @@ async def test_the_missing_reader_diagnostic_names_the_call_you_forgot(redis_url
 
 
 async def test_a_single_process_store_needs_no_reader(caplog) -> None:
-    """The diagnostic must not cry wolf: `MemoryStore.publish` drives the reader directly."""
+    """With `MemoryStore`, `check_taskwire_readers` logs no warning."""
     import logging
 
     import taskwire
@@ -249,12 +231,7 @@ async def test_a_single_process_store_needs_no_reader(caplog) -> None:
 
 
 async def test_a_dialog_answered_in_another_process_wakes_the_worker(redis_url) -> None:
-    """TW-BP-007: the reply path is a LIST, never pub/sub, and this is why.
-
-    The worker blocks in one "process" and the answer arrives in another. A message published before
-    the worker reached its wait would simply be lost, and the worker would then wait forever on a
-    question that had already been answered. `RPUSH`/`BLPOP` survives that race.
-    """
+    """TW-BP-007: a reply resolved through one `RedisStore` wakes `await_dialog` blocked in another."""
     import asyncio
 
     from taskwire.models import Button, DialogReply, DialogRequest
@@ -281,16 +258,8 @@ async def test_a_dialog_answered_in_another_process_wakes_the_worker(redis_url) 
 
 
 async def test_serving_a_socket_subscribes_this_process_to_that_namespace(redis_url) -> None:
-    """TW-BP-004, end to end, and the hole it closes.
-
-    A started reader that was never told which namespaces this process holds connections for is
-    subscribed to NOTHING. The backplane is connected and silent, no envelope ever arrives, and
-    polling covers for it well enough that the deployment looks fine - which is the worst shape a
-    bug can have.
-
-    `register_taskwire_muxws` is where a process learns it holds a connection, so that is where the
-    subscription happens.
-    """
+    """TW-BP-004: `register_taskwire_muxws` subscribes this process's reader to the namespace, so a
+    published envelope reaches the transport."""
     import asyncio
 
     import taskwire
@@ -334,12 +303,7 @@ async def test_serving_a_socket_subscribes_this_process_to_that_namespace(redis_
 
 
 async def test_a_vanished_watcher_never_touches_the_operation(redis_url) -> None:
-    """TW-REG-008 / TW-INV-015: a disconnect is not a statement of intent.
-
-    Releasing a peer unsubscribes the process; it must not cancel, delete or shorten anything. A
-    `finally` on disconnect that deleted the progress document of a running 90,000-row import is the
-    failure this rule exists to prevent.
-    """
+    """TW-REG-008, TW-INV-015: `release_peer` leaves the operation running and not cancelled."""
     import taskwire
 
     from taskwire.contrib.muxws import release_peer

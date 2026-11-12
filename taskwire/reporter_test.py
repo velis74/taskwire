@@ -1,17 +1,8 @@
-"""Acceptance tests for `taskwire.reporter` (brief §7, tests 13-28).
+"""Acceptance tests for `taskwire.reporter`.
 
-Three properties are asserted here that nothing else in the suite can assert, and each of them is
-one careless refactor away from being lost:
-
-**Store first, publish second** (TW-CORE-001). A recording store proves the ordering rather than
-trusting the reading of `_commit`.
-
-**The throttle is inline and clock-driven** (TW-THR-002/003/005/006). Every test in this file drives
-an injected clock; none of them sleeps to wait for a window. A test that slept would pass against a
-background flush task, which is exactly the implementation the rule forbids.
-
-**The terminal write and the drop are one step** (TW-REG-007, TW-INV-021). The register read issued
-immediately after the block exits must already be empty - there is no linger to wait out.
+Asserts commit before publish (TW-CORE-001), an inline clock-driven throttle (TW-THR-002/003/005/006;
+every test drives an injected clock), and a terminal write that leaves the register in one step
+(TW-REG-007, TW-INV-021).
 """
 
 from __future__ import annotations
@@ -40,13 +31,13 @@ from taskwire.store import Commit, key as make_key, MemoryStore
 from taskwire.transport import TaskwireTransport
 
 NS = "acct-42"
-"""One already-resolved namespace string (TW-AMB-007). Never a user, a request or an identity."""
+"""A resolved namespace string (TW-AMB-007)."""
 
 OTHER_NS = "acct-99"
 
 
 class Clock:
-    """An injected clock (§6). Time moves only when a test says so - no test here sleeps."""
+    """An injected clock (§6), advanced by hand."""
 
     def __init__(self, start: float = 1_000.0) -> None:
         self.now = start
@@ -59,12 +50,8 @@ class Clock:
 
 
 class RecordingStore(MemoryStore):
-    """A `MemoryStore` that remembers what it was asked to do, in the order it was asked.
-
-    `calls` is what proves the commit/publish ordering (TW-CORE-001); `commits` keeps a shallow copy
-    of every committed document, so a terminal write is observable as the write it is rather than
-    only through what it left behind.
-    """
+    """A `MemoryStore` that records its calls in order (`calls`), a shallow copy of every committed
+    document (`commits`) and every published envelope."""
 
     def __init__(self, *, record_bodies: bool = True, clock: Any = None) -> None:
         super().__init__(clock=clock)
@@ -106,7 +93,7 @@ class RecordingStore(MemoryStore):
 
 
 class RecordingTransport(TaskwireTransport):
-    """Counts pushes. The reader is the only thing that may call this (TW-CORE-003/004)."""
+    """Records every push (TW-CORE-003/004)."""
 
     def __init__(self) -> None:
         self.notifications: list[tuple[str, Envelope]] = []
@@ -117,7 +104,7 @@ class RecordingTransport(TaskwireTransport):
 
 @pytest.fixture(autouse=True)
 def _clean_configuration():
-    """`configured` is a process-wide singleton; no test may leave it wired."""
+    """Reset the process-wide `configured` before and after each test."""
     reset_configuration()
     yield
     reset_configuration()
@@ -125,7 +112,7 @@ def _clean_configuration():
 
 @pytest.fixture
 def restored_settings():
-    """`settings` is a mutable singleton. A test that tunes it must put it back."""
+    """Restore the tuned `settings` values after the test."""
     saved = (settings.active_ttl, settings.progress_interval, settings.max_data_bytes)
     yield settings
     settings.active_ttl, settings.progress_interval, settings.max_data_bytes = saved
@@ -150,11 +137,8 @@ async def _asgi_status(application: Any, method: str, path: str) -> int:
 
 
 async def test_commit_precedes_publish():
-    """TW-CORE-001 / TW-INV-001: the write is ordered before the push, always.
-
-    A client that saw a push whose state a later read contradicts cannot recover: it is entitled to
-    current state only (TW-CORE-005), and current state just disagreed with what it was told.
-    """
+    """TW-CORE-001 / TW-INV-001: every publish follows its commit, and the terminal envelope is
+    published last."""
     store = RecordingStore()
     clock = Clock()
     token = new_token()
@@ -168,10 +152,7 @@ async def test_commit_precedes_publish():
     assert len(ordering) % 2 == 0
     assert ordering == ["commit", "publish"] * (len(ordering) // 2)
 
-    # And the terminal envelope is the last thing published: it is what a watching client hears,
-    # and the tombstone the write leaves behind (TW-RET-004) is what an unwatching one reads. The
-    # envelope's own body is what is checked rather than merely the ordering, because a `publish`
-    # last would also hold for a non-terminal one.
+    # The last published envelope carries the terminal state.
     assert store.calls[-1][0] == "publish"
     last_ns, last_envelope = store.published[-1]
     assert last_ns == NS
@@ -180,11 +161,8 @@ async def test_commit_precedes_publish():
 
 
 async def test_tight_loop_without_await_still_commits():
-    """TW-THR-002: the throttle is an inline clock check, never a background flush task.
-
-    12 000 iterations that await nothing of their own. A timer task would never be scheduled here,
-    the bar would read 0 % for the whole phase, and the phase's final value would never be written.
-    """
+    """TW-THR-002: 12 000 `set()` calls that await nothing else commit about once per window,
+    throughout the loop."""
     store = RecordingStore()
     clock = Clock()
     token = new_token()
@@ -204,8 +182,7 @@ async def test_tight_loop_without_await_still_commits():
     expected = (iterations * step) / settings.progress_interval  # ~48
     assert len(commit_iterations) >= expected * 0.8
 
-    # Throughout, not only at the end: the first commit lands early and every quarter of the loop
-    # carries several of them.
+    # The first commit lands early and every quarter of the loop has several.
     assert commit_iterations[0] < iterations // 10
     quarter = iterations // 4
     for index in range(4):
@@ -215,11 +192,8 @@ async def test_tight_loop_without_await_still_commits():
 
 
 async def test_burst_then_forced_flush():
-    """TW-THR-006: *one of* the burst's values, and the last one only at the next forced flush.
-
-    Asserting the stronger claim - that the burst's last value is visible immediately - would be
-    asserting that coalescing does not happen, and would fail the moment the window is honoured.
-    """
+    """TW-THR-006: after a burst one of its values is committed; the last one is guaranteed only at
+    the next forced flush."""
     store = RecordingStore()
     clock = Clock()
     token = new_token()
@@ -233,16 +207,13 @@ async def test_burst_then_forced_flush():
         during_burst = store.commit_count - before_burst
         after_burst = store.commits[-1].percent
 
-    # Exactly the guarantee, and no more: some value of the burst is visible.
+    # Some value of the burst is visible.
     assert after_burst in burst
 
-    # The burst was genuinely coalesced (TW-THR-001). Without this the membership assertion above
-    # would hold just as well for an implementation that committed every single call - which is the
-    # one thing the window exists to prevent - and the assertion would be doing no work.
+    # The burst was coalesced (TW-THR-001).
     assert 0 < during_burst < len(burst), f"{during_burst} commits for {len(burst)} calls"
 
-    # The terminal write is a forced, unthrottled flush (TW-THR-004/005), and only there is the
-    # burst's last value guaranteed.
+    # The terminal write is an unthrottled flush (TW-THR-004/005) and carries the last value.
     terminal = _terminal_commits(store)
     assert len(terminal) == 1
     assert terminal[0].percent == burst[-1]
@@ -266,11 +237,7 @@ async def test_terminal_flushes_immediately():
 
 
 async def test_set_yields_once_per_interval_not_per_call(monkeypatch):
-    """TW-THR-003: `set()` yields once per interval, not once per call.
-
-    Once per call turns a 1 000-row loop into 1 000 event-loop round trips; never yielding starves
-    everything else on the loop. The rule is the middle of those two and is worth counting.
-    """
+    """TW-THR-003: `set()` yields once per interval, not once per call."""
     zero_yields = 0
     real_sleep = asyncio.sleep
 
@@ -291,9 +258,7 @@ async def test_set_yields_once_per_interval_not_per_call(monkeypatch):
             await reporter.set(percent=7.0)
         inside_one_interval = zero_yields
 
-        # Once *per interval*: each new window owes another yield. Counting only the first window
-        # would pass an implementation that yielded once for the reporter's whole life, which
-        # starves everything else on the loop for exactly as long as the operation runs.
+        # Each new window yields again.
         per_window: list[int] = []
         for _ in range(3):
             clock.advance(settings.progress_interval)
@@ -307,11 +272,7 @@ async def test_set_yields_once_per_interval_not_per_call(monkeypatch):
 
 
 async def test_set_rejects_state_keyword():
-    """TW-PROG-012: `set()` has no `state` keyword, and no back door to one.
-
-    Not silently absorbed into `data` either: a caller who could write `state` could park an
-    operation in `waiting_input` that nothing will ever release (TW-INV-006).
-    """
+    """TW-PROG-012: `set(state=...)` raises `ValueError` and writes nothing, not even into `data`."""
     store = RecordingStore()
     clock = Clock()
     token = new_token()
@@ -330,11 +291,8 @@ async def test_set_rejects_state_keyword():
 
 
 async def test_oversized_data_raises_and_does_not_commit():
-    """TW-PROG-008: above `max_data_bytes` encoded, `set()` raises and names the size.
-
-    Never truncated silently: the field survives, the application believes it wrote what it wrote,
-    and the missing half surfaces in a browser weeks later.
-    """
+    """TW-PROG-008: above `max_data_bytes` encoded, `set()` raises naming the size and truncates
+    nothing."""
     store = RecordingStore()
     clock = Clock()
     token = new_token()
@@ -456,17 +414,14 @@ async def test_operation_writes_exactly_one_terminal_state():
     await reporter.set(percent=99.0)
     await reporter.flush()
 
-    # The *stored* document, not the reporter's own copy of it. Asserting the committed body would
-    # pass on the reporter's memory of its terminal state alone, and TW-STORE-010 says in as many
-    # words that the store enforces this rather than trusting the caller.
+    # The stored document (TW-STORE-010).
     stored = await late_store.snapshot(late_key)
     assert stored is not None
     assert stored.progress.percent == 99.0
     assert ProgressState(stored.progress.state) is ProgressState.DONE
 
-    # And a commit that carries a non-terminal state outright is refused the state change while its
-    # display fields still land - the cleanup `set()` of TW-INV-014, which must not flip a finished
-    # operation back to `running` and leave it live in every tab's footer.
+    # A commit carrying a non-terminal state keeps the terminal state; its display fields land
+    # (TW-INV-014).
     cleanup_label = Text(key="acme.importer.cleanup")
     await late_store.commit(
         late_key,
@@ -480,11 +435,8 @@ async def test_operation_writes_exactly_one_terminal_state():
 
 
 async def test_terminal_entry_is_absent_from_the_very_next_read():
-    """TW-REG-007 / TW-INV-021: terminal with nothing to collect leaves in the same step.
-
-    There is no linger to wait out - the very next read is already empty, and this test issues it
-    with no clock advance and no sleep between the write and the read.
-    """
+    """TW-REG-007 / TW-INV-021: a terminal operation with nothing to collect is absent from the next
+    register read, with no clock advance."""
     store = RecordingStore()
     clock = Clock()
     token = new_token()
@@ -497,8 +449,7 @@ async def test_terminal_entry_is_absent_from_the_very_next_read():
         assert [snapshot.token for snapshot in listed] == [token]
 
     assert await store.list_operations(NS) == []
-    # The document itself outlives the register for `tombstone_ttl` (TW-RET-004), carrying the one
-    # thing the absence cannot: which of the three terminal states this was.
+    # The document stays readable for `tombstone_ttl` with its terminal state (TW-RET-004).
     tombstone = await store.snapshot(key)
     assert tombstone is not None
     assert tombstone.progress.state is ProgressState.DONE
@@ -509,11 +460,8 @@ async def test_terminal_entry_is_absent_from_the_very_next_read():
 
 
 def test_operation_sync_form_runs_on_its_own_loop():
-    """TW-API-002 / TW-API-003: the synchronous form owns a private loop for its thread.
-
-    Called from a thread with no running loop of any kind - the Celery shape - and `reporter.sync`
-    is one attribute exposing the identical member names, not a hand-written parallel list.
-    """
+    """TW-API-002 / TW-API-003: from a thread with no event loop, the synchronous form runs on a
+    private loop it closes on exit, and `reporter.sync` exposes the reporter's members."""
     store = RecordingStore()
     token = new_token()
     failures: list[Exception] = []
@@ -530,8 +478,7 @@ def test_operation_sync_form_runs_on_its_own_loop():
                 reporter.sync.set(percent=40.0, title=Text(key="acme.importer.title"))
                 reporter.sync.flush()
 
-            # The scope owns that loop, so it also closes it. A loop left running would leak one
-            # thread per operation in exactly the worker process that runs the most of them.
+            # The scope closes its loop.
             observed["closed_after"] = reporter._loop.is_closed()
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
@@ -553,13 +500,8 @@ def test_operation_sync_form_runs_on_its_own_loop():
 
 
 async def test_keepalive_touches_without_cooperation(restored_settings):
-    """TW-RET-002: `touch` runs without the operation's cooperation, every `active_ttl / 4`.
-
-    The block awaits nothing of its own; the only opening the keepalive gets is the once-per-interval
-    yield `set()` owes it (TW-THR-003). The phase that most needs the document to survive is exactly
-    the phase that never yields voluntarily, which is why the period is derived and not scheduled by
-    the caller.
-    """
+    """TW-RET-002: `touch` runs every `active_ttl / 4` while the block awaits nothing but `set()`
+    (TW-THR-003)."""
     restored_settings.active_ttl = 0.2  # keepalive period 0.05 s
     store = RecordingStore(record_bodies=False)
     clock = Clock()
@@ -584,12 +526,8 @@ async def test_keepalive_touches_without_cooperation(restored_settings):
 
 
 async def test_inert_reporter_when_token_is_none():
-    """TW-AMB-010 / TW-AMB-009: live-looking, inert, and callers never branch.
-
-    `session_resolver` returning `None` is an application opting a request out of taskwire entirely
-    (TW-AMB-009); `token=None` is the same situation from the other side. Neither is an error, and
-    neither may force `if reporter is not None:` through the calling code.
-    """
+    """TW-AMB-010 / TW-AMB-009: with no namespace or no token, `operation()` yields an inert reporter
+    whose calls succeed and write nothing."""
     for token, session in ((None, NS), (new_token(), None)):
         store = RecordingStore()
         async with operation(token, session=session, store=store) as reporter:
@@ -601,8 +539,7 @@ async def test_inert_reporter_when_token_is_none():
             assert await reporter.was_aborted() is False
             assert reporter.cancelled is False
 
-            # Silent, not permissive: code rejected in production must not pass merely because it
-            # ran with no namespace (TW-PROG-012).
+            # `state=` is still rejected (TW-PROG-012).
             with pytest.raises(ValueError, match=r"no `state` keyword"):
                 await reporter.set(state="running")
 
@@ -612,11 +549,8 @@ async def test_inert_reporter_when_token_is_none():
 
 
 async def test_result_kind_and_origin_connection_are_write_once():
-    """TW-PROG-006 / TW-INV-009: fixed at the opening write, and there is no promotion rule.
-
-    An operation is private or shared from start to finish (TW-PRIV-001). The store enforces this
-    rather than trusting the caller, so a later commit carrying different values changes nothing.
-    """
+    """TW-PROG-006 / TW-INV-009, TW-PRIV-001: the write-once fields keep their opening values; a
+    later commit carrying different values changes nothing."""
     store = RecordingStore()
     clock = Clock()
     token = new_token()
@@ -652,7 +586,7 @@ async def test_result_kind_and_origin_connection_are_write_once():
         assert stored.progress.origin_connection == "conn-1"
         assert stored.progress.origin_session == NS
 
-        # And the reporter's own later commits cannot move them either.
+        # Nor do the reporter's later commits.
         await reporter.flush()
         stored = await store.snapshot(key)
         assert stored is not None
@@ -661,12 +595,8 @@ async def test_result_kind_and_origin_connection_are_write_once():
 
 
 async def test_migrate_namespace_publishes_nothing_and_has_no_route():
-    """TW-AMB-011 / TW-SEC-008: the application is the only caller, and nothing on the wire is.
-
-    A migration is a bulk re-keying; the only thing between it and a takeover is that the
-    application, not a request, chooses both namespaces. It therefore publishes nothing and is
-    reachable from no REST path.
-    """
+    """TW-AMB-011 / TW-SEC-008: `migrate_namespace` moves the operations, publishes nothing, is
+    idempotent, and no REST path reaches it."""
     store = RecordingStore()
     transport = RecordingTransport()
     configure(store=store, transport=transport)
@@ -693,16 +623,15 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
     assert [snapshot.token for snapshot in await store.list_operations(account)] == [shared]
     assert await store.list_operations(anonymous) == []
 
-    # Idempotent, because `store.migrate` skips a token already present under the destination.
+    # Idempotent.
     assert await migrate_namespace(anonymous, account) == 0
     assert transport.notifications == []
 
-    # And no REST path reaches it. Text alone would be a weak proof, so the adapter is actually
-    # driven: an operation is planted under the anonymous namespace and every plausible request
-    # shape is issued against it. All of them are 404, and the operation has not moved.
+    # No REST path reaches it: every request shape against the ASGI adapter is 404 and the planted
+    # operation stays.
     stray = new_token()
     await mark_queued(stray, session=anonymous, result_kind="report", store=store)
-    transport.notifications.clear()  # planting it is a normal queued write, and it pushes
+    transport.notifications.clear()  # the planting write pushes
 
     application = asgi.app()
     prefix = settings.rest_prefix
@@ -720,9 +649,8 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
     assert await store.snapshot(make_key(account, stray)) is None
     assert transport.notifications == []
 
-    # The handlers, the ASGI adapter and the FastAPI adapter do not mention migration at all, and
-    # `rest` exports exactly the two reads of TW-REST-002 - a route added under any other name would
-    # show up here even though it would not contain the word.
+    # The handlers and adapters do not mention migration, and `rest` exports only the handlers of
+    # TW-REST-002.
     package = Path(taskwire.__file__).resolve().parent
     for relative in ("rest.py", "contrib/asgi.py", "contrib/fastapi.py"):
         source = (package / relative).read_text(encoding="utf-8")
@@ -742,19 +670,12 @@ async def test_migrate_namespace_publishes_nothing_and_has_no_route():
     }, handlers
 
 
-# --------------------------------------------------------------------- surfaces the brief declares
-# but does not exercise: the lifecycle writes that happen *outside* an operation block. These are
-# cheap and they pin two things: that a misused surface is loud rather than a silent no-op, and that
-# the write-from-outside paths drop their entry exactly as `operation()`'s exit does.
+# --------------------------------------------------------------------- misuse and writes outside a block
 
 
 async def test_was_aborted_forces_a_store_read():
-    """TW-CANCEL-004: `cancelled` is free to poll; `was_aborted()` costs a round trip.
-
-    The distinction is the point. A caller polling `cancelled` in a tight loop must not be issuing a
-    store read per iteration, and a caller that genuinely needs the current answer must have a way
-    to ask for one.
-    """
+    """TW-CANCEL-004: `cancelled` reads no store and keeps its last value; `was_aborted()` reads the
+    store."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -762,18 +683,15 @@ async def test_was_aborted_forces_a_store_read():
         assert await reporter.was_aborted() is False
 
         await store.request_cancel(make_key("ns", token))
-        # The cached value is deliberately stale until something refreshes it.
+        # Stale until a commit or `was_aborted()` refreshes it.
         assert reporter.cancelled is False
         assert await reporter.was_aborted() is True
         assert reporter.cancelled is True, "was_aborted() refreshes the cached answer"
 
 
 async def test_set_rejects_an_unknown_keyword_with_type_error():
-    """`set()` is the only mutator (TW-PROG-004), so a typo must not be swallowed into the bag.
-
-    `state=` is the one that gets its own `ValueError` and its own rule (TW-PROG-012); everything
-    else unexpected is an ordinary programming error and reads as one.
-    """
+    """TW-PROG-004: an unknown keyword to `set()` raises `TypeError`; `state=` raises `ValueError`
+    (TW-PROG-012)."""
     store = MemoryStore()
     async with operation(new_token(), session="ns", result_kind="k", store=store) as reporter:
         with pytest.raises(TypeError, match="unexpected keyword arguments"):
@@ -794,14 +712,9 @@ async def test_set_writes_icon_and_takes_a_per_call_raise_on_cancel():
 
 
 async def test_a_misused_surface_raises_rather_than_silently_doing_nothing():
-    """TW-RES-003: `set_result()` is the root reporter's, and a subtask calling it raises.
-
-    A refusal that quietly did nothing would let an application ship a result nobody can collect,
-    and the failure would surface as a missing download weeks later rather than at the call site.
-    """
+    """TW-RES-003: `set_result()` on a subtask raises."""
     store = MemoryStore()
     async with operation(new_token(), session="ns", result_kind="k", store=store) as reporter:
-        # Parking a result is the root reporter's alone; a subtask asking for it is a misuse.
         with pytest.raises(ValueError, match="root reporter's"):
             await reporter.subtask(0, 50).set_result(taskwire.Result(kind="k"))
 
@@ -824,11 +737,8 @@ async def test_reporter_fail_writes_an_error_without_a_stack_trace():
 
 
 async def test_mark_queued_is_idempotent_and_inert_without_a_namespace():
-    """TW-PROG-009 and TW-AMB-009.
-
-    The second call must not reach back and rewrite an operation that has since started running -
-    the web side owns the `queued` write and nothing else (TW-INV-009).
-    """
+    """TW-PROG-009, TW-INV-009, TW-AMB-009: `mark_queued` on an existing operation rewrites nothing,
+    and without a namespace or a store it is a no-op."""
     store = MemoryStore()
     token = new_token()
 
@@ -844,7 +754,7 @@ async def test_mark_queued_is_idempotent_and_inert_without_a_namespace():
     assert second is not None
     assert ProgressState(second.progress.state) is ProgressState.RUNNING, "must not rewind to queued"
 
-    # No namespace and no store are both "the application opted out", not errors (TW-AMB-009).
+    # No namespace and no store are no-ops (TW-AMB-009).
     await mark_queued(new_token(), session=None, store=store)
     await mark_queued(new_token(), session="ns", store=None)
 
@@ -856,12 +766,8 @@ def _running(snapshot: Snapshot) -> Progress:
 
 
 async def test_mark_failed_writes_the_error_and_leaves_the_register():
-    """TW-CELERY-004's shape: a dispatch that never reached a worker still ends the operation.
-
-    It takes the entry out of the register in the same step, exactly as `operation()`'s exit does
-    (TW-REG-007), and leaves the document readable at its own address (TW-RET-004) - the caller is
-    already watching this token, and a `404` would tell it nothing about why nothing ever started.
-    """
+    """TW-CELERY-004: `mark_failed` writes `failed`, takes the entry out of the register (TW-REG-007)
+    and leaves the document readable at its own address (TW-RET-004)."""
     store = MemoryStore()
     token = new_token()
     await mark_queued(token, session="ns", result_kind="k", store=store)
@@ -912,24 +818,19 @@ class _Recorder(TaskwireTransport):
 
 
 async def test_migrate_namespace_without_a_configured_store_moves_nothing():
-    """TW-AMB-011 delegates to the store; with no store there is nothing to delegate to."""
+    """TW-AMB-011: with no store, `migrate_namespace` returns 0."""
     reset_configuration()
     assert await migrate_namespace("anon", "account") == 0
 
 
-# ============================================================ M2: nesting (TW-NEST-*)
+# ============================================================ nesting (TW-NEST-*)
 #
-# The rule this section exists for is TW-NEST-004: a parent keeps a per-child CONTRIBUTION MAP and
-# each commit rewrites exactly one entry. The alternative - a last-written percent - passes a
-# monotonicity property test and is still wrong, which is why TW-NEST-006 names its test and says so.
+# TW-NEST-004: one contribution entry per child, each commit rewrites one entry.
 
 
 @pytest.fixture
 def _unthrottled():
-    """Commit on every set(), so a test reads a deterministic document.
-
-    Throttling has its own tests above; here it would only make the assertions depend on a clock.
-    """
+    """Commit on every `set()`."""
     previous = settings.progress_interval
     settings.progress_interval = 0.0
     yield
@@ -944,18 +845,14 @@ async def _percent(store: MemoryStore, session: str, token: str) -> float | None
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_concurrent_siblings_sum_contributions():
-    """TW-NEST-006 / TW-INV-010, named in the specification.
-
-    Four equal siblings under `gather`, and the one that finishes LAST reports FIRST. Under
-    last-write-wins the bar reads 100 % from the first report onwards - for three quarters of the
-    work - and a monotonicity assertion passes on that trace happily. So assert the SUM.
-    """
+    """TW-NEST-006 / TW-INV-010: four equal siblings under `gather`, the last finishing first; the
+    root's percent is the sum of their contributions."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
         first, second, third, fourth = reporter.split(1, 1, 1, 1)
 
-        # The last sibling finishes first. This ordering is the whole point of the test.
+        # The last sibling finishes first.
         await fourth.set(percent=100)
         assert await _percent(store, "ns", token) == pytest.approx(25.0), (
             "one of four equal siblings finishing must move the bar to 25%, not to 100%"
@@ -975,14 +872,7 @@ async def test_concurrent_siblings_sum_contributions():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_subtask_mapping_composes_recursively():
-    """TW-NEST-002, spelled out: `r.subtask(10, 25).subtask(50, 100)` covers **17.5-25** of `r`.
-
-    "Covers" is the exact word. The inner reporter owns 7.5 of the root's hundred - the upper half of
-    the fifteen its parent owns - sitting at an offset of 17.5. It does not *start* the root's bar at
-    17.5, because the 10-17.5 slice belongs to its parent's undelegated lower half and nobody has
-    reported that work. Filling both halves is what walks the root from 10 to 25, and each level maps
-    only its own child, which is the whole of why the composition needs no arithmetic of its own.
-    """
+    """TW-NEST-002: `r.subtask(10, 25).subtask(50, 100)` covers 17.5-25 of `r`."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -1000,18 +890,12 @@ async def test_subtask_mapping_composes_recursively():
             "both halves full fills the parent's whole 15-unit range"
         )
 
-    # The offset the rule names, shown from the other side: with only the lower half reported, the
-    # root sits at 7.5, which is where `inner`'s 17.5-25 slice begins once the parent's own 10 is
-    # added back. `inner` is responsible for the run from there to 25 and for nothing below it.
+    # With only the lower half reported, the root is at 7.5: `inner` contributes nothing below it.
 
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_callee_cannot_learn_its_range():
-    """TW-NEST-001: the child has the identical API and no way to read its own range.
-
-    This is what makes a subtask genuinely substitutable for a root reporter: a function that takes
-    a `Reporter` cannot behave differently depending on how much of the bar it owns.
-    """
+    """TW-NEST-001: a subtask exposes the same public members as its parent and none naming its range."""
     store = MemoryStore()
     async with operation(new_token(), session="ns", result_kind="k", store=store) as reporter:
         child = reporter.subtask(10, 25)
@@ -1036,11 +920,7 @@ async def test_split_partitions_in_proportion_to_weights():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_own_percent_and_children_take_the_larger():
-    """TW-NEST-005: own when childless, the sum when parented, the LARGER when both.
-
-    Not the sum of the two: a reporter that both works and delegates would otherwise jump past 100.
-    Not the child sum alone either, or the work it did itself would vanish the moment it delegated.
-    """
+    """TW-NEST-005: own value when childless, the sum when parented, the larger when both."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -1057,7 +937,7 @@ async def test_own_percent_and_children_take_the_larger():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_subtask_done_fills_its_width_without_ending_the_operation():
-    """TW-NEST-008: `sub.done()` is not `operation.done()`, and confusing them ends the job early."""
+    """TW-NEST-008: `sub.done()` fills the subtask's range and does not end the operation."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -1074,7 +954,7 @@ async def test_subtask_done_fills_its_width_without_ending_the_operation():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_subtask_that_never_finishes_keeps_its_partial_contribution():
-    """TW-NEST-009: it leaves its contribution wherever it got to, rather than at zero or full."""
+    """TW-NEST-009: an abandoned subtask's contribution stays where it got to."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -1086,11 +966,7 @@ async def test_a_subtask_that_never_finishes_keeps_its_partial_contribution():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_child_reporting_none_freezes_its_contribution():
-    """TW-NEST-011: indeterminate is not zero.
-
-    A child that goes indeterminate has not un-done its work, and dropping its contribution would
-    walk the bar backwards for a reason no user could act on.
-    """
+    """TW-NEST-011: a child reporting `None` keeps its last contribution."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -1107,7 +983,7 @@ async def test_child_reporting_none_freezes_its_contribution():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_child_cannot_overflow_into_a_sibling_range():
-    """TW-NEST-012. A child reporting 500 % still owns only its own width."""
+    """TW-NEST-012: a child reporting 500 % contributes only its own width."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -1118,7 +994,7 @@ async def test_a_child_cannot_overflow_into_a_sibling_range():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_one_token_is_one_document_however_deep_the_tree():
-    """TW-NEST-013 / TW-INV-020: no wire field expresses the subtask tree, and none may."""
+    """TW-NEST-013 / TW-INV-020: no wire field expresses the subtask tree."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session="ns", result_kind="k", store=store) as reporter:
@@ -1137,11 +1013,7 @@ async def test_one_token_is_one_document_however_deep_the_tree():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_gather_with_split_reporters_do_not_interfere():
-    """TW-NEST-014, named in the specification: siblings get their OWN reporter, explicitly.
-
-    The wrong form shares one ambient binding across a `gather` and lands three branches'
-    contributions on one child's range. This is the right form, and it must total exactly 100.
-    """
+    """TW-NEST-014: siblings under `gather`, each passed its own reporter, total exactly 100."""
     store = MemoryStore()
     token = new_token()
 

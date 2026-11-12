@@ -14,10 +14,8 @@ each has one primitive:
 A process that learns that an execution ended without writing its terminal state - an executor that
 ended it from outside - ends the operation with `end_call()`.
 
-The adapters do nothing but read a framework's request into a `Call` and place these primitives:
-`taskwire.contrib.asgi.track_calls`, `taskwire.contrib.wsgi.track_calls` and
-`taskwire.contrib.viewsets.TaskwireMiddleware`. Both context managers have an asynchronous and a
-synchronous form, as `operation()` has (TW-API-002).
+Both context managers have an asynchronous and a synchronous form, as `operation()` has
+(TW-API-002).
 
 ```python
 async with receive_call(call, dispatch_errors=(BrokerDown,)):
@@ -162,7 +160,7 @@ class Call:
 
     def carried(self) -> dict[str, str]:
         """The values that cross a process boundary: `token` and `session`, as plain strings
-        (TW-CELERY-003). The keyword arguments `taskwire_task` takes."""
+        (TW-CELERY-003)."""
         return {"token": self.token, "session": self.session}
 
     @classmethod
@@ -424,7 +422,7 @@ async def end_call(
     asking_error: Error | None = None,
 ) -> bool:
     """End the operation of a call whose execution ended without writing its terminal state
-    (TW-CALL-008). For the process that observes such an end from outside the execution.
+    (TW-CALL-008).
 
     Writes `failed` with `error`, withdrawing the open dialogs in the same step, when the operation is
     `queued`, `running` or `waiting_input` - only when `queued` with `queued_only`. With an open dialog

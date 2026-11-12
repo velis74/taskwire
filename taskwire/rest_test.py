@@ -1,9 +1,8 @@
-"""Acceptance tests for the framework-free REST handlers (brief §7, tests 38-43 and friends).
+"""Acceptance tests for the framework-free REST handlers.
 
-The handlers are plain async functions of `(client, token) -> (status, payload)` (TW-REST-001), so
-nothing here starts a server, imports a framework or opens a socket. The one test that must observe
-*routing* rather than a handler drives `taskwire.contrib.asgi.app()` with a hand-written
-scope/receive/send, because route ordering is a property of the adapter and of nothing else.
+The handlers are async functions of a `Client` and the path parameters that return
+`(status, payload)` (TW-REST-001); nothing here starts a server. Tests of routing drive
+`taskwire.contrib.asgi.app()` with a hand-written scope/receive/send.
 """
 
 from __future__ import annotations
@@ -30,17 +29,12 @@ NS_B = "account-9"
 
 PREFIX = "/taskwire"
 
-# A syntactically valid UUID that no test ever writes a document for. TW-REST-005: no endpoint may
-# create a token, so this one stays unknown however often it is asked for.
+# A well-formed UUID no test writes a document for; no endpoint creates a token (TW-REST-005).
 UNCLAIMED_TOKEN = "9f0c1b2a-3d4e-4f60-8a91-b2c3d4e5f607"
 
 
 class CountingStore(MemoryStore):
-    """A `MemoryStore` that records every read it is asked to perform.
-
-    Used by `test_malformed_token_rejected_before_store`: "rejected before the store" is a claim
-    about a call that must never happen, and the only way to assert a non-event is to count.
-    """
+    """A `MemoryStore` that records every `snapshot` and `list_operations` call."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -62,7 +56,7 @@ class CountingStore(MemoryStore):
 
 @pytest.fixture
 def store():
-    """A configured store, torn down so no test leaks global wiring into the next one."""
+    """A configured `MemoryStore`; the configuration is reset afterwards."""
     memory = MemoryStore()
     taskwire.configure(store=memory, session_resolver=lambda _request: NS_A)
     yield memory
@@ -89,12 +83,7 @@ async def seed(
     title: Text | None = None,
     connection: str | None = None,
 ) -> str:
-    """Write one operation's document straight into the store.
-
-    The REST layer is what is under test here, so the documents are placed rather than produced by a
-    `Reporter` - that keeps the arrangement of each case explicit and independent of reporter
-    behaviour that has its own tests.
-    """
+    """Commit one operation's document directly to the store, without a `Reporter`."""
     progress = Progress(
         state=state,
         percent=percent,
@@ -124,7 +113,7 @@ def keys_anywhere(payload: Any) -> set[str]:
 
 
 async def asgi_get(application: Any, path: str, *, query: bytes = b"") -> tuple[int, dict[str, Any]]:
-    """Drive an ASGI application by hand: no server, no framework, no client library."""
+    """Send one GET to an ASGI application and return the status and the decoded JSON body."""
     sent: list[dict[str, Any]] = []
 
     async def receive() -> dict[str, Any]:  # pragma: no cover - a GET has no body to read
@@ -147,18 +136,12 @@ async def asgi_get(application: Any, path: str, *, query: bytes = b"") -> tuple[
     return start["status"], json.loads(body.decode("utf-8"))
 
 
-# --------------------------------------------------------------------------- 38
+# --------------------------------------------------------------------------- foreign token
 
 
 async def test_foreign_token_returns_404_not_403(store):
-    """TW-SEC-002: a foreign token is 404, never 403.
-
-    A 403 would confirm that the token exists in somebody's namespace, which turns the per-token
-    endpoint into an enumeration oracle: a caller walking the token space could sort the whole space
-    into "exists elsewhere" and "does not exist" without ever being allowed to read one. The 404 for
-    a foreign token is therefore indistinguishable, byte for byte, from the 404 for a token nobody
-    ever minted.
-    """
+    """TW-SEC-002: a foreign token is 404, never 403, with the same status and body as an unknown
+    token."""
     token = await seed(store, NS_A, taskwire.new_token())
 
     owner_status, _owner_payload = await get_snapshot(Client(session=NS_A), token)
@@ -174,17 +157,12 @@ async def test_foreign_token_returns_404_not_403(store):
     )
 
 
-# --------------------------------------------------------------------------- 39
+# --------------------------------------------------------------------------- private token
 
 
 async def test_private_token_is_readable_by_any_caller_of_its_namespace(store):
-    """TW-SEC-003 and TW-PRIV-002: privacy is not authorization.
-
-    A private operation is unlisted, not unreachable. The namespace is the only authorization scope,
-    so a second client of the same namespace that holds the token reads it in full - including the
-    `origin_connection` of the connection that started it, which is a scope for fan-out and never a
-    scope for reach.
-    """
+    """TW-SEC-003, TW-PRIV-002: a private operation is in no register, and any client of its
+    namespace holding the token reads it in full, `origin_connection` included."""
     starter = Client(session=NS_A, connection="conn-a")
     other = Client(session=NS_A, connection="conn-b")
     token = await seed(store, NS_A, taskwire.new_token(), result_kind=None, connection="conn-a")
@@ -203,39 +181,29 @@ async def test_private_token_is_readable_by_any_caller_of_its_namespace(store):
     assert foreign_status == 404, "reach is still bounded by the namespace"
 
 
-# --------------------------------------------------------------------------- 40
+# --------------------------------------------------------------------------- malformed token
 
 
 async def test_malformed_token_rejected_before_store(counting_store):
-    """TW-REST-006: a token that is not a well-formed UUID never reaches the store.
-
-    Counting is the only way to assert a call that must not happen. Without this the token endpoint
-    is a free store read per guess, and a scan of the malformed token space costs the deployment one
-    round trip each.
-    """
+    """TW-REST-006: a token that is not a well-formed UUID is 404 with no store read."""
     for malformed in ("operations", "not-a-uuid", "", "../../etc/passwd", "1234"):
         status, _payload = await get_snapshot(Client(session=NS_A), malformed)
         assert status == 404, f"{malformed!r} must be rejected"
 
     assert counting_store.reads == 0, f"a malformed token reached the store: {counting_store.snapshot_keys!r}"
 
-    # The counter is real: a well-formed token does reach the store, exactly once.
+    # A well-formed token is read once.
     status, _payload = await get_snapshot(Client(session=NS_A), UNCLAIMED_TOKEN)
     assert status == 404
     assert counting_store.snapshot_keys == [make_key(NS_A, UNCLAIMED_TOKEN)]
 
 
-# --------------------------------------------------------------------------- 41
+# --------------------------------------------------------------------------- register route
 
 
 async def test_the_register_is_the_prefix_itself(counting_store):
-    """TW-REST-004: `GET {prefix}` is the register, with no segment after the prefix.
-
-    Driven through `taskwire.contrib.asgi.app()`, which is framework-free and needs nothing
-    installed, because routing lives in the adapter and not in a handler. The collection at the
-    collection's own URL is also what leaves nothing after the prefix for a token to be mistaken
-    for.
-    """
+    """TW-REST-004: through the ASGI adapter, `GET {prefix}` is the register and is never read as a
+    token; `GET {prefix}/{token}` still reaches the snapshot."""
     await seed(counting_store, NS_A, taskwire.new_token())
     application = asgi_app(PREFIX)
 
@@ -250,25 +218,19 @@ async def test_the_register_is_the_prefix_itself(counting_store):
     assert counting_store.listed_namespaces == [NS_A], "the register endpoint must list the namespace"
     assert counting_store.snapshot_keys == [], "the prefix itself must never be read as a token"
 
-    # The token route is still reachable through the same adapter, so the ordering is what separates
-    # them rather than the token route being broken.
+    # The token route answers through the same adapter.
     token = payload["operations"][0]["token"]
     token_status, token_payload = await asgi_get(application, f"{PREFIX}/{token}")
     assert token_status == 200
     assert token_payload["token"] == token
 
 
-# --------------------------------------------------------------------------- 42
+# --------------------------------------------------------------------------- progress_delivery
 
 
 async def test_snapshot_has_no_progress_delivery(store):
-    """TW-REST-007: the per-token GET carries no `progress_delivery`.
-
-    Delivery is a fact about a **pair** - one client and one operation - not about a document. The
-    same operation is delivered to one connection and suppressed for another, so a field on the
-    document would have to be a lie for one of them. It belongs on the register row, which is
-    rendered for a known caller, and it appears there.
-    """
+    """TW-REST-007: the per-token GET carries no `progress_delivery`; the register row carries it,
+    computed by `push_filter` for the client."""
     token = await seed(store, NS_A, taskwire.new_token())
     client = Client(session=NS_A, connection="conn-a")
 
@@ -278,16 +240,14 @@ async def test_snapshot_has_no_progress_delivery(store):
         "progress_delivery is a fact about a pair, and the snapshot document names only one of them"
     )
 
-    # ... while the register row, which does describe a pair, carries it.
+    # The register row carries it.
     _status, register = await get_operations(client)
     entry = register["operations"][0]
     assert entry["progress_delivery"] is True
     assert "progress_delivery" not in entry["snapshot"], "not even the nested snapshot may carry it"
 
-    # And the row's value is *computed for the pair* rather than stamped: a `push_filter` that
-    # suppresses this operation flips the register row to False while the document is unchanged.
-    # The shipped predicate answers True for every entry, so a `summarize()` that hardcoded the
-    # literal would satisfy the assertion above - it would not satisfy this one.
+    # A `push_filter` that suppresses the operation sets the row's value to False; the document is
+    # unchanged.
     taskwire.configure(push_filter=lambda _client, operation: operation.token != token)
     _status, suppressed = await get_operations(client)
     assert suppressed["operations"][0]["progress_delivery"] is False
@@ -297,39 +257,29 @@ async def test_snapshot_has_no_progress_delivery(store):
     assert unchanged["progress"] == snapshot_payload["progress"], "the delivery decision changes no document"
 
 
-# --------------------------------------------------------------------------- 43
+# --------------------------------------------------------------------------- poll advice
 
 
 async def test_poll_after_ms_is_never_below_the_base_interval(store):
-    """TW-REST-014: `poll_after_ms` may only ever slow a client down.
-
-    Checked across all three shapes of register - an empty one, one whose entry stores no active
-    state, and one with something active - because the failure this rule prevents is a miscomputed
-    or zeroed advice value turning into a request flood against the server that emitted it. The client-side
-    clamp is the normative one, but a server that advertises `0` is a server asking to be flooded.
-    """
+    """TW-REST-014: `poll_after_ms` is never below the base interval, for an empty register, one
+    with a stored but inactive state, and one with active entries."""
     empty_client = Client(session=NS_A)
 
-    # Empty register: the heartbeat cadence, never zero and never "stop polling".
+    # Empty register: the ceiling.
     _status, empty = await get_operations(empty_client)
     assert empty["operations"] == []
     assert empty["poll_after_ms"] == CEILING_POLL_MS
     assert empty["poll_after_ms"] >= BASE_POLL_MS
 
-    # A stored `waiting_input` holding neither an open dialog nor an uncollected result: nothing on
-    # this document is queued or running, yet its *derived* state is `running` (TW-REG-004,
-    # TW-PROG-010), and that is the reading both the advice and the aggregate take.
-    #
-    # Only the rule is asserted here, deliberately, and not the value the implementation happens to
-    # produce. Pinning a number would freeze the derivation rather than TW-REST-014's bound, and the
-    # derivation is what carries TW-REST-010's "ceiling while a dialog is open".
+    # Derived state is `running` (TW-REG-004, TW-PROG-010); only the bounds are asserted
+    # (TW-REST-014).
     idle_token = await seed(store, NS_A, taskwire.new_token(), state=ProgressState.WAITING_INPUT)
     _status, idle = await get_operations(empty_client)
     assert len(idle["operations"]) == 1
     assert BASE_POLL_MS <= idle["poll_after_ms"] <= CEILING_POLL_MS
     assert idle["aggregate"]["data"]["running"] == 1, "the derived state of this entry, for the record"
 
-    # Active register: the base interval, and not one millisecond below it.
+    # Active register: the base interval.
     await seed(store, NS_A, taskwire.new_token(), state=ProgressState.RUNNING)
     await seed(store, NS_A, taskwire.new_token(), state=ProgressState.QUEUED)
     _status, active = await get_operations(empty_client)
@@ -345,22 +295,18 @@ async def test_poll_after_ms_is_never_below_the_base_interval(store):
         assert snapshot_payload["poll_after_ms"] >= BASE_POLL_MS
 
 
-# --------------------------------------------------------------------------- extras
+# --------------------------------------------------------------------------- unknown token, opt-out, whole register
 
 
 async def test_unknown_token_returns_404(store):
-    """TW-REST-005: no endpoint may create a token; an unclaimed one is simply unknown.
-
-    The 404 must also be inert. A GET that lazily materialised a document would turn every guess into
-    a write and would put an operation nobody started into the asker's namespace.
-    """
+    """TW-REST-005: an unclaimed token is 404, and asking for it creates no document."""
     client = Client(session=NS_A)
 
     status, payload = await get_snapshot(client, UNCLAIMED_TOKEN)
     assert status == 404
     assert payload == {"detail": "taskwire.not_found"}
 
-    # Nothing was created by asking: a second ask is still 404 and the register is still empty.
+    # A second ask is still 404 and the register is still empty.
     again_status, _again = await get_snapshot(client, UNCLAIMED_TOKEN)
     assert again_status == 404
     assert await store.snapshot(make_key(NS_A, UNCLAIMED_TOKEN)) is None
@@ -369,20 +315,8 @@ async def test_unknown_token_returns_404(store):
 
 
 async def test_session_resolver_returning_none_is_404(counting_store):
-    """TW-AMB-009 and the brief's stated choice: 404, never 401 or 403.
-
-    `session_resolver` returning `None` is an application opting a request out of taskwire entirely -
-    not "nobody is logged in", because an anonymous visitor still has a session. There is nothing to
-    authenticate against and nothing to forbid, so there is no namespace, no key and no store access
-    at all; the only honest answer is that there is nothing here.
-
-    The resolver is exercised rather than simulated: `session_resolver` is the only producer of a
-    namespace (TW-AMB-008), so the request is driven through the adapter with a resolver that
-    returns `None`. Handing the handlers a `Client(session=None)` built by hand would leave the one
-    place that could paper the `None` over - the adapter, which is where a `or "anonymous"` fallback
-    would be written - completely untested, and such a fallback serves one namespace's operations to
-    a caller the application opted out.
-    """
+    """TW-AMB-009: a `session_resolver` returning None yields 404, never 401 or 403, with no store
+    read, through the adapter and the handlers."""
     taskwire.configure(session_resolver=lambda _request: None)
     application = asgi_app(PREFIX)
 
@@ -397,8 +331,7 @@ async def test_session_resolver_returning_none_is_404(counting_store):
     assert register_payload == {"detail": "taskwire.not_found"}
     assert counting_store.reads == 0, "TW-SEC-001: no code path reaches the store without a namespace"
 
-    # The handlers say the same thing when called directly, so the answer is the layer's and not the
-    # adapter's alone.
+    # The handlers called directly answer the same.
     opted_out = Client(session=None)  # type: ignore[arg-type]
     assert await get_snapshot(opted_out, UNCLAIMED_TOKEN) == (404, {"detail": "taskwire.not_found"})
     assert await get_operations(opted_out) == (404, {"detail": "taskwire.not_found"})
@@ -406,13 +339,8 @@ async def test_session_resolver_returning_none_is_404(counting_store):
 
 
 async def test_register_always_returns_everything(store):
-    """TW-REG-003: the register endpoint always returns the whole register.
-
-    The handler takes no parameter by which a caller could ask for less - which is also why there is
-    none that could name another namespace. Asserted on the signature itself, because a filter
-    parameter is exactly the kind of convenience that gets added later and is only ever one default
-    away from being an authorization bypass.
-    """
+    """TW-REG-003: the register endpoint returns the whole register of the client's namespace; the
+    handler takes only the client, and a query string changes nothing."""
     parameters = list(inspect.signature(get_operations).parameters)
     assert parameters == ["client"], f"the register handler grew a parameter: {parameters!r}"
 
@@ -434,19 +362,14 @@ async def test_register_always_returns_everything(store):
     assert sorted(entry["token"] for entry in register["operations"]) == sorted(tokens)
     assert register["aggregate"]["data"]["total"] == 3
 
-    # A query string an adapter might be tempted to forward changes nothing: the ASGI adapter reads
-    # none, and the handler has nowhere to put one.
+    # The ASGI adapter ignores the query string.
     _status, unfiltered = await asgi_get(asgi_app(PREFIX), PREFIX, query=b"limit=1&state=running")
     assert sorted(entry["token"] for entry in unfiltered["operations"]) == sorted(tokens)
 
 
 async def test_register_entry_carries_the_whole_snapshot(store):
-    """TW-REG-002: each entry carries the whole `Snapshot`.
-
-    One request must render an entire operations UI with no follow-up per-token GETs. The assertion
-    is the strong form: the embedded snapshot is what `GET {prefix}/{token}` would have returned,
-    field for field, apart from the timestamp stamped at read time.
-    """
+    """TW-REG-002: each entry carries the whole `Snapshot`, equal to `GET {prefix}/{token}` apart
+    from `server_time`."""
     token = await seed(
         store,
         NS_A,
@@ -467,7 +390,7 @@ async def test_register_entry_carries_the_whole_snapshot(store):
     direct.pop("server_time")
     assert embedded == direct, "the register entry must be the per-token GET, not a summary of it"
 
-    # Everything a row needs is present without a second request.
+    # The fields a row renders.
     assert embedded["v"] == 2
     assert embedded["token"] == token
     assert isinstance(embedded["rev"], int)

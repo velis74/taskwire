@@ -1,8 +1,7 @@
-"""A bare ASGI adapter, so the REST implementation runs with **no** web framework at all.
+"""A bare ASGI adapter for the REST implementation, with no web framework.
 
-This is the proof that TW-REST-001 is real rather than aspirational: `taskwire.rest` is reachable
-over HTTP with nothing installed but Python. It is also the smallest complete example of what an
-adapter has to do - build a `Client`, call a handler, serialise the result.
+Serves `taskwire.rest` over HTTP with no dependency outside the standard library (TW-REST-001): it
+builds a `Client`, calls a handler and serialises the result.
 
 `track_calls` is the call-tracking adapter for any ASGI application (TW-CALL-104).
 """
@@ -79,8 +78,7 @@ def app(prefix: str | None = None) -> Callable[..., Any]:
             status, payload = 404, {"detail": NOT_FOUND}
         else:
             rest = path[len(mount) :].strip("/")
-            # The register is the collection and lives at the collection's own URL (TW-REST-004), so
-            # the prefix with nothing after it is the whole of the test.
+            # The prefix itself is the register (TW-REST-004).
             if rest:
                 status, payload = await get_snapshot(client, rest)
             else:
