@@ -2,12 +2,10 @@
 
 Imports `redis`; nothing in `taskwire/` outside `contrib` may (TW-CORE-006).
 
-**Five operations are Lua scripts** (TW-STORE-013): `commit`, `put_dialog`, `resolve_dialog`,
-`withdraw_dialogs` and `release_result`. Each is a read-modify-write that has to be indivisible, and
-Redis gives that only inside a script. Doing them as WATCH/MULTI would be a retry loop whose failure
-mode is a lost dialog answer under exactly the concurrency the design is about.
+Five operations are Lua scripts (TW-STORE-013): `commit`, `put_dialog`, `resolve_dialog`,
+`withdraw_dialogs` and `release_result`. Each is a read-modify-write that runs atomically.
 
-The keyspace is fixed by TW-KEY-001 and nothing may be added to it:
+The keyspace is fixed by TW-KEY-001:
 
 | Key | Type | Contents |
 |---|---|---|
@@ -16,13 +14,11 @@ The keyspace is fixed by TW-KEY-001 and nothing may be added to it:
 | `tw:{ns}:{token}:d:{did}:reply` | list | wakeup channel for a blocked worker |
 | `tw:{ns}:{token}:cancel` | string | `"1"` when cancel requested |
 | `tw:{ns}:{token}:rev` | integer | seeded per TW-REV-002, `INCR` on every commit |
-| `tw:{ns}:index` | sorted set | token -> `created_at` ms, **shared operations only** |
-| `tw:{ns}:asking` | set | tokens holding at least one **open** dialog |
+| `tw:{ns}:index` | sorted set | token -> `created_at` ms, shared operations only |
+| `tw:{ns}:asking` | set | tokens holding at least one open dialog |
 | `twx:{ns}` | pub/sub | one channel per namespace |
 
-There is deliberately **no `:seen` key, no watcher list and no per-tab bookkeeping** (TW-KEY-002),
-and no per-token channel (TW-BP-001/002): a per-token subscription has a startup race, it leaks, and
-it would make the fan-out unit smaller than the security unit.
+No other keys exist (TW-KEY-002), and there is no per-token channel (TW-BP-001, TW-BP-002).
 """
 
 from __future__ import annotations
@@ -55,9 +51,8 @@ logger = logging.getLogger("taskwire.redis")
 _BLPOP_SECONDS = 5
 """How long `await_dialog` blocks per iteration (TW-BP-008).
 
-A liveness device inside the store, never a deadline offered to `ask()` - the loop it bounds has no
-overall deadline. A lost notification costs this much latency rather than hanging forever, which is
-why the loop re-reads the dialog document on every wakeup *and* on every expiry.
+Not a deadline for `ask()`: the loop has no overall deadline, and re-reads the dialog document on
+every wakeup and on every expiry, so a lost notification costs at most this much latency.
 """
 
 
@@ -65,8 +60,7 @@ def _blpop_seconds(client: Any) -> float:
     """The `BLPOP` timeout for `client`: `_BLPOP_SECONDS`, or half its `socket_timeout` if that is less.
 
     A redis-py client aborts a read that outlasts its `socket_timeout` (5 s by default in redis-py 8)
-    with `TimeoutError`, and a blocking command is no exception. A `BLPOP` therefore has to return
-    before the socket timeout does.
+    with `TimeoutError`, blocking commands included, so a `BLPOP` has to return before it.
     """
     pool = getattr(client, "connection_pool", None)
     socket_timeout = pool.connection_kwargs.get("socket_timeout") if pool is not None else None
@@ -100,9 +94,8 @@ if existing then
   doc.created_at = previous.created_at
 end
 
--- TW-REV-002: max(now_ms, previous + 1). Never seeded from zero: a key that expired under a live
--- operation would otherwise resurrect below the client's last-seen value and every envelope from
--- then on would be dropped by client dedup - a bar frozen at 97% with nothing logged.
+-- TW-REV-002: max(now_ms, previous + 1). After the rev key expires, now_ms keeps rev above the
+-- client's last-seen value; a lower rev is dropped by client dedup.
 local previous_rev = tonumber(redis.call('GET', rev_key) or '0')
 local rev = now_ms
 if previous_rev + 1 > rev then rev = previous_rev + 1 end
@@ -111,11 +104,8 @@ redis.call('SET', rev_key, rev, 'EX', ttl)
 redis.call('SET', progress_key, cjson.encode(doc), 'EX', ttl)
 if redis.call('EXISTS', cancel_key) == 1 then redis.call('EXPIRE', cancel_key, ttl) end
 
--- TW-KEY-003: indexed only if shared, and the decision is read off the STORED document.
---
--- A terminal document is never in the register (TW-REG-007). De-indexing it here rather than in a
--- second call from the caller is what makes that true of every read: two steps would leave a window
--- in which a `failed` row is listed, and the register is read continuously.
+-- TW-KEY-003: indexed only if shared, decided on the stored document. A terminal document is
+-- de-indexed in the same script, so no read lists it (TW-REG-007).
 if doc.state == 'done' or doc.state == 'failed' or doc.state == 'cancelled' then
   redis.call('ZREM', index_key, token)
 elseif doc.result_kind ~= nil and doc.result_kind ~= cjson.null then
@@ -132,8 +122,8 @@ local did, body, ttl, now_ms, token = ARGV[1], ARGV[2], tonumber(ARGV[3]), tonum
 
 redis.call('HSET', dialogs_key, did, body)
 redis.call('EXPIRE', dialogs_key, ttl)
--- TW-KEY-004: the reply list carries the operation's own TTL. One that died before its dialog would
--- silently convert an answered dialog into an unanswerable one.
+-- TW-KEY-004: the reply list carries the operation's own TTL. A reply list that expires before
+-- its dialog leaves an answered dialog with no reply for the worker.
 redis.call('EXPIRE', reply_key, ttl)
 
 local previous_rev = tonumber(redis.call('GET', rev_key) or '0')
@@ -166,8 +156,7 @@ local rev = now_ms
 if previous_rev + 1 > rev then rev = previous_rev + 1 end
 redis.call('SET', rev_key, rev, 'KEEPTTL')
 
--- Wake the blocked worker. RPUSH rather than PUBLISH: a message published before the worker reached
--- its wait would be lost, and the worker would then wait forever on a question already answered
+-- Wake the blocked worker. A list keeps the reply for a worker that has not reached its wait yet
 -- (TW-BP-007).
 redis.call('RPUSH', reply_key, reply_body)
 
@@ -193,16 +182,14 @@ for i = 1, #all, 2 do
   if dialog.state == 'open' then
     dialog.state = 'cancelled'
     redis.call('HSET', dialogs_key, did, cjson.encode(dialog))
-    -- The sentinel is what wakes a worker blocked in ask(); with dialog timeouts gone it is the
-    -- only thing that can (TW-CANCEL-007).
+    -- The sentinel wakes a worker blocked in ask(); dialogs have no timeout (TW-CANCEL-007).
     redis.call('RPUSH', reply_prefix .. did .. ':reply', sentinel)
     table.insert(withdrawn, did)
   end
 end
 
 if #withdrawn > 0 then
-  -- One bump for the whole withdrawal: it is a single change of the operation's situation, and rev
-  -- labels the document rather than the dialogs.
+  -- One rev bump for the whole withdrawal.
   local previous_rev = tonumber(redis.call('GET', rev_key) or '0')
   local rev = now_ms
   if previous_rev + 1 > rev then rev = previous_rev + 1 end
@@ -238,8 +225,7 @@ local rev = now_ms
 if previous_rev + 1 > rev then rev = previous_rev + 1 end
 redis.call('SET', rev_key, rev, 'KEEPTTL')
 
--- The write that ends an operation takes it out of the register, wherever that write happens
--- (TW-REG-007). This one ends it as surely as a terminal commit does.
+-- The release ends the operation, so it leaves the register (TW-REG-007).
 redis.call('ZREM', index_key, token)
 return released
 """
@@ -259,11 +245,7 @@ class _Scripts:
 
 
 class RedisStore(TaskwireStore):
-    """The cross-process store. Passes the exported conformance suite unchanged (TW-STORE-011).
-
-    "Unchanged" is the contract: `RedisStore` gets no weakened copy of the suite. If a rule in it
-    cannot be satisfied by a real backend then the rule is wrong and the specification changes.
-    """
+    """The cross-process store. Passes the exported conformance suite unchanged (TW-STORE-011)."""
 
     def __init__(self, url: str = "redis://127.0.0.1:6379/0", *, client: Any = None) -> None:
         """A store on the Redis at `url`, or on `client`.
@@ -296,8 +278,8 @@ class RedisStore(TaskwireStore):
         closer = loop.create_task(self._close_with_loop(loop, bound), name="RedisStore: close with the loop")
         # A loop that ends without cancelling its tasks destroys this one without a warning.
         closer._log_destroy_pending = False  # type: ignore[attr-defined]
-        # A loop holds its tasks weakly. Unreferenced, this task and the future it waits on are garbage
-        # that a collection destroys while the loop runs, which forgets the client without closing it.
+        # A loop holds its tasks weakly: an unreferenced task is collected while the loop runs, and
+        # the client is then forgotten without being closed.
         bound.closer = closer
         return bound
 
@@ -379,11 +361,7 @@ class RedisStore(TaskwireStore):
         return True
 
     async def request_cancel(self, key: str) -> int:  # noqa: A002
-        """TW-CANCEL-001: sticky, and never cleared.
-
-        Withdrawing the open dialogs in the same breath is TW-CANCEL-007: with no dialog timeouts,
-        the sentinel this pushes is the only thing that can wake a worker blocked in `ask()`.
-        """
+        """TW-CANCEL-001: sticky, and never cleared. Also withdraws the open dialogs (TW-CANCEL-007)."""
         k = self._keys(key)
         if not await self._redis.exists(k["progress"]):
             return 0
@@ -443,7 +421,7 @@ class RedisStore(TaskwireStore):
         `reader.dispatch` in this process instead, and nothing is published on `twx:{ns}`
         (TW-EVT-002).
 
-        MUST NOT raise (TW-STORE-008): the state is already durable by the time this runs.
+        Never raises (TW-STORE-008).
         """
         if getattr(configured.transport, "crosses_processes", False):
             from .. import reader
@@ -512,8 +490,7 @@ class RedisStore(TaskwireStore):
             snapshots.append(snapshot)
 
         if stale:
-            # Lazy pruning of the index structures is what TW-STORE-006 requires of a listing read;
-            # it is not a read side effect on the documents, which are already gone.
+            # TW-STORE-006: lazy pruning of the index structures; the documents are already gone.
             pipe = self._redis.pipeline()
             pipe.zrem(index_key, *stale)
             pipe.srem(asking_key, *stale)
@@ -552,11 +529,9 @@ class RedisStore(TaskwireStore):
         return list(withdrawn or [])
 
     async def await_dialog(self, key: str, did: str) -> DialogReply:  # noqa: A002
-        """`BLPOP` with a bounded internal timeout, in a loop with **no overall deadline** (TW-BP-008).
+        """`BLPOP` with a bounded internal timeout, in a loop with no overall deadline (TW-BP-008).
 
-        Pub/sub would be wrong here and TW-BP-007 says why: a message published before the worker
-        reached its wait is simply lost, and the worker would then wait forever on a question that
-        was already answered. A list survives the race.
+        The reply is a list, not pub/sub, so a reply pushed before the wait began is kept (TW-BP-007).
         """
         k = self._keys(key)
         reply_key = f"{k['reply_prefix']}{did}:reply"
@@ -575,7 +550,7 @@ class RedisStore(TaskwireStore):
             popped = await client.blpop([reply_key], timeout=_blpop_seconds(client))
             if popped is not None:
                 return DialogReply.from_dict(json.loads(popped[1])) or DialogReply(button=CANCELLED_BUTTON)
-            # Expired: re-read and wait again. No overall deadline is consumed by this.
+            # Expired: re-read and wait again.
 
     async def release_result(self, key: str) -> Result | None:  # noqa: A002
         k = self._keys(key)
@@ -588,9 +563,7 @@ class RedisStore(TaskwireStore):
         return Result.from_dict(json.loads(released))
 
     def make_reader(self) -> RedisReader:
-        """The lifecycle in `taskwire.reader` looks for this, so an application writes the same
-        startup code whichever store it configured (§5.4).
-        """
+        """A `RedisReader` on this store (§5.4)."""
         return RedisReader(self)
 
     async def aclose(self) -> None:
@@ -612,10 +585,9 @@ class RedisStore(TaskwireStore):
 class RedisReader:
     """The long-lived per-web-process consumer of `twx:{ns}` (TW-CORE-004, TW-BP-005).
 
-    It is the **only** caller of `transport.notify()` in a cross-process deployment, exactly as
-    `MemoryStore.publish` is in a single-process one. A web process subscribes only to the namespaces
-    it currently holds connections for and unsubscribes when it holds none (TW-BP-004) - that is the
-    only discrimination at the channel level, and it is per *process*, never per token or per tab.
+    Dispatches each envelope of the watched namespaces to the transport. A process subscribes to the
+    namespaces it holds connections for and unsubscribes when it holds none; subscriptions are per
+    process, never per token or per tab (TW-BP-004).
     """
 
     def __init__(self, store: RedisStore) -> None:
@@ -643,8 +615,7 @@ class RedisReader:
     async def watch(self, ns: str) -> None:
         """Subscribe this process to `twx:{ns}`.
 
-        Per **process**, never per token or per tab (TW-BP-004): a process subscribes to a namespace
-        because it holds a connection for it, and one subscription serves every connection it holds.
+        One subscription per process serves every connection it holds for `ns` (TW-BP-004).
         """
         self._namespaces.add(ns)
         if self._pubsub is not None:
@@ -653,9 +624,7 @@ class RedisReader:
     async def unwatch(self, ns: str) -> None:
         """Unsubscribe this process from `twx:{ns}`.
 
-        Called once the process holds no more connections for the namespace (TW-BP-004). Skipping it
-        costs no correctness - the envelopes reach nobody - and leaves every process subscribed to
-        every namespace it ever saw.
+        For a process that holds no more connections for the namespace (TW-BP-004).
         """
         self._namespaces.discard(ns)
         if self._pubsub is not None:
@@ -673,6 +642,6 @@ class RedisReader:
                 await reader.dispatch(ns, Envelope.from_dict(json.loads(message["data"])))
             except asyncio.CancelledError:  # pragma: no cover - normal shutdown
                 raise
-            except Exception:  # noqa: BLE001 - a reader that dies stops every push in the process
+            except Exception:  # noqa: BLE001 - the loop survives a failed iteration
                 logger.warning("taskwire: reader iteration failed", exc_info=True)
                 await asyncio.sleep(0.1)

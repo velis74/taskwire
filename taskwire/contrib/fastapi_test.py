@@ -1,9 +1,6 @@
 """Adapter tests for `taskwire.contrib.fastapi`.
 
-fastapi is an **optional** extra (`taskwire[fastapi]`). The rest of the suite is required to pass
-with no extra installed at all, so this whole module skips - never errors - when the import is
-unavailable. That is why `pytest.importorskip` stands above the fastapi imports and why those
-imports carry `# noqa: E402`.
+fastapi is an optional extra (`taskwire[fastapi]`); the module skips when it is not installed.
 """
 
 from __future__ import annotations
@@ -30,26 +27,18 @@ from taskwire.contrib import (
 from taskwire.contrib.fastapi import build_client, CONNECTION_HEADER, router  # noqa: E402
 
 USER_HEADER = "X-Test-User"
-"""The application's own way of naming a caller. Not a taskwire header - taskwire never learns how
-a namespace is derived, only what `session_resolver` returns (TW-AMB-008)."""
+"""The test application's caller header, read only by its `session_resolver` (TW-AMB-008)."""
 
 
 def _resolve_session(request: Request) -> str | None:
-    """A stand-in application resolver: the account when known, the anonymous session otherwise.
-
-    It never returns `None` here - anonymity is not a reason to (TW-AMB-009).
-    """
+    """The account's namespace when known, the anonymous one otherwise; never `None` (TW-AMB-009)."""
     return "ns:" + request.headers.get(USER_HEADER, "anon")
 
 
 @pytest.fixture
 def store() -> Iterator[taskwire.MemoryStore]:
-    """A configured process, torn back down again - `configured` is a module-level singleton.
-
-    `reset_configuration()` restores the callables but deliberately does not touch `settings`, so the
-    prefix is also put back by hand: a test that left `rest_prefix` mutated would make every other
-    module's default-prefix assertion ordering-dependent.
-    """
+    """A configured process, reset afterwards. `reset_configuration()` does not reset `settings`, so
+    `rest_prefix` is restored by hand."""
     taskwire.reset_configuration()
     previous_prefix = taskwire.settings.rest_prefix
     memory = taskwire.MemoryStore()
@@ -60,12 +49,7 @@ def store() -> Iterator[taskwire.MemoryStore]:
 
 
 def _make_app(memory: object) -> FastAPI:
-    """The demo application shape: the router mounted, plus two routes of the application's own.
-
-    `/queue` and `/start` are what an ordinary application writes. Both build their `Client` with
-    the adapter's `build_client`, which is the point of TW-REST-002: the request that *starts* an
-    operation reads the same header the polling endpoints read.
-    """
+    """The router, plus `/queue` and `/start`, which build their `Client` with `build_client` (TW-REST-002)."""
     app = FastAPI()
     app.include_router(router())
 
@@ -93,9 +77,7 @@ def _make_app(memory: object) -> FastAPI:
             result_kind="report",
             store=memory,
         ):
-            # Read the opening document from inside the block: `origin_session` and
-            # `origin_connection` are what this asserts, and inside the block is where they are
-            # written (TW-PROG-006).
+            # `origin_session` and `origin_connection` are written by the opening commit (TW-PROG-006).
             snapshot = await memory.snapshot(taskwire.key(client.session, token))
         return {
             "token": token,
@@ -107,12 +89,9 @@ def _make_app(memory: object) -> FastAPI:
 
 
 def test_router_builds_client_from_request(store: object) -> None:
-    """TW-REST-002: session from `session_resolver`, connection from `X-Taskwire-Connection`.
-
-    And the same header on the request that *starts* an operation, because that is where
-    `origin_connection` comes from (TW-PRIV-001). One header, two purposes, and there must not be
-    a second (TW-PROG-007 forbids the tab header that would have been it).
-    """
+    """TW-REST-002: session from `session_resolver`, connection from `X-Taskwire-Connection`, on the
+    polling request and on the request that starts an operation (`origin_connection`, TW-PRIV-001).
+    No other taskwire header exists (TW-PROG-007)."""
     # 1. `build_client` itself: the resolver fills `session`, the header fills `connection`, and the
     #    request travels along as `request`.
     scope = {
@@ -147,40 +126,30 @@ def test_router_builds_client_from_request(store: object) -> None:
         assert seen, "the register was built without the Client the adapter assembled"
         assert seen[-1].session == "ns:alice"
         assert seen[-1].connection == "conn-42"
-        # The request travels too, and it is the *polling* request - the third field of TW-REST-002
-        # reaching the register, not merely a field set on a hand-built Client.
+        # The Client carries the polling request (TW-REST-002).
         assert seen[-1].request.url.path == "/taskwire"
 
-        # A caller of the same namespace who names no connection is still a caller; the register is
-        # built for it with `connection=None` rather than the previous request's value.
+        # A caller without the connection header gets a Client with `connection=None`.
         seen.clear()
         assert http.get("/taskwire", headers={USER_HEADER: "alice"}).status_code == 200
         assert seen, "the second read built no Client at all"
         assert seen[-1].connection is None
 
-        # 3. The write path: the very same header, on the request that starts an operation, is what
-        #    `origin_connection` is fixed from.
+        # 3. The write path: the header on the starting request sets `origin_connection`.
         started = http.post("/start", headers=headers)
         assert started.status_code == 200
         assert started.json()["origin_session"] == "ns:alice"
         assert started.json()["origin_connection"] == "conn-42"
 
-        # A caller that sends no connection header still gets an operation; it is simply anchored to
-        # no connection, which is every caller in a deployment with no socket (TW-PRIV-003). The
-        # session is unaffected - the two fields have separate sources (TW-AMB-008).
+        # Without the header `origin_connection` is None and `origin_session` is unaffected
+        # (TW-PRIV-003, TW-AMB-008).
         anonymous = http.post("/start", headers={USER_HEADER: "alice"})
         assert anonymous.status_code == 200
         assert anonymous.json()["origin_session"] == "ns:alice"
         assert anonymous.json()["origin_connection"] is None
 
-    # 4. There must not be a third header, and `X-Taskwire-Tab` in particular does not exist
-    #    (TW-PROG-007): the server never learns a tab id, because one that did would grow a per-tab
-    #    index nobody could bound.
-    #
-    #    Scanned in `taskwire/headers.py` rather than in this adapter, because that is now the only
-    #    module that spells a header name - every adapter imports from it. One place to add a third
-    #    one means one place to catch it, where before there were four modules and three of them
-    #    could have grown one unnoticed.
+    # 4. No third header, in particular no `X-Taskwire-Tab` (TW-PROG-007).
+    #    `taskwire/headers.py` is the only module that spells a header name.
     from taskwire import headers as header_names
 
     source = Path(header_names.__file__).read_text(encoding="utf-8")
@@ -188,16 +157,16 @@ def test_router_builds_client_from_request(store: object) -> None:
     assert named == {"x-taskwire-connection", "x-taskwire-token"}
     assert CONNECTION_HEADER == "X-Taskwire-Connection"
 
-    # And no adapter re-spells one, which is how the four copies drifted apart in the first place.
+    # No adapter spells a header name.
     for module in (adapter, asgi_adapter, viewset_adapter):
         spelled = re.findall(r"X-Taskwire-[A-Za-z-]+", Path(module.__file__).read_text(encoding="utf-8"))
         assert spelled == [], f"{module.__name__} spells a header name instead of importing it"
 
 
 def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) -> None:
-    """TW-REST-003: the default prefix is `/taskwire`, and TW-REST-004's first two rows are mounted."""
-    # The *packaged* default, read off a fresh `Settings` rather than the process singleton, so this
-    # cannot pass merely because something earlier in the session happened to leave it right.
+    """TW-REST-003: the default prefix is `/taskwire`; TW-REST-004's six endpoints are mounted under it
+    and under a custom prefix, and answer through the adapter."""
+    # The packaged default, read off a fresh `Settings`.
     assert taskwire.Settings().rest_prefix == "/taskwire"
     api = router()
     assert {route.path for route in api.routes} == {
@@ -224,10 +193,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         assert snapshot.json()["token"] == token
         assert snapshot.json()["progress"]["state"] == "queued"
 
-        # TW-REST-004's failure column, through the adapter. The handler returns `(status, payload)`
-        # and translating that pair into a response is the adapter's second and only other job, so a
-        # `404` from `rest` must arrive as an HTTP 404 - an adapter that returned the payload and
-        # left the status at 200 would satisfy every assertion above.
+        # TW-REST-004's failure column: a `404` from `rest` arrives as an HTTP 404.
         unknown = http.get(f"/taskwire/{taskwire.new_token()}", headers=headers)
         assert unknown.status_code == 404
         foreign = http.get(f"/taskwire/{token}", headers={USER_HEADER: "mallory"})
@@ -235,7 +201,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
         malformed = http.get("/taskwire/not-a-uuid", headers=headers)
         assert malformed.status_code == 404
 
-    # The prefix is an argument, not a constant, and every route moves with it.
+    # Every route moves with the prefix argument.
     custom = router(prefix="/tw")
     assert {route.path for route in custom.routes} == {
         "/tw",
@@ -248,12 +214,7 @@ def test_router_mounts_both_endpoints_under_the_default_prefix(store: object) ->
 
 
 def test_the_router_mounts_exactly_the_specified_endpoints() -> None:
-    """TW-REST-004: the table has six rows and the router has six routes, no more and no fewer.
-
-    A route with no handler behind it is worse than no route: a client cannot tell its 404 from an
-    expired token's (TW-SEC-002 makes both 404). The other half of the check is that nothing EXTRA
-    appears - a seventh path would be a wire change nobody agreed to.
-    """
+    """TW-REST-004: the router mounts exactly the six specified paths."""
     paths = {route.path for route in router().routes}
     assert paths == {
         "/taskwire",
@@ -266,12 +227,8 @@ def test_the_router_mounts_exactly_the_specified_endpoints() -> None:
 
 
 def test_the_dialog_reply_path_is_declared_before_the_token_path() -> None:
-    """TW-REST-006's reason, applied to a second route.
-
-    FastAPI matches in declaration order, so `/{token}/dialogs/{did}` has to be offered before
-    `/{token}` or the token route swallows it - and the failure would be a reply that 404s while the
-    dialog sits open, holding a worker.
-    """
+    """TW-REST-006: `/{token}/dialogs/{did}` is declared before `/{token}`; FastAPI matches in
+    declaration order."""
     paths = [route.path for route in router().routes]
     reply = next(index for index, path in enumerate(paths) if "/dialogs/" in path)
     token_only = next(index for index, path in enumerate(paths) if path.endswith("/{token}"))
@@ -279,12 +236,8 @@ def test_the_dialog_reply_path_is_declared_before_the_token_path() -> None:
 
 
 def test_the_register_is_the_prefix_itself(store: object) -> None:
-    """TW-REST-004: `GET {prefix}` is the register, and no segment follows the prefix.
-
-    The collection at the collection's own URL, which is also what leaves nothing after the prefix
-    for a token to be mistaken for. Declaration order still matters in FastAPI, so assert the order
-    *and* the behaviour.
-    """
+    """TW-REST-004: `GET {prefix}` answers the register, and `{prefix}` is declared before
+    `{prefix}/{token}`."""
     api = router()
     paths = [route.path for route in api.routes]
     assert paths.index("/taskwire") < paths.index("/taskwire/{token}")

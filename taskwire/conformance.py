@@ -9,13 +9,10 @@ from taskwire.store import MemoryStore
 await run_conformance(MemoryStore)
 ```
 
-Every shipped store passes it unchanged - that is the point of exporting it. `RedisStore` does
-not get its own weakened copy; if a rule here cannot be satisfied by a real backend, the rule is
-wrong and the specification changes, not the suite.
+Every shipped store passes it unchanged.
 
-This module contains `assert` statements and is deliberately **not** named `*_test.py`: it ships, it
-is imported by applications, and pytest must not collect it. Ruff's `S101` is silenced for exactly
-this file in `pyproject.toml`.
+This module contains `assert` statements and is not named `*_test.py`: it ships, applications import
+it, and pytest must not collect it. Ruff's `S101` is silenced for this file in `pyproject.toml`.
 """
 
 from __future__ import annotations
@@ -78,13 +75,8 @@ async def test_commit_bumps_rev_monotonically(make_store: StoreFactory) -> None:
 
 
 async def test_concurrent_commits_rev_and_body_agree(make_store: StoreFactory) -> None:
-    """TW-REV-003: the `rev` returned is the `rev` a concurrent `snapshot()` reads with that body.
-
-    A monotonicity assertion alone does not give this. The failure it catches is a store that bumps
-    a counter and writes the document as two steps: the highest `rev` then belongs to one
-    committer's number and another committer's payload, and a client that deduped on `rev` would
-    hold a body it will never be corrected about.
-    """
+    """TW-REV-003: under concurrent commits, the highest returned `rev` is read back with the body
+    of the commit that returned it."""
     store = make_store()
     k = make_key(NS, "t2")
 
@@ -106,7 +98,7 @@ async def test_snapshot_on_unknown_key_is_none(make_store: StoreFactory) -> None
 
 
 async def test_ttl_expiry_removes_key_and_touch_prevents_it(make_store: StoreFactory) -> None:
-    """TW-RET-002's half: `touch` is what keeps a silent phase's document alive."""
+    """TW-RET-002: a document expires at its TTL, and `touch` extends it."""
     now = [1_000_000.0]
     store = make_store(clock=lambda: now[0])
     k = make_key(NS, "t3")
@@ -125,11 +117,10 @@ async def test_ttl_expiry_removes_key_and_touch_prevents_it(make_store: StoreFac
 
 
 async def test_commit_after_expiry_exceeds_previous_max(make_store: StoreFactory) -> None:
-    """TW-REV-002: seeded from `max(now_ms, previous + 1)`, never from zero.
+    """TW-REV-002: `rev` is seeded from `max(now_ms, previous + 1)`, never from zero.
 
-    The bug this prevents is subtle and permanent: a key that expires under a live operation and is
-    written again would restart its `rev` below the client's last-seen value, and every envelope
-    from then on is dropped by client dedup. The bar freezes and nothing is logged.
+    A rewritten expired key must not restart `rev` below a client's last-seen value, or client dedup
+    drops every later envelope.
     """
     now = [1_000_000.0]
     store = make_store(clock=lambda: now[0])
@@ -144,11 +135,9 @@ async def test_commit_after_expiry_exceeds_previous_max(make_store: StoreFactory
 
 
 async def test_commit_reports_the_cancel_flag(make_store: StoreFactory) -> None:
-    """TW-STORE-014: one write answers with the new `rev` and the sticky flag that write saw.
+    """TW-STORE-014: a commit returns the new `rev` and the cancel flag that write saw.
 
-    It is what `Reporter.cancelled` answers between forced reads (TW-CANCEL-004), so a store that
-    always reported `False` would leave a cancelled operation reporting progress until something
-    asked again - and asking again is a second round trip on every commit.
+    `Reporter.cancelled` answers from it between forced reads (TW-CANCEL-004).
     """
     store = make_store()
     k = make_key(NS, "cancelling")
@@ -163,12 +152,8 @@ async def test_commit_reports_the_cancel_flag(make_store: StoreFactory) -> None:
 
 
 async def test_commit_after_terminal_keeps_state(make_store: StoreFactory) -> None:
-    """TW-STORE-010: terminal is final, and the **store** enforces it, not the caller.
-
-    Display fields may still be corrected; the state may not. A cleanup `set()` that could flip a
-    cancelled operation back to `running` would leave it live in every tab's footer indefinitely
-    (TW-INV-014).
-    """
+    """TW-STORE-010: the store keeps a terminal state; later commits change only display fields
+    (TW-INV-014)."""
     store = make_store()
     k = make_key(NS, "t5")
 
@@ -189,7 +174,7 @@ async def test_commit_after_terminal_keeps_state(make_store: StoreFactory) -> No
 
 
 async def test_reads_have_no_side_effects(make_store: StoreFactory) -> None:
-    """TW-STORE-009 / TW-INV-013. This is the test that catches a reintroduced `:seen` key."""
+    """TW-STORE-009 / TW-INV-013: reads change neither TTL, `rev` nor the document."""
     now = [1_000_000.0]
     store = make_store(clock=lambda: now[0])
     k = make_key(NS, "t6")
@@ -212,7 +197,7 @@ async def test_reads_have_no_side_effects(make_store: StoreFactory) -> None:
 
 
 async def test_list_operations_is_namespace_scoped(make_store: StoreFactory) -> None:
-    """TW-STORE-006: one namespace's shared operations, and silently no holes."""
+    """TW-STORE-006: one namespace's shared operations, without expired members."""
     now = [1_000_000.0]
     store = make_store(clock=lambda: now[0])
 
@@ -230,12 +215,8 @@ async def test_list_operations_is_namespace_scoped(make_store: StoreFactory) -> 
 
 
 async def test_list_operations_omits_private_operations(make_store: StoreFactory) -> None:
-    """TW-PRIV-002: unlisted for *every* caller including its own starter - but still readable.
-
-    Privacy is not authorization (TW-SEC-003). The operation is absent from the register and present
-    at its own address, and those two facts are not in tension: the client that minted the token is
-    the only party that has it.
-    """
+    """TW-PRIV-002: a private operation is unlisted for every caller and readable at its own key
+    (TW-SEC-003)."""
     store = make_store()
     private_key = make_key(NS, "private")
     await store.commit(private_key, _progress(result_kind=None), 60)
@@ -250,7 +231,7 @@ async def test_list_operations_omits_private_operations(make_store: StoreFactory
 
 
 async def test_drop_is_idempotent_and_leaves_siblings(make_store: StoreFactory) -> None:
-    """TW-STORE-007."""
+    """TW-STORE-007: `drop` is idempotent and leaves other keys."""
     store = make_store()
     victim = make_key(NS, "victim")
     survivor = make_key(NS, "survivor")
@@ -266,10 +247,10 @@ async def test_drop_is_idempotent_and_leaves_siblings(make_store: StoreFactory) 
 
 
 async def test_publish_never_raises(make_store: StoreFactory) -> None:
-    """TW-STORE-008.
+    """TW-STORE-008: `publish` does not raise when the transport does.
 
-    A publish announces a change that is *already durable*. Letting it raise would turn an
-    accelerator's bad day into the operation's, which is the whole of TW-INV-012.
+    A publish announces an already-durable change; a transport failure must not fail the operation
+    (TW-INV-012).
     """
     from . import reader
     from .settings import configured
@@ -290,12 +271,8 @@ async def test_publish_never_raises(make_store: StoreFactory) -> None:
 
 
 async def test_migrate_is_idempotent_and_preserves_rev(make_store: StoreFactory) -> None:
-    """TW-STORE-015, named in the specification.
-
-    The skip on a token already present under the destination is what makes a second call a no-op
-    **and** what makes the call unable to clobber the destination - which matters, because the one
-    caller is an application merging an anonymous session onto an account it has just established.
-    """
+    """TW-STORE-015: `migrate` skips a token already present under the destination, preserves `rev`,
+    TTL and the cancel flag, and a second call moves nothing."""
     now = [1_000_000.0]
     store = make_store(clock=lambda: now[0])
     anon, account = "anon-session", "account-42"
@@ -327,13 +304,8 @@ async def test_migrate_is_idempotent_and_preserves_rev(make_store: StoreFactory)
 
 
 async def test_terminal_commit_leaves_the_register_and_stays_readable(make_store: StoreFactory) -> None:
-    """TW-REG-007 / TW-RET-004: the commit that makes a document terminal is the one that de-indexes
-    it, and the document survives it.
-
-    Both halves are the store's, and a store that implements one without the other is broken in a
-    way no other check sees: de-indexing alone loses the reason an operation ended, and keeping the
-    document alone puts a `failed` row in every listing the register draws.
-    """
+    """TW-REG-007 / TW-RET-004: the commit that makes a document terminal de-indexes it, and the
+    document stays readable at its key."""
     store = make_store()
     ending = make_key(NS, "ending")
     running = make_key(NS, "running")
@@ -357,7 +329,7 @@ async def test_terminal_commit_leaves_the_register_and_stays_readable(make_store
 
 
 async def test_terminal_document_can_still_be_dropped(make_store: StoreFactory) -> None:
-    """TW-REG-007's store-side half: nothing prevents dropping a terminal document."""
+    """TW-REG-007: a terminal document can be dropped."""
     store = make_store()
     k = make_key(NS, "terminal")
     await store.commit(k, _progress(state=ProgressState.DONE), 60)
@@ -385,12 +357,8 @@ async def test_error_survives_a_round_trip(make_store: StoreFactory) -> None:
 async def test_list_operations_includes_a_private_operation_only_while_it_asks(
     make_store: StoreFactory,
 ) -> None:
-    """TW-STORE-006's second term, TW-PRIV-004 and TW-KEY-005, named in the specification.
-
-    Privacy narrows listing and fan-out; it never narrows the dialog family (TW-INV-022). A question
-    nobody can see is a worker nobody can free, so a private operation joins the register for exactly
-    as long as it holds a question - and leaves the moment its last one closes, without ever becoming
-    shared: `result_kind` stays what it was at start (TW-PROG-006).
+    """TW-STORE-006, TW-PRIV-004, TW-KEY-005: a private operation is listed while it holds an open
+    dialog, and unlisted once the last one closes; `result_kind` is unchanged (TW-PROG-006, TW-INV-022).
     """
     store = make_store()
     k = make_key(NS, "private-asker")
@@ -409,11 +377,8 @@ async def test_list_operations_includes_a_private_operation_only_while_it_asks(
 
 
 async def test_resolve_dialog_accepts_exactly_once(make_store: StoreFactory) -> None:
-    """TW-STORE-003, under REAL concurrency rather than sequentially.
-
-    The return value is the ONLY signal any caller may trust about who won. A store that decided by
-    reading the document would be reading it after the race rather than during it.
-    """
+    """TW-STORE-003: of concurrent replies, exactly one `resolve_dialog` returns `ACCEPTED`; the rest
+    return `ALREADY_ANSWERED`."""
     store = make_store()
     k = make_key(NS, "raced")
     await store.commit(k, _progress(), 60)
@@ -427,7 +392,7 @@ async def test_resolve_dialog_accepts_exactly_once(make_store: StoreFactory) -> 
 
 
 async def test_withdraw_and_resolve_race_has_one_winner(make_store: StoreFactory) -> None:
-    """TW-STORE-004: both paths share the arbiter, so a dialog a reply reached first stays answered."""
+    """TW-STORE-004: a dialog a reply reached first stays answered when a withdrawal races it."""
     store = make_store()
     k = make_key(NS, "withdrawn")
     await store.commit(k, _progress(), 60)

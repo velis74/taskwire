@@ -1,23 +1,15 @@
 """`Reporter`, `operation()` and the lifecycle writes.
 
-Three rules govern this module:
+The throttle is inline, not a background task (TW-THR-002): `set()` reads an injected clock and
+commits when the window has elapsed. A timer task would never run inside a loop that does not yield.
 
-**The throttle is inline, never a background task** (TW-THR-002). `set()` reads an injected clock
-and commits when the window has elapsed. The natural implementation - a task holding a timer - fails
-exactly where it matters: a tight `for row in rows: await reporter.set(...)` loop never yields, so
-the timer task never runs, the bar reads 0 % for a whole CPU-bound phase, and that phase's final
-value is never written at all.
+`set()` takes no `state=` (TW-PROG-012). The state follows the lifecycle: `mark_queued()` writes
+`queued`, entering `operation()` writes `running`, and leaving it writes one of the three terminal
+states. A caller-written state could park an operation that nothing releases (TW-INV-006).
 
-**`set()` has no `state=` keyword and no back door to one** (TW-PROG-012). The state is derived from
-lifecycle events: `mark_queued()` writes `queued`, entering `operation()` writes `running`, and
-leaving it writes exactly one of the three terminal states. A caller that could write `state` could
-park an operation in `waiting_input` that nothing will ever release (TW-INV-006).
-
-**The terminal write is what ends the operation, and it ends it once** (TW-REG-007, TW-INV-021).
-Exit commits the terminal state and publishes the terminal envelope, in that order. The write takes
-the entry out of the register - the store does that off the document's own state - and leaves the
-document readable at its own address for `tombstone_ttl` (TW-RET-004), which is what a client that
-was not watching reads to learn which of the three terminal states this was.
+The terminal write ends the operation, once (TW-REG-007, TW-INV-021). Exit commits the terminal
+state, then publishes the terminal envelope. The write takes the entry out of the register and
+leaves the document readable at its own address for `tombstone_ttl` (TW-RET-004).
 """
 
 from __future__ import annotations
@@ -62,16 +54,12 @@ omitting `percent` means leave it alone (TW-PROG-003)."""
 
 
 class OperationCancelled(Exception):  # noqa: N818 - the name is specified (TW-CANCEL-005)
-    """TW-CANCEL-005: its own type.
-
-    Never a bare `RuntimeError` - callers must be able to catch precisely this - and never a
-    subclass of `asyncio.CancelledError`, which would make every `except CancelledError` in the
-    application swallow a user-requested cancel as if the event loop had done it.
-    """
+    """TW-CANCEL-005: a user-requested cancel. Not a subclass of `asyncio.CancelledError`, so an
+    `except CancelledError` does not catch it."""
 
 
 def new_token() -> str:
-    """A UUIDv4 and nothing more. An address, never an authorization grant."""
+    """A new UUIDv4 token: an address, never an authorisation grant."""
     return str(uuid.uuid4())
 
 
@@ -83,11 +71,8 @@ def _clamp_percent(value: float | None) -> float | None:
 
 
 def _check_size(name: str, value: Any) -> None:
-    """TW-PROG-008: cap at `max_data_bytes`, by raising and naming the size, never by truncating.
-
-    Silent truncation is worse than a raise here: the field survives, the application believes it
-    wrote what it wrote, and the missing half only shows up in a browser weeks later.
-    """
+    """TW-PROG-008: raise `ValueError` naming the size when `value` encodes above `max_data_bytes`;
+    nothing is truncated."""
     size = encoded_size(value)
     if size > settings.max_data_bytes:
         raise ValueError(
@@ -100,9 +85,8 @@ def _check_size(name: str, value: Any) -> None:
 def _expand_buttons(buttons: list[str] | list[Button]) -> list[Button]:
     """TW-DLG-003: the object form on the wire, a list of strings as sugar in Python.
 
-    Each expanded label defaults to `Text(key=f"taskwire.button.{id}")` with **no** `text`: a
-    frontend with a catalogue renders its own wording, and one without shows the id, which is a
-    better failure than a hard-coded English string nobody can translate.
+    Each expanded label is `Text(key=f"taskwire.button.{id}")` with no `text`; a frontend without a
+    translation for it shows the id.
     """
     expanded: list[Button] = []
     for button in buttons:
@@ -147,15 +131,11 @@ class Reporter:
         self._loop: asyncio.AbstractEventLoop | None = None
 
         # --- nesting ------------------------------------------------------
-        # `_parent` and `_notify_parent` are the whole of a subtask's relationship to its parent, and
-        # neither of them tells it its own range: TW-NEST-001 says the callee MUST NOT be able to
-        # learn it. A child reports a *local* 0-100 and the parent does the mapping, which is also
-        # what makes the composition in TW-NEST-002 fall out for free.
+        # A child reports a local 0-100 and the parent maps it; the child never learns its range
+        # (TW-NEST-001, TW-NEST-002).
         self._parent = parent
         self._notify_parent = notify_parent
-        # TW-NEST-004 / TW-INV-010: one entry per child handed out, never a last-written percent.
-        # Each commit rewrites exactly the one entry. With a last-written percent, four equal
-        # siblings whose fastest finishes first pin the bar at 100% for three quarters of the work.
+        # TW-NEST-004 / TW-INV-010: one contribution entry per child; each commit rewrites one entry.
         self._contribution: dict[int, float] = {}
         self._child_seq = 0
         self._own_percent: float | None = None
@@ -164,11 +144,9 @@ class Reporter:
         # siblings produces the same sum.
         self._children_lock = asyncio.Lock()
         self._ambient_token: Any = None
-        # How many questions this operation is waiting on, counted on the root so a subtask's `ask()`
-        # is visible to whoever handles the worker being killed (TW-DLG-006).
+        # Open questions of the operation, subtasks included; counted on the root (TW-DLG-006).
         self._asking = 0
-        # TW-RES-004: a clean exit with a result already written lands in `waiting_input`
-        # rather than `done`, and `operation()`'s exit reads this to know which.
+        # TW-RES-004: a clean exit with a parked result lands in `waiting_input`, not `done`.
         self._result_parked = False
         # A tracked call's terminal state inside the push delay is not published (TW-THR-008).
         self._call = False
@@ -182,13 +160,8 @@ class Reporter:
 
     @property
     def asking(self) -> bool:
-        """Whether this operation is waiting on an answer right now, subtasks included.
-
-        Free, and local: it is what a caller handling a worker's execution limit reads to tell a
-        deadline that expired on a question from one that expired on the work itself (TW-DLG-006).
-        Reading it costs no store round trip, which matters where it is read - the worker is being
-        killed.
-        """
+        """Whether this operation is waiting on an answer, subtasks included. Reads no store
+        (TW-DLG-006)."""
         root = self
         while root._parent is not None:
             root = root._parent
@@ -196,10 +169,8 @@ class Reporter:
 
     @property
     def cancelled(self) -> bool:
-        """TW-CANCEL-004: the last known value, refreshed by every commit and free to poll.
-
-        Free means free - no store read. `await was_aborted()` is the one that costs a round trip.
-        """
+        """TW-CANCEL-004: the cancel flag as of the last commit. Reads no store; `was_aborted()`
+        does."""
         return self._cancelled
 
     async def was_aborted(self) -> bool:
@@ -209,11 +180,7 @@ class Reporter:
 
     @property
     def sync(self) -> SyncReporter:
-        """TW-API-003: one attribute, not a duplicated method list.
-
-        A hand-written parallel surface drifts the first time a keyword is added to `set()`, and the
-        drift is silent because the sync form is exercised by different tests.
-        """
+        """TW-API-003: the synchronous form of this reporter's methods."""
         return SyncReporter(self)
 
     # ---------------------------------------------------------------- the one mutator
@@ -229,10 +196,7 @@ class Reporter:
         raise_on_cancel: bool | None = None,
         **forbidden: Any,
     ) -> None:
-        """The **only** mutator of the display fields (TW-PROG-004).
-
-        There is no `set_label()` / `set_percent()` family, because each would need its own
-        throttling window and its own merge semantics against this one.
+        """The only mutator of the display fields (TW-PROG-004).
 
         An omitted keyword leaves its field untouched; `data=` replaces the bag wholesale
         (TW-PROG-003). `raise_on_cancel=` sets this reporter's policy from here on, overriding the
@@ -256,9 +220,8 @@ class Reporter:
 
         if percent is not _UNSET:
             self._own_percent = _clamp_percent(percent)
-        # The display fields live on the ONE progress document a token has (TW-NEST-013). A subtask
-        # shares its root's `Progress` object, so `sub.set(label=...)` names the current step of the
-        # operation rather than of a sub-range no client can see.
+        # TW-NEST-013: a subtask shares its root's `Progress`, so its display fields are the
+        # operation's.
         if title is not _UNSET:
             self._progress.title = title
         if label is not _UNSET:
@@ -275,13 +238,8 @@ class Reporter:
     # ---------------------------------------------------------------- nesting
 
     def _local_percent(self) -> float | None:
-        """TW-NEST-005: own value when childless, the contribution sum when parented, the LARGER of
-        the two when both.
-
-        "Larger" rather than "sum" or "own": a reporter that both does work itself and hands ranges
-        out would otherwise go backwards the moment its first child reports, and a bar that goes
-        backwards reads as a bug to every user who sees it.
-        """
+        """TW-NEST-005: own value when childless, the contribution sum when parented, the larger of
+        the two when both, so the value does not drop when the first child reports."""
         if not self._contribution:
             return self._own_percent
         total = sum(self._contribution.values())
@@ -292,9 +250,7 @@ class Reporter:
     async def _propagate(self, *, force: bool = False) -> None:
         """Push this reporter's local percent one level up, or commit it if this is the root.
 
-        `force` travels with the propagation rather than stopping at the reporter that was
-        asked: a subtask's `flush()` has to reach the store unthrottled (TW-THR-004), and the
-        store is several levels up.
+        `force` propagates to the root, so a subtask's `flush()` commits unthrottled (TW-THR-004).
         """
         local = self._local_percent()
         if self._notify_parent is not None:
@@ -303,16 +259,12 @@ class Reporter:
 
         # The root, and only the root, writes to the document.
         if local is None:
-            # TW-NEST-011: `null` reaches the committed document only when the ROOT's own local
-            # percent is None - a child reporting null freezes its contribution instead, which is
-            # handled where contributions are written.
+            # TW-NEST-011: `null` is committed only when the root's local percent is None; a child
+            # reporting null freezes its contribution.
             self._progress.percent = None
         else:
-            # TW-NEST-010: a monotonic clamp on the root's committed percent, as a final safety
-            # net only - it is emphatically not the correctness mechanism, the contribution map
-            # is. It nets the *nesting arithmetic*, so it applies only once ranges have been
-            # handed out: a childless root setting its own percent is not doing that arithmetic,
-            # and TW-PROG-002 entitles it to go backwards (-5 clamps to 0) when a phase restarts.
+            # TW-NEST-010: monotonic once ranges are handed out; a childless root may go backwards
+            # (TW-PROG-002).
             if self._contribution:
                 self._high_water = local if self._high_water is None else max(self._high_water, local)
                 self._progress.percent = self._high_water
@@ -326,10 +278,9 @@ class Reporter:
     def subtask(self, start: float, end: float) -> Reporter:
         """A reporter covering `[start, end]` of this one's range (TW-NEST-001).
 
-        The child has the identical API and **cannot learn its range**: it reports a local 0-100 and
-        this reporter does the mapping. That is what makes TW-NEST-002's recursive composition fall
-        out rather than needing its own arithmetic - `r.subtask(10, 25).subtask(50, 100)` covers
-        17.5-25 of `r` because each level maps only its own child's local value.
+        The child has the same API and cannot learn its range: it reports a local 0-100 and this
+        reporter maps it. Ranges compose (TW-NEST-002): `r.subtask(10, 25).subtask(50, 100)` covers
+        17.5-25 of `r`.
         """
         self._child_seq += 1
         child_key = self._child_seq
@@ -338,13 +289,11 @@ class Reporter:
 
         async def notify(local: float | None, *, force: bool = False) -> None:
             if local is None:
-                # TW-NEST-011: freeze this child's contribution at its last known value rather than
-                # dropping it to zero. A child that goes indeterminate has not un-done its work.
+                # TW-NEST-011: the child's contribution stays at its last known value.
                 await self._propagate(force=force)
                 return
             async with self._children_lock:
-                # Exactly this one entry is rewritten (TW-NEST-004). TW-NEST-012 falls out: the value
-                # can never exceed `width`, so it cannot overflow into a sibling's range.
+                # TW-NEST-004: only this entry; never above `width` (TW-NEST-012).
                 self._contribution[child_key] = width * max(0.0, min(100.0, local)) / 100.0
             await self._propagate(force=force)
 
@@ -363,9 +312,8 @@ class Reporter:
     def split(self, *weights: float) -> tuple[Reporter, ...]:
         """TW-NEST-003: one reporter per weight, partitioning this range in proportion.
 
-        Concurrent siblings MUST each be passed their own reporter explicitly (TW-NEST-014). The
-        ambient binding must not be shared across a `gather` - see the ambient module's docstring for
-        the wrong and the right form side by side.
+        Concurrent siblings must each be passed their own reporter explicitly; the ambient binding
+        must not be shared across a `gather` (TW-NEST-014).
         """
         total = float(sum(weights))
         if total <= 0:
@@ -386,12 +334,7 @@ class Reporter:
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        """Unbind via the contextvars Token, and force an unthrottled flush (TW-THR-004).
-
-        The reset goes through the `Token` rather than overwriting the variable (TW-AMB-005): a
-        raising task that merely overwrote would leak its binding to the next task on the same pooled
-        thread, and operation A's progress would land on operation B's key.
-        """
+        """Unbind the ambient reporter through its contextvars Token (TW-AMB-005)."""
         from .ambient import unbind
 
         unbind(self._ambient_token)
@@ -408,8 +351,7 @@ class Reporter:
         now = self._clock()
         interval = settings.progress_interval
 
-        # TW-THR-003: once per interval, not once per call. Tracked on its own timestamp so the
-        # guarantee survives a window in which nothing was worth committing.
+        # TW-THR-003: once per interval, on its own timestamp, independent of commits.
         if self._last_yield is None or (now - self._last_yield) >= interval:
             self._last_yield = now
             await asyncio.sleep(0)
@@ -418,19 +360,13 @@ class Reporter:
             await self._commit()
 
     async def _commit(self, *, state: ProgressState | None = None, ttl: float | None = None) -> int:
-        """Write, then publish, in that order and never the other (TW-CORE-001, TW-INV-001).
-
-        A client that saw a push whose state a later read contradicts has no way to recover: it is
-        entitled to current state only (TW-CORE-005), and current state just disagreed with what it
-        was told.
-        """
+        """Write, then publish (TW-CORE-001, TW-INV-001), so no read contradicts a push already sent
+        (TW-CORE-005)."""
         if state is not None:
             self._progress.state = state
         self._progress.updated_at = now_iso()
 
-        # One write, and both of its answers: the new `rev`, and the sticky cancel flag as that
-        # write saw it (TW-STORE-014). Asking the store a second time would be a second round trip
-        # per commit against anything that is not a dictionary.
+        # One write returns the new `rev` and the sticky cancel flag (TW-STORE-014).
         written = await self._store.commit(self._key, self._progress, settings.active_ttl if ttl is None else ttl)
         self._rev = written.rev
         self._last_commit = self._clock()
@@ -455,15 +391,11 @@ class Reporter:
     # ---------------------------------------------------------------- terminal writes
 
     async def done(self) -> None:
-        """On a root reporter this is the caller asking for a clean finish.
+        """On a root reporter, write `done`; only the root's terminal transition ends the operation
+        (TW-PROG-011).
 
-        Only the root reporter's terminal transition may put the operation into a terminal state
-        (TW-PROG-011); in practice `operation()`'s exit is the one that calls it.
-
-        **A subtask's `done()` fills its contribution to its full width and does NOT touch the
-        operation state** (TW-NEST-008). It reports a local 100 rather than writing a width it is not
-        allowed to know (TW-NEST-001), which comes to the same number by a route that keeps the range
-        in the parent where it belongs.
+        A subtask's `done()` reports a local 100 and does not change the operation state
+        (TW-NEST-008).
         """
         if self._notify_parent is not None:
             await self._notify_parent(100.0, force=True)
@@ -476,31 +408,22 @@ class Reporter:
         await self._commit(state=ProgressState.FAILED)
 
     def name_error(self, code: str, message: Text, retryable: bool = False) -> None:
-        """Decide what the terminal write will say, without making that write.
+        """Set the `Error` the terminal write of `operation()`'s exit carries, without writing.
 
-        For an exception on its way out of `operation()`, where `taskwire.unhandled_exception` would be
-        less true than a code the caller already knows: TW-DLG-006's `taskwire.dialog_timeout` is the
-        case, and the exception there is whatever the worker's execution limit happens to raise.
-
-        `fail()` is the wrong tool for that: it commits, and the exit then commits a second terminal
-        state over it - two completions where TW-API-001 allows exactly one, and a terminal envelope
-        followed by another one. This names the error and leaves the single write to the exit, which
-        withdraws the dialogs and takes the entry out of the register in the same step
-        (TW-CANCEL-011, TW-REG-007).
+        Replaces `taskwire.unhandled_exception` with a known code, such as `taskwire.dialog_timeout`
+        (TW-DLG-006), for the exception leaving `operation()`. Unlike `fail()`, it leaves the single
+        terminal write to the exit (TW-API-001, TW-CANCEL-011, TW-REG-007).
         """
         self._progress.error = Error(code=code, message=message, retryable=retryable)
 
     async def set_result(self, result: Result) -> None:
         """Park a result for later collection. Root reporter only, and at most once.
 
-        **This is emphatically not an `ask()`** (TW-RES-005). The task has finished; only the
-        *record* waits. The reporter writes the result and the state, and the worker exits. An
-        implementation that waited for collection the way `ask()` waits for a reply would pin a
-        worker overnight on a download nobody clicked.
+        Writes the result and returns; nothing waits for collection (TW-RES-005).
 
         The operation does not go to `done` when its work finishes (TW-RES-004): it lands in
         `waiting_input` holding the result and stays there until one of the three release paths
-        takes it (TW-RES-010). The awaiting caller's promise still resolves when the *work* finishes,
+        takes it (TW-RES-010). The awaiting caller's promise resolves when the work finishes,
         not when the result is collected (TW-RES-006).
         """
         if self._notify_parent is not None:
@@ -519,8 +442,7 @@ class Reporter:
         _check_size("result", result.to_dict())
 
         self._progress.result = result
-        # TW-RET-003: the key's TTL becomes `result_ttl` and no keepalive runs against it - nobody is
-        # running, which is the point. Set `result_ttl` no longer than your own artefact retention.
+        # TW-RET-003: the key's TTL becomes `result_ttl`, with no keepalive.
         self._result_parked = True
         await self._commit()
         await self._store.touch(self._key, settings.result_ttl)
@@ -535,33 +457,24 @@ class Reporter:
         title: Text | None = None,
         text: Text | None = None,
     ) -> DialogAnswer:
-        """Ask the user a question and **block until the store arbitrates a reply**.
+        """Ask the user a question and block until the store arbitrates a reply.
 
-        **There is no timeout** (TW-DLG-005). No `timeout` parameter, no `settings.dialog_timeout`,
-        no `timeout_at`, no declared default outcome, no `DialogTimeout` and no `expired` state.
-        A deadline would need a default answer, and there is no answer a library can invent on a
-        user's behalf; a programmer who wants one implements it at whatever level suits them.
+        No timeout and no default answer (TW-DLG-005). An unanswered dialog blocks the worker until
+        the executor's execution limit ends it; the executor adapters then write `failed` with
+        `taskwire.dialog_timeout` and `retryable: true`, and the open dialogs are withdrawn
+        (TW-DLG-006).
 
-        The consequence (TW-DLG-006): **an unanswered dialog blocks its worker** until Celery's own
-        execution timeout kills the task, at which point the operation becomes `failed` with code
-        `taskwire.dialog_timeout` and `retryable: true` and its open dialogs are withdrawn. The general
-        problem of a blocked worker is deliberately unsolved.
+        Must not be called with a database transaction open: its locks are held until the user
+        answers (TW-DLG-017).
 
-        `ask()` MUST NOT be called while holding a database transaction (TW-DLG-017). It waits for a
-        human. A transaction held across it holds its locks for as long as the user takes to answer,
-        which may be the rest of the afternoon.
-
-        Returns only when the store arbitrated a reply, so `DialogAnswer` carries no `timed_out`
-        flag - there is no second way out (TW-DLG-007).
+        Returns only a reply the store arbitrated; `DialogAnswer` has no `timed_out` flag
+        (TW-DLG-007). Raises `OperationCancelled` when the dialog is withdrawn (TW-DLG-012).
         """
         if params is not None:
             _check_size("dialog params", params)
 
-        # TW-DLG-001: `id` is *this asking* - a server-minted UUID unique within the token - and is
-        # the only one of the two ever used as a key, a path segment or a store argument.
-        # `dialog_id` is *which question*, the frontend component identity, and keying by it would
-        # let two concurrent operations rendering the same component answer each other's question
-        # (TW-DLG-002, TW-INV-008).
+        # TW-DLG-001: `id` is this asking, a UUID unique within the token, and the only key used.
+        # `dialog_id` names the frontend component (TW-DLG-002, TW-INV-008).
         did = str(uuid.uuid4())
         request = DialogRequest(
             id=did,
@@ -576,8 +489,7 @@ class Reporter:
         if text is not None:
             self._progress.label = text
 
-        # A dialog open is never throttled (TW-THR-004/005, TW-INV-005): a question the user cannot
-        # see is a worker nobody can free.
+        # A dialog open is never throttled (TW-THR-004/005, TW-INV-005).
         await self.flush()
         rev = await self._store.put_dialog(self._key, request, settings.active_ttl)
         await publish(
@@ -593,14 +505,10 @@ class Reporter:
             root = root._parent
         root._asking += 1
         reply = await self._store.await_dialog(self._key, did)
-        # The question is over the moment the store arbitrates it, answered or withdrawn. An
-        # exception on the way out of the wait leaves the count where it is, which is what the count
-        # means: the question is still open, and whoever unwinds this worker died on one.
+        # Decremented once the store arbitrates; an exception from the wait leaves it counted.
         root._asking -= 1
 
-        # TW-DLG-012: a dialog on a cancelled operation is flipped to `cancelled` and `ask()` raises
-        # OperationCancelled whatever `raise_on_cancel` says. A withdrawal is not an answer, and
-        # returning one would let the caller act on a choice nobody made.
+        # TW-DLG-012: a withdrawn dialog raises OperationCancelled whatever `raise_on_cancel` says.
         if reply.button == CANCELLED_BUTTON:
             self._cancelled = True
             raise OperationCancelled(f"taskwire: operation {self._token} was cancelled while asking {dialog_id}")
@@ -623,23 +531,14 @@ class Reporter:
             ),
             self._progress,
         )
-        # The state returns to `running` on resolution (TW-DLG-009) with nothing written: it was
-        # never written on the way in either. `waiting_input` is derived from the open dialogs
-        # themselves, which is what TW-PROG-010 requires and what makes the two ends agree.
+        # TW-DLG-009, TW-PROG-010: `waiting_input` is derived from the open dialogs; no state is
+        # written.
         await self.flush()
         return DialogAnswer(button=reply.button, values=reply.values)
 
     def _raise_if_cancelled(self, writing_state: ProgressState | None) -> None:
-        """TW-CANCEL-002: by default the NEXT progress-reporting call raises.
-
-        This single behaviour is the whole argument for the raising default. A loop containing no
-        cancellation-handling code at all still stops, and still ends `cancelled` rather than
-        running to completion after the user pressed the button - which is what a polling API gives
-        you when somebody forgets the poll, and somebody always forgets the poll.
-
-        Not while writing a terminal state: `operation()`'s exit is what turns the raise into the
-        `cancelled` state, and raising there would leave the operation with no terminal write at all.
-        """
+        """TW-CANCEL-002: once a cancel is seen, the next progress call raises `OperationCancelled`
+        unless `raise_on_cancel` is False. Not while writing a terminal state."""
         if not self._cancelled:
             return
         if writing_state is not None:
@@ -659,15 +558,11 @@ class Reporter:
 
 
 class InertReporter(Reporter):
-    """TW-AMB-010 / TW-AMB-009: live-looking but writes nothing, so callers never branch.
+    """TW-AMB-010 / TW-AMB-009: a reporter that writes nothing.
 
-    Two situations produce one: `operation(token=None)`, and a `session_resolver` that returned
-    `None` - an application opting a request out of taskwire entirely. Neither is an error, and
-    neither should force `if reporter is not None:` through the calling code.
-
-    The display fields, the nesting and the terminal writes are inert. `ask()` and `set_result()`
-    are not: an inert reporter has no store, so there is nobody to answer a question and nothing to
-    park a result on, and both raise `ValueError`.
+    Produced by `operation(token=None)` and by a `session_resolver` that returned `None`. The display
+    fields, the nesting and the terminal writes are inert; `ask()` and `set_result()` raise
+    `ValueError`.
     """
 
     def __init__(self) -> None:
@@ -681,17 +576,12 @@ class InertReporter(Reporter):
 
     async def set(self, **kwargs: Any) -> None:  # noqa: A003
         if "state" in kwargs:
-            # Still an error. An inert reporter is silent, not permissive: code that would be
-            # rejected in production must not pass merely because it ran with no namespace.
+            # Rejected as on a live reporter (TW-PROG-012).
             raise ValueError("taskwire: Reporter.set() has no `state` keyword (TW-PROG-012)")
         return None
 
     async def ask(self, dialog_id: str, **kwargs: Any) -> DialogAnswer:  # noqa: ARG002
-        """A question with nobody to arbitrate it, named as such.
-
-        Progress an inert reporter drops is progress nobody asked for; a question it dropped would
-        be a worker waiting for an answer that no store can ever record.
-        """
+        """Raise `ValueError`: an inert reporter has no store to arbitrate a reply."""
         raise ValueError(f"taskwire: ask({dialog_id!r}) needs an operation, and this reporter has none")
 
     async def _tick(self) -> None:
@@ -731,11 +621,8 @@ class InertReporter(Reporter):
 
 
 class SyncReporter:
-    """TW-API-003: the identical member names, each run on the reporter's owning loop.
-
-    Resolved dynamically rather than written out. A hand-maintained parallel list drifts the moment
-    `set()` grows a keyword, and drifts silently.
-    """
+    """TW-API-003: the reporter's members under the same names, each coroutine run on the reporter's
+    owning loop. Resolved dynamically."""
 
     def __init__(self, reporter: Reporter) -> None:
         self._reporter = reporter
@@ -770,8 +657,8 @@ def _opening_progress(
     """The one write that fixes an operation's identity.
 
     `result_kind`, `origin_session` and `origin_connection` are set here and never rewritten
-    (TW-PROG-006, TW-INV-009). Declaring a `result_kind` is the whole of being shared; declaring
-    none makes the operation private from start to finish, with no promotion path (TW-PRIV-001).
+    (TW-PROG-006, TW-INV-009). An operation with a `result_kind` is shared; one without is private
+    from start to finish (TW-PRIV-001).
     """
     if data is not None:
         _check_size("data", data)
@@ -793,9 +680,8 @@ def _opening_progress(
 class OperationScope:
     """One object implementing all four dunders (TW-API-001, TW-API-002).
 
-    The asynchronous form is the primary one. The synchronous form runs a private event loop in a
-    thread it owns, which is what lets `reporter.sync` and the keepalive both work from code that
-    has no loop of its own - a Celery worker, for instance.
+    The synchronous form runs a private event loop in a thread it owns, so `reporter.sync` and the
+    keepalive work in code without an event loop.
     """
 
     def __init__(
@@ -828,14 +714,9 @@ class OperationScope:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._ambient_token: Any = None
-        # How many questions this operation is waiting on, counted on the root so a subtask's `ask()`
-        # is visible to whoever handles the worker being killed (TW-DLG-006).
         self._asking = 0
-        # True when the binding belongs to the CALLER's context rather than to `__aenter__`'s. A
-        # `contextvars.Token` may only be reset in the context that created it, and a scope entered
-        # from a synchronous frame is entered inside a task of its own whose context is discarded
-        # on the way out - so binding there would leave nothing bound where the body runs and a
-        # Token that cannot be reset. See `bind_ambient_in_caller`.
+        # True when the caller binds the ambient reporter in its own context
+        # (`bind_ambient_in_caller`).
         self._caller_binds_ambient = False
         # True once the operation was handed to another process, which then owns its terminal write.
         self._handed_off = False
@@ -858,8 +739,7 @@ class OperationScope:
 
         store = self._resolve_store()
         if store is None:
-            # No store configured is the same situation as no namespace: the application has not
-            # opted in. Be inert rather than raising into unrelated code.
+            # No store configured: inert, as with no namespace.
             self._reporter = InertReporter()
             return self._reporter
 
@@ -869,8 +749,8 @@ class OperationScope:
 
         existing = await store.snapshot(k)
         if existing is not None:
-            # `mark_queued()` already wrote the opening document; the write-once fields belong to
-            # it, and this transition only flips `queued` to `running` (TW-INV-009).
+            # Opened by `mark_queued()`: only `queued` becomes `running`; write-once fields stay
+            # (TW-INV-009).
             progress = existing.progress
             progress.state = ProgressState.RUNNING
         else:
@@ -895,9 +775,7 @@ class OperationScope:
         )
         self._reporter._loop = asyncio.get_running_loop()
         self._reporter._call = self._call
-        # TW-API-001: bind the ambient reporter, so code six frames down can `await progress.set()`
-        # without every function between here and there growing a `reporter` parameter. The
-        # caller-bound form binds around the body instead - see `bind_ambient_in_caller`.
+        # TW-API-001: bind the ambient reporter, unless the caller binds it (`bind_ambient_in_caller`).
         if not self._caller_binds_ambient:
             self._ambient_token = ambient_bind(self._reporter)
         await self._reporter._commit()
@@ -919,12 +797,7 @@ class OperationScope:
             logger.debug("taskwire: no snapshot after the push delay for %s", k, exc_info=True)
 
     async def _keepalive_loop(self, store: Any, k: str) -> None:
-        """TW-RET-002: touch every `active_ttl / 4`, without the operation's cooperation.
-
-        "Without cooperation" is the point. The phase that most needs the document to survive is the
-        one that never yields voluntarily, which is why the period is a quarter of the TTL rather
-        than something the caller schedules.
-        """
+        """TW-RET-002: touch the key every `active_ttl / 4`, without the operation's cooperation."""
         period = settings.keepalive_period
         try:
             while True:
@@ -936,10 +809,7 @@ class OperationScope:
             logger.debug("taskwire: keepalive stopped for %s", k, exc_info=True)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        # First, and unconditionally. TW-AMB-005 wants the reset to go through the `Token` rather
-        # than an overwrite, and TW-INV-011 names the failure: a raising task that leaked its
-        # binding puts operation A's progress on operation B's key, on the next task to reuse the
-        # thread. Nothing below here may be able to skip it.
+        # First and unconditionally: reset through the `Token` (TW-AMB-005, TW-INV-011).
         if not self._caller_binds_ambient:
             ambient_unbind(self._ambient_token)
             self._ambient_token = None
@@ -952,8 +822,6 @@ class OperationScope:
 
         if self._keepalive is not None:
             self._keepalive.cancel()
-            # The keepalive is being torn down deliberately; whatever it was doing is no longer
-            # wanted, and neither its cancellation nor a late failure inside it is news.
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._keepalive
             self._keepalive = None
@@ -963,45 +831,30 @@ class OperationScope:
             return False
 
         if self._handed_off:
-            # The process the operation was handed to writes its terminal state (TW-CALL-007). A
-            # terminal write here would end an operation that is still running there.
+            # TW-CALL-007: the process the operation was handed to writes its terminal state.
             with contextlib.suppress(Exception):
                 await reporter.flush()
             return False
 
         state, error = _terminal_for(exc_type, exc)
-        # An error the operation named for itself outranks one derived from the exception's class
-        # (`name_error`). The class is the more specific fact only when nobody knew better: a worker
-        # killed while holding a question raises whatever its execution limit raises, and
-        # `taskwire.dialog_timeout` with `retryable: true` is what the reader can act on (TW-DLG-006,
-        # TW-PROG-005).
+        # An error set by `name_error` takes precedence over one derived from the exception
+        # (TW-DLG-006, TW-PROG-005).
         if error is not None and reporter._progress.error is None:
             reporter._progress.error = error
 
         if state is ProgressState.DONE and reporter._result_parked:
-            # TW-RES-004: the work is over, the record is not. The operation parks in
-            # `waiting_input` and the block returns immediately - it does not wait for collection
-            # (TW-RES-005), and neither does the caller awaiting it (TW-RES-006).
+            # TW-RES-004: park in `waiting_input` and return without waiting for collection
+            # (TW-RES-005, TW-RES-006).
             await reporter._store.withdraw_dialogs(reporter._key)
             await reporter._commit()
             await reporter._store.touch(reporter._key, settings.result_ttl)
             return False
 
-        # TW-CANCEL-011: withdraw first, so a dialog can never outlive the operation that asked it,
-        # and anyone blocked in `ask()` is woken rather than left on a question whose operation has
-        # already ended.
-        #
-        # The terminal write takes the entry out of the register in the same step (TW-REG-007, which
-        # the store enforces off the state) and leaves the document readable at its own address for
-        # `tombstone_ttl` (TW-RET-004). The envelope is still what a watching client sees; the
-        # tombstone is what a client that was not watching can read afterwards, and it is the only
-        # thing that can tell it `done` from `failed` from `cancelled`.
+        # Withdraw dialogs, then the terminal write (TW-CANCEL-011, TW-REG-007, TW-RET-004).
         await reporter._store.withdraw_dialogs(reporter._key)
         await reporter._commit(state=state, ttl=settings.tombstone_ttl)
 
-        # TW-API-001: re-raise in every failure case. Returning True here would swallow the
-        # application's exception behind a progress-reporting context manager, which is never what
-        # the caller meant.
+        # TW-API-001: never swallow the exception.
         return False
 
     def bind_ambient_in_caller(self) -> None:
@@ -1012,8 +865,8 @@ class OperationScope:
         context that created it (TW-AMB-005, TW-INV-011). Call this before `__aenter__`, then
         `taskwire.ambient.bind` around the body and `unbind` in a `finally`.
 
-        `__enter__` does exactly that for the synchronous form, whose `__aenter__` runs in a task of
-        its own on a private loop.
+        `__enter__` does this for the synchronous form, whose `__aenter__` runs in a task of its own on
+        a private loop.
         """
         self._caller_binds_ambient = True
 
@@ -1028,13 +881,8 @@ class OperationScope:
     # ---------------------------------------------------------------- sync form
 
     def __enter__(self) -> Reporter:
-        """TW-API-002: a private event loop this scope creates and owns for this thread.
-
-        The loop runs in its own thread rather than being driven by `run_until_complete` from this
-        one. That is what lets the keepalive be an ordinary task on it and still run while the
-        calling thread is inside a CPU-bound phase - the synchronous form is the Celery form, and
-        Celery workers are exactly where a 90-second silent phase happens.
-        """
+        """TW-API-002: runs a private event loop in its own thread, so the keepalive runs while the
+        calling thread is busy."""
         self._caller_binds_ambient = True
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, name="taskwire-operation-loop", daemon=True)
@@ -1075,11 +923,8 @@ async def _cancel_remaining_tasks() -> None:
 
 
 def _terminal_for(exc_type: Any, exc: Any) -> tuple[ProgressState, Error | None]:
-    """TW-API-001: exactly one completion, and `cancelled` is not `failed` (TW-CANCEL-006).
-
-    Collapsing `OperationCancelled` into `failed` would make a user-requested stop indistinguishable
-    from a crash in every dashboard that reads the terminal state.
-    """
+    """TW-API-001: the terminal state and error for an exit; `OperationCancelled` gives `cancelled`,
+    not `failed` (TW-CANCEL-006)."""
     if exc_type is None:
         return ProgressState.DONE, None
     if issubclass(exc_type, OperationCancelled):
@@ -1100,17 +945,14 @@ def operation(
     store: Any = None,
     clock: Callable[[], float] | None = None,
 ) -> OperationScope:
-    """Open an operation. Async **and** sync context manager (TW-API-001, TW-API-002).
+    """Open an operation. Async and sync context manager (TW-API-001, TW-API-002).
 
-    `session` is an already-resolved namespace string - never a user, a request or an identity
-    object (TW-AMB-007). `session_resolver` is the only thing that produces one (TW-AMB-008), and a
-    namespace crossing a process boundary travels as inert data rather than being resolved again on
-    the far side.
+    `session` is an already-resolved namespace string, never a user, request or identity object
+    (TW-AMB-007); `session_resolver` produces it (TW-AMB-008).
 
-    `result_kind=None` makes the operation **private**: unlisted in the register, its progress
-    fan-out scoped to the connection that started it, from start to finish (TW-PRIV-001). Privacy is
-    not authorization - any caller of the namespace holding the token may still read it
-    (TW-SEC-003).
+    `result_kind=None` makes the operation private: unlisted in the register, its progress fan-out
+    scoped to the connection that started it (TW-PRIV-001). Any caller of the namespace holding the
+    token may still read it (TW-SEC-003).
     """
     return OperationScope(
         token,
@@ -1137,12 +979,8 @@ async def mark_queued(
     connection: str | None = None,
     store: Any = None,
 ) -> None:
-    """Write the opening `queued` document (TW-PROG-009).
-
-    This is the web side's write, and it is the one that fixes `result_kind` and `origin_connection`
-    for the operation's whole life (TW-INV-009). The worker that later enters `operation()` inherits
-    them and cannot change them.
-    """
+    """Write the opening `queued` document, fixing `result_kind` and `origin_connection`
+    (TW-PROG-009, TW-INV-009). No-op if the token already has a document."""
     if session is None:
         return None
     store = store if store is not None else configured.store
@@ -1151,8 +989,7 @@ async def mark_queued(
 
     k = make_key(session, token)
     if await store.snapshot(k) is not None:
-        # Idempotent: a second `mark_queued` on a queued operation changes nothing, and on a running
-        # or terminal one it must not reach back and rewrite the state (§4.1).
+        # §4.1: an existing document is never rewritten.
         return None
 
     progress = _opening_progress(
@@ -1185,10 +1022,8 @@ async def mark_failed(
     """Write `failed` from outside the operation - a dispatch that never reached a worker, or an
     execution its executor ended from outside (TW-CALL-008).
 
-    Withdraws the open dialogs and takes the entry out of the register in the same step, and leaves
-    the document readable at its own address, exactly as `operation()`'s exit does (TW-CANCEL-011,
-    TW-REG-007, TW-RET-004): the caller is already watching a token, and a `404` would tell it nothing
-    about why the work ended.
+    Withdraws the open dialogs, takes the entry out of the register and leaves the document readable
+    at its own address, as `operation()`'s exit does (TW-CANCEL-011, TW-REG-007, TW-RET-004).
     """
     await _mark_failed(token, session=session, error=error, store=store)
 
@@ -1232,16 +1067,11 @@ async def _mark_failed(
 
 
 async def migrate_namespace(from_ns: str, to_ns: str) -> int:
-    """TW-AMB-011: the **only** way operations change namespace, and the application is the only caller.
+    """TW-AMB-011: move every operation of `from_ns` to `to_ns`; the only way an operation changes
+    namespace. Returns the number moved.
 
-    On login an application moves the anonymous session's operations onto the account with one call,
-    the same shape as merging a shopping cart. taskwire does not infer that a login happened, does
-    not compare a request's resolved namespace against a stored one, and does not expose this over
-    REST (TW-SEC-008) - a migration is a bulk re-keying, and the only thing between it and a
-    takeover is that the application, not a request, chooses both namespaces.
-
-    Publishes nothing, and is idempotent because `store.migrate` skips a token already present under
-    the destination.
+    Not exposed over REST (TW-SEC-008): the application chooses both namespaces. Publishes nothing;
+    idempotent.
     """
     store = configured.store
     if store is None:

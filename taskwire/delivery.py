@@ -17,10 +17,10 @@ from .settings import configured
 
 @dataclass(frozen=True)
 class Client:
-    """Who is asking. Derivable from either a live socket peer **or** an HTTP request (TW-DEL-005).
+    """Who is asking: a live socket peer or an HTTP request (TW-DEL-005).
 
-    `session` is populated the same way on both paths - by `session_resolver`, the only producer of
-    a namespace (TW-AMB-008) - and exactly one of `peer` / `request` is set.
+    `session` comes from `session_resolver` on both paths, the only producer of a namespace
+    (TW-AMB-008). At most one of `peer` / `request` is set.
     """
 
     session: str
@@ -31,10 +31,9 @@ class Client:
     def __post_init__(self) -> None:
         """TW-DEL-005: a `Client` comes from a socket or from a request, never from both.
 
-        Either names one caller; both name none, and `effective_delivery` would then read a socket's
-        override map on behalf of an HTTP read. Carrying **neither** is legal and ordinary: a caller
-        that reaches `taskwire.rest` directly - a server-rendered page, a script, a test - has a
-        namespace and nothing else.
+        Both together are refused: `effective_delivery` would read a socket's overrides for an HTTP
+        read. Neither is valid: a caller of `taskwire.rest` without a socket or a framework request
+        has only a namespace.
         """
         if self.peer is not None and self.request is not None:
             raise ValueError("taskwire: a Client comes from a socket or from a request, never both (TW-DEL-005)")
@@ -49,34 +48,33 @@ class OperationRef:
 
     @property
     def data(self) -> dict[str, Any]:
-        """Shorthand for the free-form bag, which is what a predicate almost always keys on."""
+        """Shorthand for `progress.data`."""
         return self.progress.data
 
     @property
     def result_kind(self) -> str | None:
+        """Shorthand for `progress.result_kind`."""
         return self.progress.result_kind
 
 
 def push_filter_allows(client: Client, operation: OperationRef) -> bool:
     """Run the configured predicate, swallowing anything it throws.
 
-    TW-DEL-003: an exception out of `push_filter` is treated as `True`. The predicate is a display
-    optimisation; a broken one must degrade to sending more, never to sending less. It is
-    emphatically not access control (TW-DEL-021, TW-INV-018) - it runs after the namespace has
-    already decided what the caller may read.
+    TW-DEL-003: an exception out of `push_filter` is treated as `True`, so a broken predicate sends
+    more, never less. It is not access control (TW-DEL-021, TW-INV-018): it runs after the namespace
+    has decided what the caller may read.
     """
     try:
         return bool(configured.push_filter(client, operation))
-    except Exception:  # noqa: BLE001 - deliberately swallowed; see TW-DEL-003
+    except Exception:  # noqa: BLE001 - swallowed; see TW-DEL-003
         return True
 
 
 OVERRIDES_TAG = "taskwire_overrides"
 """Where a connection's override map lives (TW-DEL-009).
 
-Per-connection memory - `peer.tags` under muxws - and nowhere else. It dies with the socket and is
-persisted on neither side. A map that outlived its socket would be a preference nobody can see and
-nobody can clear, and TW-INV-016 is the client half of the same rule: the client persists nothing.
+Per-connection memory - `peer.tags` under muxws - and nowhere else. It ends with the socket and is
+persisted on neither side; the client persists nothing either (TW-INV-016).
 """
 
 
@@ -94,14 +92,12 @@ def overrides_of(peer: Any) -> dict[str, bool]:
 def effective_delivery(client: Client, operation: OperationRef) -> bool:
     """TW-DEL-001: `fe_override if present else push_filter(client, operation)`.
 
-    Two halves, and the front end's wins when it has spoken. `false` suppresses, `true` revives
-    something the predicate would have suppressed, and *absent* defers - which is why the map is
-    consulted by membership rather than by truthiness.
+    The override, when present, wins: `false` suppresses, `true` revives what the predicate would
+    suppress. Absent defers to the predicate, so the map is consulted by membership.
 
-    **Neither half may raise the ceiling** (TW-DEL-012). An override asserting `true` may only revive
-    an envelope on a channel the socket was already entitled to read; it cannot reach into another
-    namespace, because the namespace was decided before this function was called. This is not access
-    control and must never be pressed into service as any (TW-DEL-021, TW-INV-018).
+    Neither may raise the ceiling (TW-DEL-012): an override `true` only revives an envelope on a
+    channel the socket may already read; the namespace is decided before this call. This is not
+    access control (TW-DEL-021, TW-INV-018).
     """
     declared = overrides_of(client.peer)
     if operation.token in declared:
@@ -110,13 +106,11 @@ def effective_delivery(client: Client, operation: OperationRef) -> bool:
 
 
 def may_be_suppressed(kind: Any, progress: Progress) -> bool:
-    """TW-DEL-010: **only non-terminal `progress` may be suppressed, by either half.**
+    """TW-DEL-010: only non-terminal `progress` may be suppressed, by the predicate or an override.
 
-    `dialog.open`, `dialog.close`, `cancel` and any `progress` carrying a terminal state go to every
-    socket of the namespace whatever the predicate and the overrides say. The reason is not symmetry:
-    a question nobody can see is a worker nobody can free, and a terminal state nobody hears about is
-    a bar frozen at 97 % (TW-INV-005). A display preference must never be able to wedge a worker
-    pool.
+    `dialog.open`, `dialog.close`, `cancel` and terminal `progress` reach every socket of the
+    namespace regardless of the predicate and the overrides (TW-INV-005): a dialog nobody sees keeps
+    its worker blocked, and a terminal state nobody receives leaves the bar short of the end.
     """
     from .models import EnvelopeKind
 
@@ -128,11 +122,9 @@ def may_be_suppressed(kind: Any, progress: Progress) -> bool:
 CONNECTION_TAG = "taskwire_connection"
 """The opaque, server-issued id naming one live socket (TW-DEL-016).
 
-It is minted here and handed back only in the `watch` reply, over a socket the caller already
-established. It is NOT stable across a reconnect and decides exactly two things: the
-`progress_delivery` display flag, and which socket a private operation's progress is written to. It
-reaches one store field, `origin_connection`, which is inert data recorded at start and never used
-for authorization (TW-SEC-003).
+Not stable across a reconnect. It decides two things: the `progress_delivery` display flag, and
+which socket a private operation's progress is written to. It reaches one store field,
+`origin_connection`, recorded at start and never used for authorisation (TW-SEC-003).
 """
 
 

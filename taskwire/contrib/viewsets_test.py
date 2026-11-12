@@ -1,12 +1,8 @@
-"""The REST transport as a viewset: does the protocol survive the move off the hand-rolled router?
+"""The REST transport as a viewset, through a real ASGI stack and over muxws.
 
-`fastapi-viewsets` is an optional extra, so the whole module skips rather than errors when it is not
-installed - the same rule every other `contrib` test obeys.
-
-These tests deliberately go through a **real ASGI stack** rather than calling `taskwire.rest`
-directly. The handlers are already covered without a server; what is unproven here is the wiring -
-that the context processor reaches the namespace, that a path parameter arrives as a token, and that
-`(status, payload)` becomes the status code the protocol specifies.
+Skips when `fastapi-viewsets` is not installed. Asserts the wiring: the context processor reaches the
+namespace, a path parameter arrives as a token, and `(status, payload)` becomes the specified status
+code.
 """
 
 from __future__ import annotations
@@ -22,12 +18,7 @@ T = TypeVar("T")
 
 
 def run(coro: Coroutine[Any, Any, T]) -> T:
-    """Drive one coroutine to completion from a synchronous test.
-
-    `TestClient` is synchronous, so a test that also has to touch the store directly needs a loop of
-    its own. `asyncio.run` closes it afterwards; a hand-made `new_event_loop()` would leak one per
-    call, and a suite that leaks loops eventually fails somewhere unrelated.
-    """
+    """Drive one coroutine to completion from a synchronous test, on a loop `asyncio.run` closes."""
     return asyncio.run(coro)
 
 
@@ -49,8 +40,7 @@ USER_HEADER = "X-Test-User"
 
 
 def _resolve_session(request: Request) -> str | None:
-    """A stand-in application resolver. Never returns `None` - anonymity is not a reason to
-    (TW-AMB-009)."""
+    """The account's namespace when known, the anonymous one otherwise; never `None` (TW-AMB-009)."""
     return "ns:" + request.headers.get(USER_HEADER, "anon")
 
 
@@ -62,9 +52,7 @@ def store() -> Iterator[taskwire.MemoryStore]:
     memory = taskwire.MemoryStore()
     taskwire.configure(store=memory, transport=taskwire.NullTransport(), session_resolver=_resolve_session)
     yield memory
-    # The processor and middleware lists are module-level state of the *other* library; leaving
-    # taskwire's on them would make every later test in the session resolve a namespace and track
-    # operations it never asked for.
+    # The processor and middleware lists are fastapi-viewsets' module-level state.
     from taskwire.contrib.viewsets import TaskwireMiddleware
 
     if taskwire_context_processor in viewset_settings.viewsets_context_processors:
@@ -78,7 +66,7 @@ def store() -> Iterator[taskwire.MemoryStore]:
 
 
 def _make_app(memory: taskwire.MemoryStore) -> FastAPI:
-    """The whole of what an application writes: one registration call, plus its own action."""
+    """One registration call, plus the application's own `/start` action."""
     app = FastAPI()
     router = APIRouter()
     register_taskwire_rest(router)
@@ -86,8 +74,7 @@ def _make_app(memory: taskwire.MemoryStore) -> FastAPI:
 
     @app.post("/start")
     async def start(request: Request) -> dict:
-        """An ordinary application action. The token is minted by the caller when it sends one -
-        which is the workflow the library is built around - and here when it does not."""
+        """Marks the caller's token `queued`, minting one when the caller sends none."""
         token = request.headers.get("X-Taskwire-Token") or taskwire.new_token()
         await taskwire.mark_queued(
             token,
@@ -111,16 +98,7 @@ HEADERS = {USER_HEADER: "alice"}
 
 
 def test_the_collection_lives_at_the_base_path(http: TestClient) -> None:
-    """`GET {prefix}` answers the whole `Register`, and there is no `/operations` segment any more.
-
-    That removes TW-REST-006's hazard by construction rather than by declaration order: with the
-    collection at the collection's own URL there is no literal path that could ever be mistaken for
-    a token, so nothing depends on remembering to declare one route before another.
-
-    The envelope matters as much as the rows. `poll_after_ms` is binding on the client's next poll
-    (TW-REST-014), so serving `list[OperationSummary]` instead of the `Register` would drop the one
-    field the polling ladder is required to obey.
-    """
+    """`GET {prefix}` answers the whole `Register`, including `poll_after_ms` (TW-REST-014)."""
     started = http.post("/start", headers=HEADERS).json()["token"]
 
     listing = http.get("/taskwire", headers=HEADERS)
@@ -132,17 +110,13 @@ def test_the_collection_lives_at_the_base_path(http: TestClient) -> None:
     assert body["poll_after_ms"] > 0
     assert body["v"] == 2
 
-    # TW-REG-011: there is no percentage on the aggregate and no rule may add one. Two operations'
-    # self-reported percentages are not commensurable, so any figure across them is invented.
+    # TW-REG-011: the aggregate has no percentage.
     assert "percent" not in body["aggregate"]
 
 
 def test_a_namespace_never_sees_another_ones_operations(http: TestClient) -> None:
-    """The register takes no parameters (TW-REG-003), so there is none that could name a namespace.
-
-    What a caller sees is decided entirely by `session_resolver`, and this is the test that the
-    context processor - not a request object smuggled through - is what carries that decision.
-    """
+    """TW-REG-003: the register is the namespace's that `session_resolver` returns, through the
+    context processor."""
     http.post("/start", headers={USER_HEADER: "alice"})
 
     assert http.get("/taskwire", headers={USER_HEADER: "bob"}).json()["operations"] == []
@@ -150,48 +124,19 @@ def test_a_namespace_never_sees_another_ones_operations(http: TestClient) -> Non
 
 
 def test_a_foreign_token_is_not_found_rather_than_forbidden(http: TestClient) -> None:
-    """TW-SEC-002: unknown and foreign both answer 404, never 403.
-
-    A 403 would confirm the token exists in *somebody's* namespace, which turns the endpoint into an
-    oracle for enumerating other people's operations.
-    """
+    """TW-SEC-002: an unknown, a foreign and a malformed token all answer 404."""
     token = http.post("/start", headers={USER_HEADER: "alice"}).json()["token"]
 
     first = http.get(f"/taskwire/{token}", headers={USER_HEADER: "alice"})
-    if first.status_code != 200:
-        import sys
-        import threading
-
-        from fastapi_viewsets.conf import settings as vs
-
-        print("DIAG body", first.json(), file=sys.stderr)
-        print("DIAG configured", taskwire.configured.store, taskwire.configured.session_resolver, file=sys.stderr)
-        print("DIAG processors", vs.viewsets_context_processors, file=sys.stderr)
-        print("DIAG middleware", vs.viewsets_command_middleware, file=sys.stderr)
-        print("DIAG threads", [t.name for t in threading.enumerate()], file=sys.stderr)
-        print(  # noqa: E501
-            "DIAG second",
-            http.get(f"/taskwire/{token}", headers={USER_HEADER: "alice"}).status_code,
-            file=sys.stderr,  # noqa: E501
-        )
-        print(
-            "DIAG routes",
-            [(getattr(r, "path", None), getattr(r, "methods", None)) for r in http.app.routes],
-            file=sys.stderr,
-        )
     assert first.status_code == 200
     assert http.get(f"/taskwire/{token}", headers={USER_HEADER: "bob"}).status_code == 404
     assert http.get(f"/taskwire/{taskwire.new_token()}", headers=HEADERS).status_code == 404
-    # Malformed, and rejected before the store is touched (TW-REST-006), so scanning the token space
-    # costs the attacker a round trip and the server nothing.
+    # Malformed: rejected before the store is read (TW-REST-006).
     assert http.get("/taskwire/not-a-uuid", headers=HEADERS).status_code == 404
 
 
 def test_a_snapshot_is_the_whole_state_in_one_document(http: TestClient) -> None:
-    """TW-CORE-005: no event log, no sequence numbers, no replay - a client gets current state only.
-
-    Which is what makes reconnect a single GET, and why this document has to be complete.
-    """
+    """TW-CORE-005: `GET {prefix}/{token}` answers the complete current state."""
     token = http.post("/start", headers=HEADERS).json()["token"]
 
     body = http.get(f"/taskwire/{token}", headers=HEADERS).json()
@@ -204,11 +149,7 @@ def test_a_snapshot_is_the_whole_state_in_one_document(http: TestClient) -> None
 
 
 def test_cancel_is_acknowledged_and_never_claimed_as_done(http: TestClient) -> None:
-    """TW-CANCEL-003: `202`, because the operation stops when its own code next looks - or never.
-
-    taskwire does not revoke tasks, signal threads or interrupt blocking code (TW-CANCEL-009), so a
-    `200` here would claim a power the library does not have.
-    """
+    """TW-REST-009: cancel answers `202` and sets `cancel_requested`; another namespace gets 404."""
     token = http.post("/start", headers=HEADERS).json()["token"]
 
     accepted = http.post(f"/taskwire/{token}/cancel", headers=HEADERS)
@@ -220,13 +161,7 @@ def test_cancel_is_acknowledged_and_never_claimed_as_done(http: TestClient) -> N
 
 
 def test_the_connection_header_reaches_the_context(http: TestClient, store: taskwire.MemoryStore) -> None:
-    """TW-REST-002: one header, two purposes, and there must not be a second.
-
-    It names the connection on a read, and it is where `origin_connection` comes from on the request
-    that starts an operation (TW-PRIV-001). A viewset action never receives the `Request` -
-    `route_viewset` reserves that parameter name and strips it - so this is the test that the
-    context processor is a real substitute rather than a plausible one.
-    """
+    """TW-REST-002: on a read, the `Client` the context processor builds carries the connection header."""
     token = http.post("/start", headers={**HEADERS, CONNECTION_HEADER: "conn-42"}).json()["token"]
 
     seen: list[str | None] = []
@@ -250,15 +185,8 @@ def test_a_question_is_answered_once_and_the_loser_is_told_so(
     http: TestClient,
     store: taskwire.MemoryStore,
 ) -> None:
-    """TW-STORE-003: the store is the single arbiter and the first answer wins.
-
-    Two tabs of one namespace both see the question - that is the point of a namespace-wide register
-    (TW-REG-001) - so two of them answering is a normal race rather than a fault. The second gets
-    `409`, and the client library treats that as a closed modal and nothing else (TW-DLG-011).
-
-    `did` is *this asking*, never the `dialog_id` (TW-DLG-002): keying by the latter would let two
-    concurrent operations rendering the same component answer each other's question.
-    """
+    """TW-STORE-003, TW-DLG-011: the first reply to `did` wins with `204`, the second gets `409`, and a
+    button the dialog does not offer is refused."""
     token = http.post("/start", headers=HEADERS).json()["token"]
     key = taskwire.key("ns:alice", token)
     dialog = taskwire.DialogRequest(
@@ -268,8 +196,7 @@ def test_a_question_is_answered_once_and_the_loser_is_told_so(
     )
     run(store.put_dialog(key, dialog, 3600))
 
-    # An open dialog is `waiting_input` on the way out of the store, derived and never written
-    # (TW-PROG-010, TW-PROG-013): an open question holds a worker.
+    # An open dialog reads as `waiting_input`, derived and never written (TW-PROG-010, TW-PROG-013).
     assert http.get(f"/taskwire/{token}", headers=HEADERS).json()["progress"]["state"] == "waiting_input"
 
     first = http.post(f"/taskwire/{token}/dialogs/ask-1", headers=HEADERS, json={"button": "yes", "values": {}})
@@ -279,7 +206,7 @@ def test_a_question_is_answered_once_and_the_loser_is_told_so(
     second = http.post(f"/taskwire/{token}/dialogs/ask-1", headers=HEADERS, json={"button": "no", "values": {}})
     assert second.status_code == 409
 
-    # A button the question never offered is the caller's mistake, not a race (TW-DLG-004).
+    # A button the dialog does not offer (TW-DLG-004).
     assert http.post(
         f"/taskwire/{token}/dialogs/ask-1",
         headers=HEADERS,
@@ -288,11 +215,7 @@ def test_a_question_is_answered_once_and_the_loser_is_told_so(
 
 
 def test_collect_hands_the_result_over_exactly_once(http: TestClient, store: taskwire.MemoryStore) -> None:
-    """TW-RES-010: whoever gets `204` owns it; a second caller is refused.
-
-    Without a single arbiter two tabs would each believe they had collected the same export. Dismiss
-    is the same act under another name (TW-REST-008) and differs only in being idempotent.
-    """
+    """TW-RES-010: the first collect answers `204`, a second one is refused."""
     token = http.post("/start", headers=HEADERS).json()["token"]
     key = taskwire.key("ns:alice", token)
 
@@ -300,7 +223,7 @@ def test_collect_hands_the_result_over_exactly_once(http: TestClient, store: tas
     snapshot.progress.result = taskwire.Result.download(href="https://example.test/report.csv", mime="text/csv")
     run(store.commit(key, snapshot.progress, 3600))
 
-    # The value is read from the snapshot *before* collecting - which is why collect needs no body.
+    # The result is in the snapshot; collect answers no body.
     assert http.get(f"/taskwire/{token}", headers=HEADERS).json()["progress"]["result"]["kind"] == "taskwire.download"
 
     assert http.post(f"/taskwire/{token}/collect", headers=HEADERS).status_code == 204
@@ -308,8 +231,7 @@ def test_collect_hands_the_result_over_exactly_once(http: TestClient, store: tas
 
 
 def test_the_schema_endpoint_describes_every_action(http: TestClient) -> None:
-    """The FE proxy validates itself against this, so a moved endpoint and a stale client find each
-    other at startup instead of in production."""
+    """`/taskwire/schema` lists the six endpoints and no write operation on the collection or a token."""
     paths = http.get("/taskwire/schema").json()["paths"]
 
     assert "/taskwire" in paths
@@ -318,8 +240,7 @@ def test_the_schema_endpoint_describes_every_action(http: TestClient) -> None:
         assert f"/taskwire/{{token}}/{action}" in paths
     assert "/taskwire/{token}/dialogs/{did}" in paths
 
-    # No write half: an operation is started by the application's own action, never by taskwire
-    # (TW-CORE-007), and progress is written by the operation and by nothing else (TW-PROG-012).
+    # No create, update or destroy (TW-CORE-007, TW-PROG-012).
     assert "post" not in paths["/taskwire"]
     assert set(paths["/taskwire/{token}"]) == {"get"}
 
@@ -357,8 +278,7 @@ def command(
 ) -> CommandStream:
     """One inbound command stream, through the real `process_command` and the test's application.
 
-    No `connection` because there is no handshake here; the stream states the header itself, which
-    is the layer that wins over the handshake anyway.
+    No `connection`: there is no handshake, and the stream states the headers itself.
     """
     from fastapi_viewsets.mux_ws import METHOD_KEY, PATH_KEY, process_command
 
@@ -368,14 +288,8 @@ def command(
 
 
 def test_the_same_six_endpoints_answer_over_a_muxws_stream(http: TestClient) -> None:
-    """One registration, two transports: `route_viewset` publishes the viewset on muxws as well.
-
-    This is the whole reason there is no second implementation of the request/response half. A
-    command stream reaches the identical routes, so validation, the middleware chain, the context
-    processor and the response models are the same objects - not the same intent.
-
-    The `http` fixture is what performs the registration; the calls below go nowhere near it.
-    """
+    """One registration publishes the six endpoints on muxws as well: list, retrieve and cancel answer
+    over a command stream."""
     token = http.post("/start", headers=HEADERS).json()["token"]
 
     listing = command(http, "GET", "/taskwire")
@@ -393,13 +307,8 @@ def test_the_same_six_endpoints_answer_over_a_muxws_stream(http: TestClient) -> 
 
 
 def test_the_namespace_over_a_stream_is_the_one_the_resolver_returns(http: TestClient) -> None:
-    """TW-SEC-003: the context processor is transport-blind, and that is what carries the boundary.
-
-    `process_command` hands the handshake's headers on as the baseline for every command, so
-    `session_resolver` decides a stream's namespace exactly as it decides a request's. A token
-    belonging to somebody else answers 404 and never 403 (TW-SEC-002) here too - a socket must not
-    be the oracle the REST endpoint refuses to be.
-    """
+    """TW-SEC-003, TW-SEC-002: over a stream `session_resolver` decides the namespace, and a foreign
+    token answers 404."""
     token = http.post("/start", headers={USER_HEADER: "alice"}).json()["token"]
 
     assert command(http, "GET", f"/taskwire/{token}", user="alice").status == 200
@@ -411,13 +320,8 @@ def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
     http: TestClient,
     store: taskwire.MemoryStore,
 ) -> None:
-    """The reply is `POST {token}/dialogs/{did}`, on this transport as on the other.
-
-    There is no bespoke stream kind for it: it is one of the six, it carries a body, and the store
-    is still the single arbiter (TW-STORE-003, TW-DLG-011). A WS-only client therefore answers
-    questions without a REST endpoint in reach, which is what makes the socket a complete transport
-    rather than an accelerator with a hole in it.
-    """
+    """`POST {token}/dialogs/{did}` over a stream: the first reply gets `204`, the second `409` with
+    the winning reply (TW-STORE-003, TW-DLG-010, TW-DLG-011)."""
     token = http.post("/start", headers=HEADERS).json()["token"]
     key = taskwire.key("ns:alice", token)
     run(

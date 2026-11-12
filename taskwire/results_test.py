@@ -1,10 +1,4 @@
-"""Acceptance tests for collectable results (M7, TW-RES-*, TW-STORE-016).
-
-The rule worth stating twice is TW-RES-005: **a parked result holds a record, never a worker.** The
-task has finished; only the record waits. An implementation that read "waiting_input until collected"
-as an `ask()` would pin a worker overnight on a download nobody clicked, and it would pass every test
-that only looked at the document.
-"""
+"""Acceptance tests for collectable results (TW-RES-*, TW-STORE-016)."""
 
 from __future__ import annotations
 
@@ -45,11 +39,8 @@ def configured_store():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_parked_result_holds_no_worker():
-    """TW-RES-005, and it is asserted against the CLOCK rather than against the document.
-
-    The block must return promptly. A document check alone would pass against an implementation that
-    waited for collection - the state would be right and the worker would still be pinned.
-    """
+    """TW-RES-005: the block returns within a second of `set_result()`, and the document is in
+    `waiting_input` holding the result."""
     store = MemoryStore()
     token = new_token()
     loop = asyncio.get_running_loop()
@@ -70,10 +61,7 @@ async def test_a_parked_result_holds_no_worker():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_clean_exit_with_a_result_is_not_done():
-    """TW-RES-004: it lands in `waiting_input`, and the register keeps it.
-
-    Its completion is written exactly as before; only the state it lands in differs.
-    """
+    """TW-RES-004: a clean exit with a result lands in `waiting_input`, and the register keeps it."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session=NS, result_kind="acme.report", store=store) as reporter:
@@ -86,11 +74,7 @@ async def test_a_clean_exit_with_a_result_is_not_done():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_waiting_input_has_two_causes_and_they_are_not_alike():
-    """TW-PROG-013. Both derive the same state; only one of them holds a worker.
-
-    Any passage or implementation that reasons "waiting_input implies a pinned worker" is wrong about
-    the result case, which is why the two are asserted side by side.
-    """
+    """TW-PROG-013: a parked result is in `waiting_input` with no open dialog."""
     store = MemoryStore()
     parked = new_token()
     async with operation(parked, session=NS, result_kind="k", store=store) as reporter:
@@ -104,7 +88,7 @@ async def test_waiting_input_has_two_causes_and_they_are_not_alike():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_set_result_is_write_once_and_root_only():
-    """TW-RES-001 / TW-RES-003."""
+    """TW-RES-001 / TW-RES-003: a second `set_result()` and one on a subtask raise `ValueError`."""
     store = MemoryStore()
     async with operation(new_token(), session=NS, result_kind="k", store=store) as reporter:
         await reporter.set_result(Result.panel("k", value=1))
@@ -118,11 +102,7 @@ async def test_set_result_is_write_once_and_root_only():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_private_operation_cannot_write_a_result():
-    """TW-RES-001 with TW-PRIV-001: private from start to finish, and there is no promotion path.
-
-    An operation that *should* interest other tabs declares a result at start - even when that result
-    is only a dialog saying it finished.
-    """
+    """TW-RES-001, TW-PRIV-001: `set_result()` on an operation without `result_kind` raises."""
     store = MemoryStore()
     async with operation(new_token(), session=NS, store=store) as reporter:  # no result_kind
         with pytest.raises(ValueError, match="no `result_kind`"):
@@ -131,7 +111,7 @@ async def test_a_private_operation_cannot_write_a_result():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_an_oversized_result_raises_and_writes_nothing():
-    """TW-PROG-008: capped at `max_data_bytes`, by raising and naming the size, never truncating."""
+    """TW-PROG-008: a result above `max_data_bytes` raises naming the size and is not written."""
     store = MemoryStore()
     token = new_token()
     async with operation(token, session=NS, result_kind="k", store=store) as reporter:
@@ -147,11 +127,7 @@ async def test_an_oversized_result_raises_and_writes_nothing():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_release_result_fires_once_under_concurrency(configured_store):
-    """TW-STORE-016, named in the specification.
-
-    Twelve collects at once must release exactly once. Each release fires `result_released`, and an
-    application deleting its own artefact in that hook would otherwise delete it twice.
-    """
+    """TW-STORE-016: twelve concurrent releases release exactly once."""
     store = configured_store
     token = new_token()
     async with operation(token, session=NS, result_kind="k", store=store) as reporter:
@@ -166,7 +142,7 @@ async def test_release_result_fires_once_under_concurrency(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_collect_and_dismiss_are_the_same_act_with_two_names(configured_store):
-    """TW-REST-008. Both release, both fire the hook, both remove the entry for every tab."""
+    """TW-REST-008: collect and dismiss both release, fire `result_released` and remove the entry."""
     store = configured_store
     fired: list = []
     configure(result_released=lambda snapshot: fired.append(snapshot.token))
@@ -187,11 +163,7 @@ async def test_collect_and_dismiss_are_the_same_act_with_two_names(configured_st
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_dismiss_is_idempotent_and_collect_is_not(configured_store):
-    """TW-REST-008, and the reason the two differ.
-
-    Dismissing twice is harmless. Collecting twice is not: an application that fires
-    `result_released` twice deletes its artefact twice.
-    """
+    """TW-REST-008: a repeated dismiss is 204; a repeated collect is 409 `no_uncollected_result`."""
     store = configured_store
     token = new_token()
     async with operation(token, session=NS, result_kind="k", store=store) as reporter:
@@ -204,8 +176,7 @@ async def test_dismiss_is_idempotent_and_collect_is_not(configured_store):
     async with operation(other, session=NS, result_kind="k", store=store) as reporter:
         await reporter.set_result(Result.panel("k", value=1))
     assert (await collect_result(Client(session=NS), other))[0] == 204
-    # Not idempotent, and the tombstone is what lets the refusal say which "no": the token is known
-    # and there is nothing left to hand back, rather than the token being unknown (TW-RET-004).
+    # The tombstone makes the repeat a 409, not a 404 (TW-RET-004).
     status, payload = await collect_result(Client(session=NS), other)
     assert status == 409, "collect is not"
     assert payload["detail"] == "taskwire.no_uncollected_result"
@@ -213,7 +184,7 @@ async def test_dismiss_is_idempotent_and_collect_is_not(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_dismiss_running_returns_409_and_operation_continues(configured_store):
-    """Named in the brief. Releasing is not cancelling, and a blocked worker is not a result."""
+    """TW-REST-008: dismiss and collect of a running operation are 409, and the operation continues."""
     store = configured_store
     token = new_token()
     reached_the_end = False
@@ -233,10 +204,7 @@ async def test_dismiss_running_returns_409_and_operation_continues(configured_st
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_parked_result_refuses_a_cancel_with_409(configured_store):
-    """TW-CANCEL-010: its work is over and there is nothing left to interrupt.
-
-    The affordance on such an entry is dismiss, never cancel.
-    """
+    """TW-CANCEL-010: a cancel of a parked result is 409 `holds_an_uncollected_result`."""
     store = configured_store
     token = new_token()
     async with operation(token, session=NS, result_kind="k", store=store) as reporter:
@@ -249,11 +217,7 @@ async def test_a_parked_result_refuses_a_cancel_with_409(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_the_release_hook_cannot_prevent_the_release(configured_store):
-    """TW-RES-011: an exception out of it is swallowed and logged.
-
-    The result is already released by the time the hook runs; raising would leave the caller
-    believing a release failed that in fact happened.
-    """
+    """TW-RES-011: a raising `result_released` hook does not prevent the release or the `done` write."""
     store = configured_store
 
     def explode(_snapshot: object) -> None:
@@ -273,11 +237,7 @@ async def test_the_release_hook_cannot_prevent_the_release(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_taskwire_stores_a_pointer_and_never_a_file():
-    """TW-RES-007: it never creates, serves, refreshes, proxies, validates or deletes the artefact.
-
-    Asserted by source inspection, because the failure mode is a library that grows an opinion about
-    who may fetch somebody else's file.
-    """
+    """TW-RES-007: no package module fetches a URL, and a `Result` keeps its `ResultRef` as given."""
     from pathlib import Path
 
     package = Path(taskwire.__file__).resolve().parent
@@ -294,7 +254,7 @@ async def test_taskwire_stores_a_pointer_and_never_a_file():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_the_three_result_shapes_round_trip():
-    """TW-RES-002: `kind` names the component that collects this, mapped exactly as `dialog_id` is."""
+    """TW-RES-002: the download, panel and dialog shapes carry their `kind` and round-trip."""
     download = Result.download(href="https://example.test/a.csv", mime="text/csv", label=Text(text="Report"))
     assert download.kind == "taskwire.download"
     assert download.ref is not None
@@ -312,12 +272,8 @@ async def test_the_three_result_shapes_round_trip():
 
 
 def test_the_result_decorators_are_sugar_over_result_kind_and_nothing_else():
-    """TW-API-005: they add no mechanism the keyword does not already have.
-
-    An application declares its own kind by passing `result_kind` directly, and taskwire never
-    validates the string against a known set - the frontend maps `kind` to a component exactly as it
-    maps `dialog_id`, so a new kind is a frontend change rather than a protocol one.
-    """
+    """TW-API-005: the result decorators declare a `result_kind` (and params) and leave the callable
+    unchanged."""
     from taskwire import declared_result_kind, dialog_result, downloadable_result, panel_result
     from taskwire.decorators import declared_result_params
 
@@ -338,7 +294,7 @@ def test_the_result_decorators_are_sugar_over_result_kind_and_nothing_else():
     assert declared_result_kind(notify_user) == "taskwire.dialog"
     assert declared_result_params(notify_user) == {"dialog_id": "acme.finished"}
 
-    # Sugar means the wrapped callable still is what it was.
+    # The decorated callable is unchanged.
     assert export_csv() == "done"
     assert import_rows.__name__ == "import_rows"
     assert declared_result_kind(lambda: None) is None, "an undecorated callable declares nothing"
@@ -346,17 +302,8 @@ def test_the_result_decorators_are_sugar_over_result_kind_and_nothing_else():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_the_release_hook_receives_the_released_result(configured_store):
-    """TW-RES-010: the event MUST carry the released `Result`.
-
-    Found by running the several-operations example rather than by reading the code: the hook was
-    being handed a snapshot read *after* `release_result`, and `release_result` clears `result` off
-    the document in the same atomic step - so the hook saw `None`.
-
-    That is the exact failure the rule exists to prevent. taskwire stores a pointer and never a file
-    (TW-RES-007), so this hook is the only place that knows how to delete the artefact, and it needs
-    the `ref` to do it. A hook that fires with nothing in it is a hook that leaks every file the
-    application ever generated.
-    """
+    """TW-RES-010: the hook receives the snapshot with the released `Result` on it, although
+    `release_result` clears it from the stored document."""
     store = configured_store
     received: list[Result | None] = []
     configure(result_released=lambda snapshot: received.append(snapshot.progress.result))
@@ -377,11 +324,7 @@ async def test_the_release_hook_receives_the_released_result(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_dismiss_carries_the_result_too(configured_store):
-    """Collect and dismiss are the same act (TW-REST-008), so the hook is the same on both paths.
-
-    Dismiss is the path an application is *more* likely to need this on: the user said they do not
-    want it, so the artefact is certainly rubbish and certainly wants deleting.
-    """
+    """TW-REST-008, TW-RES-010: dismiss also hands the hook the released `Result`."""
     store = configured_store
     received: list = []
     configure(result_released=lambda snapshot: received.append(snapshot.progress.result))

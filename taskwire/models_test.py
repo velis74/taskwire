@@ -1,9 +1,7 @@
 """Wire conformance: the golden corpus under `conformance/wire/` and the invariants of §3.
 
-The fixtures are read **in place** (TW-PKG-002). There is no copy step and there must never be one:
-`vitest` reads these same files from the same paths, and a fixture that has to be copied is a
-fixture that can drift between the two languages, which is the whole thing this directory exists to
-prevent.
+The fixtures are read in place (TW-PKG-002), with no copy step: `vitest` reads the same files from
+the same paths, so the two languages test one corpus.
 
 Each fixture file is one document: `{"kind": ..., "document": ...}`, where `kind` names the model
 that parses it.
@@ -82,7 +80,7 @@ VERSIONED_KINDS = frozenset({"snapshot", "register", "envelope"})
 
 @pytest.fixture(autouse=True)
 def clean_configuration():
-    """Global wiring is a process singleton; no test may leak one into the next."""
+    """Resets the process-wide configuration before and after the test."""
     taskwire.reset_configuration()
     yield
     taskwire.reset_configuration()
@@ -108,8 +106,8 @@ def walk(node: Any):
 def assert_nothing_lost(document: Any, serialized: Any, where: str) -> None:
     """Every value the document carried survives the round trip, in the same place.
 
-    A `null` in the document may come back as an omitted key and vice versa - that is TW-CORE-010,
-    absent and null are the same thing - but nothing else may change.
+    A `null` in the document may come back as an omitted key and vice versa (TW-CORE-010); nothing
+    else may change.
     """
     if isinstance(document, dict):
         assert isinstance(serialized, dict), f"{where}: expected an object, got {type(serialized).__name__}"
@@ -125,8 +123,7 @@ def assert_nothing_lost(document: Any, serialized: Any, where: str) -> None:
         for index, (item, round_tripped) in enumerate(zip(document, serialized, strict=True)):
             assert_nothing_lost(item, round_tripped, f"{where}[{index}]")
     else:
-        # `type` before `==`: in Python `True == 1` and `1 == 1.0`, so an equality check alone would
-        # let a boolean turn into an integer on the wire without the assertion noticing.
+        # `type` before `==`: in Python `True == 1` and `1 == 1.0`.
         assert type(serialized) is type(document), (
             f"{where}: {document!r} ({type(document).__name__}) became {serialized!r} ({type(serialized).__name__})"
         )
@@ -136,8 +133,7 @@ def assert_nothing_lost(document: Any, serialized: Any, where: str) -> None:
 def strip_nulls(node: Any) -> Any:
     """The same document with every explicitly-null key removed, at every depth.
 
-    TW-CORE-010 says absent and `null` are interchangeable, so this transformation MUST NOT be
-    observable to a parser.
+    Under TW-CORE-010 this transformation is not observable to a parser.
     """
     if isinstance(node, dict):
         return {key: strip_nulls(value) for key, value in node.items() if value is not None}
@@ -147,13 +143,11 @@ def strip_nulls(node: Any) -> Any:
 
 
 def test_wire_fixtures_roundtrip() -> None:
-    """TW-CORE-010, TW-CORE-012, TW-REV-004: parse -> model -> serialize is lossless, for every fixture.
+    """TW-CORE-010, TW-CORE-012, TW-REV-004: parse -> model -> serialise is lossless and stable for
+    every fixture.
 
-    Serializing the parsed model and parsing that again must yield the same model, and no value the
-    fixture carried may be dropped on the way. The corpus itself is part of the acceptance criterion:
-    all six `state` values, a null percent and an absent one, a private progress document and a
-    shared one, the three `Result` shapes, a `Snapshot` and a `Register` carrying `"v": 1`, and an
-    `Aggregate` with counts.
+    The corpus covers all six `state` values, a null percent and an absent one, a private and a shared
+    progress document, the three `Result` shapes, and versioned documents carrying the wire version.
     """
     assert FIXTURE_PATHS, f"the golden corpus at {WIRE_DIR} is empty"
 
@@ -171,8 +165,7 @@ def test_wire_fixtures_roundtrip() -> None:
 
         parse = PARSERS[kind]
         model = parse(document)
-        # Not `is not None` - a fixture that parsed to the wrong model would satisfy that and
-        # nothing else here would notice, because every later assertion is relative to `model`.
+        # The parsed type is checked: every later assertion is relative to `model`.
         assert type(model).__name__.lower() == kind.replace("_", ""), f"{path.name}: parsed to a {type(model).__name__}"
 
         serialized = model.to_dict()
@@ -209,8 +202,7 @@ def test_wire_fixtures_roundtrip() -> None:
     assert percent_absent, "the corpus needs a progress document with no percent key at all (TW-CORE-010)"
     assert kinds_seen >= {"text", "result", "progress", "snapshot", "register", "aggregate", "envelope"}
 
-    # The brief names these shapes one by one, so assert them one by one rather than trusting that
-    # "there is at least one `text` fixture" stands in for "key only, text only, and both".
+    # Each `Text` and `Result` shape is present.
     assert {(True, False), (False, True), (True, True)} <= text_shapes, "TW-TXT-001: any subset of the three is valid"
     assert any(params and not ref for params, ref, _value in result_shapes), "corpus needs a Result with kind + params"
     assert any(ref for _params, ref, _value in result_shapes), "corpus needs a Result carrying a ref"
@@ -220,13 +212,8 @@ def test_wire_fixtures_roundtrip() -> None:
 
 
 def test_aggregate_serialization_has_no_percent_key() -> None:
-    """TW-REG-011: the aggregate carries no percentage - absent from the wire, not `null` on it.
-
-    There is no unit in which two operations' self-reported percentages are commensurable, so there
-    is no honest number to publish. `percent: float | None` on a shared shape is precisely how one
-    gets added back, which is why `Aggregate` is its own dataclass and not a `Progress`
-    (TW-REG-009).
-    """
+    """TW-REG-011 / TW-REG-009: `Aggregate` has no `percent` field, does not serialise or carry one
+    through a parse, and no fixture carries one."""
     aggregate = Aggregate(
         state=ProgressState.RUNNING,
         data={"total": 3, "queued": 1, "running": 2, "waiting_input": 0},
@@ -239,8 +226,7 @@ def test_aggregate_serialization_has_no_percent_key() -> None:
     assert "percent" not in {f.name for f in fields(Aggregate)}, "Aggregate must not even have the field"
     assert set(serialized) == {"state", "title", "data", "updated_at", "label"}
 
-    # A `percent` arriving on the wire MUST NOT be carried through either: a parser that splatted
-    # `**raw` onto the dataclass would round-trip the field back out and reintroduce it by accident.
+    # A `percent` arriving on the wire is not carried through.
     smuggled = Aggregate.from_dict({"state": "running", "data": {"total": 1}, "percent": 40.0})
     assert "percent" not in smuggled.to_dict()
     assert not hasattr(smuggled, "percent")
@@ -290,9 +276,7 @@ def test_absent_and_null_are_equivalent_to_a_parser() -> None:
     snapshot_nulled = {**snapshot_absent, "dialogs": None, "cancel_requested": None}
     assert Snapshot.from_dict(snapshot_absent) == Snapshot.from_dict(snapshot_nulled)
 
-    # The hand-written cases above choose which fields to null, which is exactly how a parser bug on
-    # an unchosen field survives. Drive the same rule off the corpus instead: deleting every explicit
-    # `null`, at every depth, MUST NOT be observable to any parser.
+    # Over the corpus: deleting every explicit `null`, at every depth, does not change any parse.
     for path in FIXTURE_PATHS:
         kind, document = load_fixture(path)
         parse = PARSERS[kind]
@@ -300,23 +284,16 @@ def test_absent_and_null_are_equivalent_to_a_parser() -> None:
 
 
 def test_input_type_absent_and_null_agree() -> None:
-    """TW-CORE-010 with TW-DLG-004: `type` is optional, so `null` MUST parse as the default.
-
-    `Input.from_dict` reads it as `raw.get("type", "string")`. A default passed to `.get` only fires
-    on a *missing* key: an explicit `null` sails past it and lands in the model unchanged, so the
-    absent and null spellings of the same optional field parse to different things. It also produces
-    an `Input` whose `type` is not one of the four TW-DLG-004 allows and nothing more.
-    """
+    """TW-CORE-010 with TW-DLG-004: an explicit null `type` parses as the default `string`."""
     assert Input.from_dict({"name": "rows", "type": None}) == Input.from_dict({"name": "rows"})
     assert Input.from_dict({"name": "rows", "type": None}).type in INPUT_TYPES
 
 
 def test_timestamps_are_rfc3339_utc_with_z() -> None:
-    """TW-CORE-010: every timestamp is RFC 3339 UTC with a `Z` suffix. There is no second format."""
+    """TW-CORE-010: every timestamp is RFC 3339 UTC with a `Z` suffix."""
     stamp = now_iso()
     assert RFC3339_Z.match(stamp), f"now_iso() produced {stamp!r}"
-    # The regex alone would accept a local-time reading labelled `Z`, which is the bug that matters
-    # here and is invisible to anyone testing in UTC. Compare the value, not just its shape.
+    # The value is compared too: the regex alone accepts a local-time reading labelled `Z`.
     parsed = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
     drift = abs(parsed - datetime.now(timezone.utc))
     assert drift < timedelta(seconds=30), f"now_iso() is {drift} away from UTC now - it is reading a local clock"
@@ -340,12 +317,8 @@ def test_timestamps_are_rfc3339_utc_with_z() -> None:
 
 
 def test_needs_attention_is_derived_not_read_off_state() -> None:
-    """TW-REG-004 / TW-PROG-010: `needs_attention` is derived, never read off `progress.state`.
-
-    Its two causes are not alike (TW-PROG-013): an open dialog holds a worker, an uncollected result
-    holds nothing at all. Both are computed from the entry itself, and a stale or wrong `state` in
-    the stored document may not decide the answer either way.
-    """
+    """TW-REG-004 / TW-PROG-010: `needs_attention` is derived from open dialogs and an uncollected
+    result (TW-PROG-013), never read off `progress.state`."""
     holding_a_result = Snapshot(
         token="6b1f1c9e-0f2a-4a7d-9c2e-5f5b6a7c8d90",
         rev=1786439700123,
@@ -370,11 +343,10 @@ def test_needs_attention_is_derived_not_read_off_state() -> None:
     )
     assert says_waiting_but_holds_nothing.needs_attention is False, "no dialog and no result means nothing to attend to"
     assert says_waiting_but_holds_nothing.open_dialogs == []
-    # The stored state is untouched by the derivation - it is simply not what the answer comes from.
+    # The derivation leaves the stored state untouched.
     assert says_waiting_but_holds_nothing.progress.state is ProgressState.WAITING_INPUT
 
-    # The other cause of TW-PROG-013, which the assertions above never reach: an open dialog, on a
-    # document whose stored state says `running`. This one holds a worker; the result one does not.
+    # The other cause of TW-PROG-013: an open dialog on a document whose stored state is `running`.
     def asking(dialog_state: DialogState) -> Snapshot:
         return Snapshot(
             token="c7d8e9fa-0b1c-4d2e-8f30-4152637485a6",
@@ -385,18 +357,15 @@ def test_needs_attention_is_derived_not_read_off_state() -> None:
 
     assert asking(DialogState.OPEN).needs_attention is True, "an open dialog needs attention whatever `state` says"
     assert asking(DialogState.OPEN).open_dialogs != []
-    # A resolved dialog is still in `dialogs` (TW-REG-002 keeps them all) and MUST NOT flag the entry.
+    # A resolved dialog stays in `dialogs` (TW-REG-002) and does not flag the entry.
     for resolved in (DialogState.ANSWERED, DialogState.CANCELLED):
         assert asking(resolved).open_dialogs == [], f"{resolved.value} is not an open dialog"
         assert asking(resolved).needs_attention is False, f"a {resolved.value} dialog is nothing to attend to"
 
 
 def test_state_enums_are_closed() -> None:
-    """TW-PROG-001 and TW-DLG-005: the two state vocabularies are closed, and each excludes one name.
-
-    There is no `received`: an operation begins at `queued`. There is no `expired`: a dialog has no
-    deadline to expire against, so nothing can ever put one into that state.
-    """
+    """TW-PROG-001 / TW-DLG-005: the progress and dialog state vocabularies are closed; there is no
+    `received` and no `expired`."""
     assert {state.value for state in ProgressState} == {
         "queued",
         "running",
@@ -420,15 +389,10 @@ def test_state_enums_are_closed() -> None:
 
 
 def test_is_shared_is_the_declared_result_kind_and_nothing_else() -> None:
-    """TW-PRIV-001: declaring a `result_kind` at start is the whole of being shared.
-
-    Not the presence of a `result`, not a non-null `origin_connection`, not the state. The corpus
-    carries one of each and both must answer from `result_kind` alone.
-    """
+    """TW-PRIV-001: `is_shared` follows `result_kind` alone, in code and across the corpus."""
     assert Progress(result_kind="acme.report").is_shared is True
     assert Progress(result_kind=None).is_shared is False
-    # A private operation that happens to know its connection is still private (TW-PRIV-003 allows
-    # either), and a shared one with no connection is still shared.
+    # `origin_connection` does not affect `is_shared` (TW-PRIV-003).
     assert Progress(result_kind=None, origin_connection="conn-7").is_shared is False
     assert Progress(result_kind="acme.report", origin_connection=None).is_shared is True
 
@@ -440,11 +404,8 @@ def test_is_shared_is_the_declared_result_kind_and_nothing_else() -> None:
 
 
 def test_error_carries_no_stack_trace() -> None:
-    """TW-PROG-005: `error` is `{code, message, retryable}` and MUST NOT carry a stack trace.
-
-    This document reaches a browser. A field that could hold a traceback is the whole of the risk,
-    so assert the shape is closed rather than that one particular name is missing.
-    """
+    """TW-PROG-005: `error` is exactly `{code, message, retryable}`, in the model and in every
+    fixture, so it has no field for a stack trace."""
     error = Error(code=DISPATCH_FAILED, message=Text(key=DISPATCH_FAILED), retryable=True)
     assert {f.name for f in fields(Error)} == {"code", "message", "retryable"}
     assert set(error.to_dict()) == {"code", "message", "retryable"}
@@ -457,12 +418,8 @@ def test_error_carries_no_stack_trace() -> None:
 
 
 def test_envelope_kinds_are_closed() -> None:
-    """TW-CORE-007: the vocabulary is closed at six kinds, plus `snapshot`, and nothing else.
-
-    A seventh kind is a breaking wire change requiring a bump of `Envelope.v`; `command` MUST NOT be
-    added. `snapshot` is not a seventh kind (TW-CORE-008) - it is the pushed kinds bundled into one
-    document, spelled in `Envelope.kind` only because it arrives on the same path.
-    """
+    """TW-CORE-007 / TW-CORE-008: the envelope kinds are the six plus `snapshot`; there is no
+    `command`, and an unknown kind fails to parse."""
     assert {kind.value for kind in EnvelopeKind} == {
         "progress",
         "dialog.open",
@@ -483,13 +440,8 @@ def test_envelope_kinds_are_closed() -> None:
 
 
 # --------------------------------------------------------------- TW-CORE-010, the insertion direction
-# The corpus invariant above deletes every explicit null and asserts the parse is unchanged. That
-# catches a parser which *needs* a null, but not one which mishandles a null it is *given* - and the
-# whole family of defects here was of the second kind. `dict.get(key, default)` fires only on a
-# MISSING key, so an explicit null sails straight past the default and lands in the model.
-#
-# Seven fields had it. The corpus cannot grow a fixture for each without asserting that a null is the
-# canonical spelling, which it is not, so they are enumerated.
+# An explicit null on each optional field below parses as the absent key. The fields are enumerated
+# here: null is not the canonical spelling, so the corpus carries no fixture for each.
 
 _PROGRESS = {
     "state": "running",
@@ -540,9 +492,7 @@ _PROGRESS_NO_SESSION = {k: v for k, v in _PROGRESS.items() if k != "origin_sessi
         ),
         pytest.param(
             DialogRequest,
-            # `created_at` is pinned on both sides. It defaults to *now*, so two parses either side
-            # of a millisecond boundary produce different documents and the comparison fails at
-            # random - which is a flake, and a flake in CI is worse than a red test.
+            # `created_at` is pinned on both sides: it defaults to now.
             {"id": "i", "dialog_id": "d", "created_at": "2026-01-01T00:00:00.000Z"},
             {"id": "i", "dialog_id": "d", "created_at": "2026-01-01T00:00:00.000Z", "state": None},
             id="dialog_request-state",
@@ -556,23 +506,12 @@ _PROGRESS_NO_SESSION = {k: v for k, v in _PROGRESS.items() if k != "origin_sessi
     ],
 )
 def test_an_explicit_null_parses_exactly_as_an_absent_key(model, absent, nulled):
-    """TW-CORE-010: "Absent optional fields MAY be omitted or `null` interchangeably".
-
-    `DialogRequest.state` is the loudest of the seven - it used to raise `ValueError` on an explicit
-    null - but `OperationSummary.progress_delivery` is the one with silent damage: a null parsed to
-    `False`, and `False` there suppresses an operation's progress bar (TW-DEL-014) on a document that
-    never meant to say anything about delivery.
-    """
+    """TW-CORE-010: absent optional fields MAY be omitted or `null` interchangeably."""
     assert model.from_dict(absent).to_dict() == model.from_dict(nulled).to_dict()
 
 
 def test_progress_delivery_false_is_not_confused_with_absent():
-    """The counterexample that rules out the obvious fix.
-
-    Six of the seven are repaired with `raw.get(k) or default`. `progress_delivery` cannot be: its
-    default is `True`, so `or` would read a deliberate `False` as "unset" and flip it - turning a
-    suppressed operation back on (TW-DEL-014). It needs the null tested explicitly.
-    """
+    """`progress_delivery: false` stays `False`; only null or absent defaults to `True` (TW-DEL-014)."""
     summary = OperationSummary.from_dict(
         {"token": "t", "snapshot": _SNAPSHOT, "origin_session": "ns", "progress_delivery": False}
     )

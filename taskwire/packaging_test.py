@@ -1,10 +1,5 @@
-"""Packaging invariants: one version stream, a core that drags nothing in, fixtures read in place.
-
-These four assertions are cheap and they are load-bearing. `test_core_imports_no_optional_dependency`
-in particular is the acceptance criterion for TW-CORE-006: the whole design rests on core installing
-and running with none of redis, celery, fastapi or muxws present, and that property is only ever one
-careless top-level import away from being lost.
-"""
+"""Packaging invariants: one version stream, a core with no optional dependency, fixtures read in
+place, Celery imported only by the Celery connector."""
 
 from __future__ import annotations
 
@@ -47,10 +42,9 @@ def test_python_and_npm_export_the_same_error_namespaces_and_codes():
 
 
 def test_core_imports_no_optional_dependency():
-    """TW-CORE-006: importing the core MUST NOT drag in any optional dependency.
+    """TW-CORE-006: importing the core loads no optional dependency.
 
-    Run in a fresh interpreter rather than in this one. An earlier test that imported fastapi would
-    otherwise leave it in `sys.modules` and mask exactly the violation this test exists to catch.
+    Runs in a fresh interpreter: modules imported by earlier tests stay in this one's `sys.modules`.
     """
     forbidden = ("fastapi", "celery", "redis", "muxws", "django")
     program = f"import sys, taskwire; leaked = [m for m in {forbidden!r} if m in sys.modules]; print(','.join(leaked))"
@@ -66,7 +60,7 @@ def test_core_imports_no_optional_dependency():
 
 
 def test_py_typed_is_packaged():
-    """A typed package that ships no `py.typed` is an untyped package to every consumer."""
+    """The package ships `py.typed`."""
     assert importlib.resources.files("taskwire").joinpath("py.typed").is_file()
 
 
@@ -77,7 +71,7 @@ def test_conformance_directory_is_readable():
 
 
 def test_version_is_a_release_number():
-    """The version in `pyproject.toml` is mirrored into package.json; keep it plain."""
+    """The version is a plain `major.minor.patch`."""
     assert re.fullmatch(r"\d+\.\d+\.\d+", taskwire.__version__), taskwire.__version__
 
 

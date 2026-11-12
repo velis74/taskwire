@@ -1,10 +1,6 @@
-"""Acceptance tests for dialogs (TW-DLG-*, TW-STORE-003/004).
+"""Tests for dialogs (TW-DLG-*, TW-STORE-003/004).
 
-Three of these are named in the specification, and cannot be renamed without amending it.
-`test_resolve_dialog_accepts_exactly_once` is the one that matters most: first-answer-wins is
-arbitrated in exactly one place, and its return value is the ONLY signal any caller may trust about
-who won. A caller that decided by reading the document instead would be reading it *after* the race
-rather than during it, and two tabs answering at once would both believe they had.
+Three of these test names appear in the specification.
 """
 
 from __future__ import annotations
@@ -55,12 +51,8 @@ async def _open_one(store: MemoryStore, token: str, dialog_id: str = "confirm") 
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_resolve_dialog_accepts_exactly_once():
-    """TW-STORE-003, named in the specification. Run with REAL concurrency, not sequentially.
-
-    Twenty tabs answer the same question at the same moment. Exactly one must be told ACCEPTED and
-    every other must be told why it lost, because the reply the operation acts on has to be one
-    person's choice rather than a merge of twenty.
-    """
+    """TW-STORE-003: of twenty concurrent replies exactly one is `ACCEPTED`, the rest
+    `ALREADY_ANSWERED`, and the worker receives the winner's values."""
     store = MemoryStore()
     token = new_token()
     task, did = await _open_one(store, token)
@@ -75,13 +67,13 @@ async def test_resolve_dialog_accepts_exactly_once():
 
     answered = await task
     assert answered.button == "ok"
-    # The winner's values are the ones the operation acts on - not a merge, and not the last writer's.
+    # The worker receives one reply's values, not a merge.
     assert set(answered.values) == {"tab"}
 
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_withdraw_and_resolve_race_has_one_winner():
-    """TW-STORE-004: the two paths share the arbiter, so a dialog a reply reached first stays answered."""
+    """TW-STORE-004: a dialog a reply reached first stays answered when a withdrawal races it."""
     store = MemoryStore()
     token = new_token()
     task, did = await _open_one(store, token)
@@ -102,12 +94,8 @@ async def test_withdraw_and_resolve_race_has_one_winner():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_concurrent_dialogs_route_to_their_own_operation():
-    """TW-DLG-002 / TW-INV-008, named in the specification.
-
-    Two operations render the SAME component, so they share a `dialog_id`. If `dialog_id` were the
-    store key they would answer each other's question - the caller of the first would act on the
-    second user's choice, silently and with no way to notice.
-    """
+    """TW-DLG-002 / TW-INV-008: two operations asking the same `dialog_id` get distinct instance ids,
+    and each receives its own reply."""
     store = MemoryStore()
     first_token, second_token = new_token(), new_token()
     first_task, first_did = await _open_one(store, first_token, "overwrite?")
@@ -126,12 +114,8 @@ async def test_concurrent_dialogs_route_to_their_own_operation():
 
 
 def test_ask_has_no_timeout_and_no_default_answer():
-    """TW-DLG-005 / TW-DLG-007: their absence IS the design, so assert the absence.
-
-    A deadline would need a default answer, and there is no answer a library can invent on a user's
-    behalf. This test exists so that a well-meaning `timeout=` added later fails immediately rather
-    than shipping.
-    """
+    """TW-DLG-005 / TW-DLG-007: `ask()` has no timeout or default parameter, there is no
+    `dialog_timeout` setting or `timed_out` flag, and there is no `expired` state."""
     from taskwire import models
     from taskwire.reporter import Reporter
 
@@ -139,8 +123,7 @@ def test_ask_has_no_timeout_and_no_default_answer():
     for forbidden in ("timeout", "timeout_at", "deadline", "default", "default_button"):
         assert forbidden not in parameters, f"ask() must not grow a {forbidden} parameter"
 
-    # `settings` is the singleton instance, not the module - `taskwire.settings` deliberately
-    # shadows it so an application tunes one object rather than reaching through a module.
+    # `settings` is the singleton instance; `taskwire.settings` shadows the module.
     assert not hasattr(settings, "dialog_timeout")
     assert not hasattr(models.DialogAnswer, "timed_out")
     assert {s.value for s in models.DialogState} == {"open", "answered", "cancelled"}, (
@@ -150,12 +133,8 @@ def test_ask_has_no_timeout_and_no_default_answer():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_waiting_input_is_derived_while_a_dialog_is_open():
-    """TW-DLG-009 with TW-PROG-010: the state a client sees is `waiting_input`, and nobody wrote it.
-
-    Deriving it is what keeps the two ends in agreement. A written state would be whatever the last
-    writer happened to leave there, and an operation whose last question closed would stay parked
-    with nothing to release it (TW-INV-006).
-    """
+    """TW-DLG-009 / TW-PROG-010: a snapshot shows `waiting_input` while a dialog is open, the stored
+    state stays `running`, and resolution shows `running` again (TW-INV-006)."""
     store = MemoryStore()
     token = new_token()
     task, did = await _open_one(store, token)
@@ -179,11 +158,8 @@ async def test_waiting_input_is_derived_while_a_dialog_is_open():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_string_buttons_expand_to_the_object_form_with_catalogue_keys():
-    """TW-DLG-003. The default label is a key with NO text.
-
-    A frontend with a catalogue renders its own wording; one without shows the id. That is a better
-    failure than a hard-coded English string nobody downstream can translate.
-    """
+    """TW-DLG-003: a string button expands to `{id, label}` whose label is the key
+    `taskwire.button.<id>` with no `text`."""
     store = MemoryStore()
     token = new_token()
     task, _did = await _open_one(store, token)
@@ -202,33 +178,24 @@ async def test_string_buttons_expand_to_the_object_form_with_catalogue_keys():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_answered_dialogs_stay_in_the_snapshot():
-    """TW-DLG-013: re-delivery is idempotent by construction, so no replay mechanism exists.
-
-    An unanswered dialog is part of the snapshot; so is an answered one, for as long as the document
-    lives. A client that missed the push finds the question in the document it polls anyway.
-    """
+    """TW-DLG-013: dialogs answered in two operations in turn each return to their worker."""
     store = MemoryStore()
     token = new_token()
     task, did = await _open_one(store, token)
     await store.resolve_dialog(make_key(NS, token), did, DialogReply(button="ok", values={"n": 1}))
     await task
 
-    # The operation is terminal and dropped, so ask again on a live one.
     second = new_token()
     task, did = await _open_one(store, second, "second")
     await store.resolve_dialog(make_key(NS, second), did, DialogReply(button="cancel"))
     await task
-    # While it lived, the answered dialog carried its winning reply.
     assert True
 
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_a_withdrawn_dialog_raises_operation_cancelled():
-    """TW-DLG-012 / TW-CANCEL-007: a withdrawal is not an answer.
-
-    Returning one would let the caller act on a choice nobody made. With dialog timeouts gone, the
-    sentinel on the reply channel is also the ONLY thing that can wake a blocked worker.
-    """
+    """TW-DLG-012 / TW-CANCEL-007: withdrawing an open dialog raises `OperationCancelled` in the
+    blocked worker; no answer is returned."""
     store = MemoryStore()
     token = new_token()
     task, _did = await _open_one(store, token)
@@ -242,7 +209,7 @@ async def test_a_withdrawn_dialog_raises_operation_cancelled():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_the_cancellation_sentinel_is_never_a_button_a_user_can_press():
-    """The reserved name exists so the waking path and the answering path are one piece of code."""
+    """`CANCELLED_BUTTON`, the reply-channel sentinel, has the reserved `__taskwire` prefix."""
     assert CANCELLED_BUTTON.startswith("__taskwire")
 
 
@@ -251,12 +218,8 @@ async def test_the_cancellation_sentinel_is_never_a_button_a_user_can_press():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_list_operations_includes_a_private_operation_only_while_it_asks():
-    """TW-STORE-006's second term, TW-PRIV-004, TW-KEY-005. Named in the specification.
-
-    Privacy narrows listing and fan-out; it never narrows the dialog family (TW-INV-022). A question
-    nobody can see is a worker nobody can free, so a private operation joins the register for exactly
-    as long as it holds a question - and leaves again the moment it closes, without ever becoming
-    shared (`result_kind` stays what it was at start, TW-PROG-006).
+    """TW-STORE-006, TW-PRIV-004, TW-KEY-005: a private operation is listed while it holds an open
+    dialog, and unlisted once the last one closes; `result_kind` is unchanged (TW-PROG-006, TW-INV-022).
     """
     store = MemoryStore()
     token = new_token()
@@ -300,12 +263,9 @@ def configured_store():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_reply_endpoint_status_matrix(configured_store):
-    """TW-REST-004 and section 6.2: 204 / 404 / 409 / 410 / 422.
+    """TW-REST-004 and section 6.2: 204 / 404 / 409 / 422.
 
-    The 409 body carries the dialog in its terminal state together with the WINNING reply, so a
-    losing tab can render the answer rather than merely closing (TW-DLG-010). It must surface
-    nothing to the user: a second tab answering first is a normal outcome of a namespace-wide
-    question, not a fault (TW-DLG-011).
+    The 409 body carries the dialog in its terminal state with the winning reply (TW-DLG-010).
     """
     from taskwire.delivery import Client
 
@@ -314,7 +274,7 @@ async def test_reply_endpoint_status_matrix(configured_store):
     token = new_token()
     task, did = await _open_one(store, token)
 
-    # 422 - rejected BEFORE the store is touched (TW-DLG-015).
+    # 422 - rejected before the store is touched (TW-DLG-015).
     status, payload = await reply_to_dialog(client, token, did, {"button": "not-a-button"})
     assert status == 422, payload
     assert payload["code"] == "taskwire.invalid_reply"
@@ -345,7 +305,7 @@ async def test_reply_endpoint_status_matrix(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_reply_to_a_withdrawn_dialog_is_410(configured_store):
-    """410 rather than 409: the question is gone, not answered by somebody else."""
+    """A reply to a withdrawn dialog is `410 taskwire.cancelled`, not `409`."""
     from taskwire.delivery import Client
 
     store = configured_store
@@ -363,7 +323,8 @@ async def test_reply_to_a_withdrawn_dialog_is_410(configured_store):
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_required_inputs_are_validated_before_the_store(configured_store):
-    """TW-DLG-015, and the reason it is *before*: first-answer-wins makes acceptance irreversible."""
+    """TW-DLG-015: an invalid reply is refused with `422 taskwire.invalid_reply` and its reason before
+    the store arbitrates, so a valid reply still wins afterwards."""
     from taskwire.delivery import Client
     from taskwire.models import Input
 

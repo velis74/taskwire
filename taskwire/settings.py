@@ -1,11 +1,8 @@
 """Server settings (specification §8.1) and the configured callables that are not settings.
 
-There is no `dialog_timeout`: a dialog has no deadline at all (TW-DLG-005), and it may not be
-reintroduced under another name.
-
 Retention is state-driven (TW-RET-001). `active_ttl` covers an operation that is queued, running or
 asking, `result_ttl` an uncollected result, and `tombstone_ttl` the terminal document after the
-register has let it go. There is no timer that ages out a live operation.
+register has let it go. No timer ages out a live operation.
 """
 
 from __future__ import annotations
@@ -30,18 +27,15 @@ class Settings:
     """How long a terminal document stays readable at its own address after it leaves the register
     (TW-RET-004). Seconds; 15 minutes.
 
-    A client that was not looking at the moment an operation ended learns *that* it ended from the
-    absence of a row - and nothing at all about why. The tombstone is what carries the reason: the
-    terminal state, its `error`, and the dialogs in the state the withdrawal left them. It is
-    unlistable and uncountable; only the token reaches it."""
+    The tombstone carries the terminal state, its `error` and the dialogs as the withdrawal left
+    them. It is not listed or counted; only its token reaches it."""
 
     result_ttl: float = 604800.0
     """Backstop on an uncollected result. Seconds; 7 days. Must be aligned with the application's
     own artefact retention (TW-RET-003) - taskwire stores a pointer and deletes nothing."""
 
     progress_interval: float = 0.1
-    """Latest-wins coalescing window for commits (TW-THR-001). Seconds, float, no unit suffix in
-    the name - matching `push_timeout` and `max_overrides`."""
+    """Latest-wins coalescing window for commits (TW-THR-001). Seconds."""
 
     push_delay: float = 0.25
     """How long after its creation an operation publishes nothing but a dialog open or a cancel
@@ -78,8 +72,7 @@ settings = Settings()
 class _Configured:
     """The ports and callables `configure()` installs.
 
-    These are not settings. A setting is a number a deployment tunes; these are the objects the
-    library is wired to, and there is exactly one wiring per process.
+    One wiring per process.
     """
 
     store: Any = None
@@ -100,14 +93,10 @@ def configure(
     push_filter: Callable[[Client, OperationRef], bool] | None = None,
     result_released: Callable[[Snapshot], None] | None = None,
 ) -> None:
-    """Wire the library to its store, its transport and the application's callables.
+    """Wire the store, transport and callables. Arguments left as None keep their current value.
 
-    `session_resolver` is the only producer of a namespace (TW-AMB-008). There is deliberately no
-    second derivation path, and a namespace that crosses a process boundary travels as inert data
-    rather than being resolved again on the far side.
-
-    Every argument is optional so that a test or an application can replace one thing without
-    restating the rest.
+    `session_resolver` is the only producer of a namespace (TW-AMB-008); a namespace that crosses a
+    process boundary travels as data and is not resolved again.
     """
     if store is not None:
         configured.store = store
@@ -133,7 +122,7 @@ def configure_executor(*, store: Any = None, transport: Any = None) -> None:
     pushes to no socket.
 
     `store`, when given, replaces the configured store. Store and transport configuration never travel
-    with the work: they are objects with connections, and a serialized copy would be one nobody owns.
+    with the work.
     """
     from .transport import NullTransport
 
@@ -151,7 +140,7 @@ def configure_executor(*, store: Any = None, transport: Any = None) -> None:
 
 
 def reset_configuration() -> None:
-    """Return the process to its unconfigured state. For tests; applications configure once."""
+    """Return the process to its unconfigured state."""
     configured.store = None
     configured.transport = None
     configured.session_resolver = None

@@ -1,9 +1,8 @@
 """The pytest driver for the exported store conformance suite (TW-STORE-012).
 
-The suite itself lives in `taskwire/conformance.py` and ships: it is imported and rerun unchanged by
-every later store implementation, and by an application's own. This file is the thin binding that
-runs it against `MemoryStore`, one pytest test per check so a failure names the rule it broke rather
-than reporting "the conformance suite" as a single opaque red line.
+The suite lives in `taskwire/conformance.py` and ships: it is imported and run unchanged against
+every store, including an application's own. This file runs it against `MemoryStore`, one pytest
+test per check, so a failure names the check.
 """
 
 from __future__ import annotations
@@ -38,19 +37,12 @@ SPECIFIED_CHECKS = (
     "test_publish_never_raises",
     "test_migrate_is_idempotent_and_preserves_rev",
 )
-"""The twelve checks the store brief §7 names one by one. Spelled out here rather than derived from
-`CHECKS`, because a list derived from the thing it is meant to police cannot police it."""
+"""The checks the specification names; spelled out, not derived from `CHECKS`."""
 
 
 @pytest.fixture(autouse=True)
 def clean_globals():
-    """Global wiring and the tunables are process singletons; no check may leak into the next one.
-
-    Both halves matter. `test_publish_never_raises` installs an exploding transport, and a check
-    that forgot to put the previous one back would make every later check's result depend on the
-    order pytest happened to run them in - which is the failure mode that survives longest, because
-    it looks like a flake.
-    """
+    """Restores configuration and tunables, and fails a check that leaks a transport or a store."""
     tunables = dict(vars(taskwire.settings))
     taskwire.reset_configuration()
 
@@ -68,35 +60,18 @@ def clean_globals():
 
 @pytest.mark.parametrize("check", conformance.CHECKS, ids=CHECK_NAMES)
 async def test_memory_store_passes_conformance(check) -> None:
-    """TW-STORE-012: the shipped `MemoryStore` passes the exported suite, check by named check.
-
-    Each check carries its own rule id in its own docstring (TW-REV-001, TW-REV-003, TW-STORE-006,
-    TW-STORE-007, TW-STORE-008, TW-STORE-009, TW-STORE-010, TW-STORE-015, TW-REV-002, TW-PRIV-002,
-    TW-PROG-005, TW-REG-007); this parametrization is what makes each of them a separately
-    identified pytest test.
-    """
+    """TW-STORE-012: the shipped `MemoryStore` passes every check of the exported suite."""
     await check(MemoryStore)
 
 
 def test_conformance_checks_are_uniquely_named() -> None:
-    """TW-STORE-012: the suite is addressable - `ids=` above is only as useful as its names.
-
-    A duplicated name would make two distinct checks share one pytest id, and the one that failed
-    would not be the one a reader went looking at.
-    """
+    """TW-STORE-012: check names are unique and start with `test_`."""
     assert len(set(CHECK_NAMES)) == len(CHECK_NAMES), CHECK_NAMES
     assert all(name.startswith("test_") for name in CHECK_NAMES), CHECK_NAMES
 
 
 def test_every_specified_check_is_in_the_roster() -> None:
-    """TW-STORE-012: the roster is pinned by name, so a check cannot be deleted quietly.
-
-    This is the only test in the file that does not take `CHECKS` at its word, and without it the
-    whole file is vacuous under deletion: `parametrize` over an emptied `CHECKS` reports a *skip*
-    rather than a failure, and both `test_conformance_checks_are_uniquely_named` and
-    `test_run_conformance_runs_every_check` compare `CHECKS` against an expectation derived from
-    `CHECKS`. Delete every entry and this file still goes green - except here.
-    """
+    """TW-STORE-012: every specified check is in `CHECKS`, which is a non-empty tuple."""
     assert CHECK_NAMES, "an empty roster would make every other test in this file vacuously green"
     missing = [name for name in SPECIFIED_CHECKS if name not in CHECK_NAMES]
     assert missing == [], missing
@@ -104,12 +79,7 @@ def test_every_specified_check_is_in_the_roster() -> None:
 
 
 async def test_run_conformance_runs_every_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    """TW-STORE-012: `run_conformance` runs the whole of `CHECKS`, not a subset of it.
-
-    The failure this catches is an entry added to `CHECKS` that `run_conformance` never reaches -
-    an application that imported the suite would then be told it conforms on the strength of a
-    check that never ran.
-    """
+    """TW-STORE-012: `run_conformance` runs every entry of `CHECKS`, in order."""
     executed: list[str] = []
 
     def recording(check):
@@ -127,7 +97,7 @@ async def test_run_conformance_runs_every_check(monkeypatch: pytest.MonkeyPatch)
 
 
 class _FrozenRevStore(MemoryStore):
-    """TW-REV-001 broken on purpose: every commit reports the same `rev`. Fails check 1."""
+    """TW-REV-001 broken on purpose: every commit reports the same `rev`."""
 
     async def commit(self, key: str, progress, ttl: float) -> Commit:
         written = await super().commit(key, progress, ttl)
@@ -135,7 +105,7 @@ class _FrozenRevStore(MemoryStore):
 
 
 class _NeverDroppingStore(MemoryStore):
-    """TW-STORE-007 broken on purpose: `drop` does nothing at all. Fails check 10."""
+    """TW-STORE-007 broken on purpose: `drop` does nothing. Fails the drop check."""
 
     async def drop(self, _key: str) -> None:
         return None
@@ -144,26 +114,17 @@ class _NeverDroppingStore(MemoryStore):
 @pytest.mark.parametrize(
     "broken",
     [_FrozenRevStore, _NeverDroppingStore],
-    ids=["breaks_TW-REV-001_at_the_first_check", "breaks_TW-STORE-007_at_the_tenth"],
+    ids=["breaks_TW-REV-001", "breaks_TW-STORE-007"],
 )
 async def test_run_conformance_rejects_a_store_that_breaks_a_rule(broken) -> None:
-    """TW-STORE-012: the suite MUST be able to fail - a suite that cannot is not evidence of anything.
-
-    `test_memory_store_passes_conformance` is green either way: if the checks asserted nothing, or
-    if `run_conformance` swallowed what they raised, it would look exactly as it looks now. The two
-    deliberately broken stores are the control. The second one also proves the run does not stop
-    early on success - it has to get past nine passing checks to reach the rule it breaks.
-    """
+    """TW-STORE-012: `run_conformance` raises `AssertionError` for a store that breaks a rule,
+    including one whose broken check follows passing ones."""
     with pytest.raises(AssertionError):
         await conformance.run_conformance(broken)
 
 
 def test_suite_is_exported_from_the_package_root() -> None:
-    """TW-STORE-012: the suite MUST be exported so another store implementation can import and run it.
-
-    `from taskwire import run_conformance` is the documented entry point; an application that has to
-    reach into `taskwire.conformance` by path is one refactor away from having no suite at all.
-    """
+    """TW-STORE-012: `run_conformance` is exported from the package root as a coroutine function."""
     from taskwire import run_conformance
 
     assert run_conformance is conformance.run_conformance
@@ -172,12 +133,10 @@ def test_suite_is_exported_from_the_package_root() -> None:
 
 
 def test_conformance_module_is_not_collected_as_tests(pytestconfig: pytest.Config) -> None:
-    """TW-STORE-012: `conformance.py` is a shipped module, not this repository's test module.
+    """TW-STORE-012: `conformance.py` ships in the package and matches no configured `python_files`
+    pattern; every check takes one required `make_store` argument.
 
-    Read against `python_files` as this project actually configures it, not against pytest's
-    defaults written out by hand: the module is full of `test_*` functions, so widening that setting
-    to `*.py` would collect all fourteen of them as zero-argument tests and error every one. The
-    hand-written form of this assertion stays green through exactly that change.
+    Widening `python_files` to `*.py` would collect every check as a zero-argument test.
     """
     filename = Path(conformance.__file__).name
     patterns = pytestconfig.getini("python_files")

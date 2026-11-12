@@ -2,14 +2,13 @@
 
 Imports Celery; nothing in `taskwire/` outside `contrib` may (TW-CORE-006).
 
-## The one thing to get right
+## Terminal writes
 
-**In a Celery deployment the worker owns the terminal write of an operation it runs**
-(TW-CELERY-004, TW-INV-009). The web side writes `queued`, and `failed` only when the broker did not
-accept the task: `taskwire.dispatch_failed` with `retryable: true`, because an unreachable broker is transient
-and a frontend may legitimately offer a retry.
+In a Celery deployment the worker owns the terminal write of an operation it runs (TW-CELERY-004,
+TW-INV-009). The web side writes `queued`, and `failed` only when the broker did not accept the task:
+`taskwire.dispatch_failed` with `retryable: true`.
 
-The web side must **not** open `operation()` for a task it dispatches (TW-CELERY-005): the block would
+The web side must not open `operation()` for a task it dispatches (TW-CELERY-005): the block would
 end with the request and write a terminal state while the worker runs. Two entries hand work over:
 
 - `dispatch()` starts a new operation in the worker: `queued` here, `operation()` there.
@@ -21,25 +20,24 @@ end with the request and write a terminal state while the worker runs. Two entri
 
 Either way the task body is a `taskwire_task`.
 
-## The blocked-worker problem is deliberately unsolved
+## A worker blocked on a dialog
 
-A dialog has no deadline (TW-DLG-005), so **an unanswered question holds its worker until Celery's
-own execution timeout kills the task** (TW-CELERY-010). At that point this module writes `failed`
-with `code: "taskwire.dialog_timeout"` and `retryable: true`, and withdraws the operation's open dialogs.
+A dialog has no deadline (TW-DLG-005), so an unanswered question holds its worker until Celery's own
+execution timeout kills the task (TW-CELERY-010). The operation then ends `failed` with
+`code: "taskwire.dialog_timeout"` and `retryable: true`, and its open dialogs are withdrawn.
 
-What you can do about it today, none of which is a solution:
+Mitigations:
 
-- **Route interactive tasks to their own queue and worker pool**, so a wedged pool cannot starve
-  everything else::
+- Route interactive tasks to their own queue and worker pool, so a blocked pool does not starve
+  the others::
 
       app.conf.task_routes = {"myapp.tasks.interactive_*": {"queue": "interactive"}}
 
   then run that queue with its own workers and its own concurrency.
-- **Never `ask()` inside a database transaction** (TW-DLG-017). It waits for a human, and a
-  transaction held across it holds its locks for as long as the user takes.
-- **A high-volume interactive flow wants a workflow engine**, which taskwire deliberately does not
-  implement. It reports on work and asks questions about it; it does not orchestrate, schedule or
-  resume.
+- Never `ask()` inside a database transaction (TW-DLG-017): the transaction holds its locks until
+  the user answers.
+- taskwire does not orchestrate, schedule or resume work; a high-volume interactive flow needs a
+  workflow engine.
 """
 
 from __future__ import annotations
@@ -69,9 +67,8 @@ def taskwire_task(
 ) -> Callable[..., Any]:
     """Wrap a plain Celery task body so it runs inside an `operation()`.
 
-    Uses the **synchronous** form (TW-CELERY-008), which creates and owns a private event loop for
-    that thread - a Celery worker has none of its own, and every blocking primitive here has to work
-    under one that drives it with `run_until_complete` (TW-CELERY-001).
+    Uses the synchronous form (TW-CELERY-008), which creates and owns a private event loop for that
+    thread and drives it with `run_until_complete` (TW-CELERY-001).
 
     ```python
     @app.task(bind=True, soft_time_limit=600)
@@ -83,10 +80,8 @@ def taskwire_task(
     ```
 
     The task body must declare a parameter named `reporter`; the wrapper passes it by that keyword,
-    and passes `None` when the caller was opted out. `token` and `session` cross
-    in as **plain strings** (TW-CELERY-003) and the namespace is *not* re-resolved here: there is no
-    request in a worker, `session_resolver` is the only producer of a namespace (TW-AMB-008), and a
-    namespace that crossed a process boundary travels as inert data.
+    and passes `None` when the caller was opted out. `token` and `session` arrive as plain strings
+    (TW-CELERY-003); the namespace is used as given and not re-resolved (TW-AMB-008).
     """
 
     def decorate(body: Callable[..., Any]) -> Callable[..., Any]:
@@ -95,27 +90,18 @@ def taskwire_task(
         @functools.wraps(body)
         def run(*args: Any, token: str | None = None, session: str | None = None, **kwargs: Any) -> Any:
             if token is None or session is None:
-                # No namespace means the application opted this caller out (TW-AMB-009). Run the
-                # body anyway - reporting is an accelerator, and refusing to do the work because
-                # nobody is watching would be the wrong failure.
+                # No namespace (TW-AMB-009): run the body with `reporter=None`.
                 return body(*args, reporter=None, **kwargs)
 
-            # TW-CELERY-009: `result_kind` was written once by the web process's `queued` write.
-            # One is passed here only for the case where there was no such write, and the store
-            # ignores it otherwise - the field is write-once (TW-PROG-006). There is no exception.
+            # TW-CELERY-009: `result_kind` is write-once (TW-PROG-006); this one applies only when
+            # no `queued` write set it.
             with operation(token, session=session, result_kind=declared) as reporter:
                 try:
                     return body(*args, reporter=reporter, **kwargs)
                 except SoftTimeLimitExceeded:
-                    # TW-DLG-006: an unanswered question is what this death usually is, and the code
-                    # says so only when it is - a worker killed while grinding rows would otherwise
-                    # tell its reader to answer a question nobody asked. `reporter.asking` is local
-                    # and free, which is what makes the distinction affordable here, of all places.
-                    #
-                    # Named rather than committed: the exception is on its way out of `operation()`,
-                    # whose exit makes the one terminal write this operation gets (TW-API-001). When
-                    # it is not a question, nothing is named and the exit writes
-                    # `taskwire.unhandled_exception` with the exception's class, as for every other failure.
+                    # TW-DLG-006: with an open question, name `dialog_timeout`; the exit of
+                    # `operation()` writes it (TW-API-001). Otherwise the exit writes
+                    # `taskwire.unhandled_exception`.
                     if reporter.asking:
                         reporter.name_error(
                             DIALOG_TIMEOUT,
@@ -142,13 +128,7 @@ async def dispatch(
 ) -> None:
     """The web side of a dispatch: write `queued`, hand off, and write `failed` only if handing off failed.
 
-    **This must not open `operation()`** (TW-CELERY-005). The block would close when the request
-    ends, long before the worker started, and the terminal write it produced would land on top of -
-    or under - the worker's real one. The worker owns the terminal write and this side owns exactly
-    two: `queued`, and `failed` when the broker could not be reached.
-
-    A dispatch failure is `retryable: true` (TW-CELERY-004): an unreachable broker is transient, and
-    a frontend may legitimately offer the user a retry rather than reporting a dead operation.
+    Opens no `operation()` (TW-CELERY-005). A dispatch failure is `retryable: true` (TW-CELERY-004).
     """
     await mark_queued(
         token,
@@ -176,9 +156,8 @@ def configure_worker(store: Any, transport: Any = None) -> None:
     `transport` None configures `NullTransport`: the worker writes, and the web process's reader
     pushes. A transport whose `crosses_processes` is True, `ViewsetEventsTransport`, publishes each
     envelope to the cross-process event store, from which every web process delivers it
-    (TW-EVT-002). Any other transport raises `ValueError`: a worker that pushed would duplicate every
-    envelope the reader is already delivering (TW-INV-002). `taskwire.configure_executor` applies the
-    rule (TW-CALL-009).
+    (TW-EVT-002). Any other transport raises `ValueError`, since the reader already delivers every
+    envelope (TW-INV-002, TW-CALL-009).
     """
     from ..transport import NullTransport
 
