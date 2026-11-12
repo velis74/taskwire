@@ -54,19 +54,15 @@ export default defineConfig({
         muxws: resolve(__dirname, 'vue/muxws.ts'),
         vuetify: resolve(__dirname, 'vue/vuetify.ts'),
         'fastapi-viewsets': resolve(__dirname, 'vue/fastapi-viewsets.ts'),
-        // The store port's contract, runnable. Published for the same reason the Python package
-        // ships `taskwire.conformance`: a store is an application's to write, and this is the only
-        // thing that says whether what it wrote is one (TW-STORE-012).
+        // The store port's conformance suite, the counterpart of `taskwire.conformance` (TW-STORE-012).
         conformance: resolve(__dirname, 'vue/conformance.ts'),
       },
       formats: ['es', 'cjs'],
     },
     rollupOptions: {
       external: [
-        // Every optional peer, and for the same reason: a bundled copy is a second copy. An
-        // application that catches `ViewSetRequestError` from its own installed package would never
-        // match one thrown by a frozen copy inlined here, and the declared version range would be
-        // bypassed by whatever happened to be installed when this was built (TW-CORE-006).
+        // Peers stay external: a bundled copy breaks `instanceof` checks against the application's
+        // installed package and bypasses the declared version range (TW-CORE-006).
         '@dynamicforms/fastapi-viewsets',
         '@dynamicforms/vuetify-inputs',
         '@dynamicforms/vuetify-modal-form-kit',

@@ -1,14 +1,10 @@
 # Gaps
 
-Decisions taken without the author. Every place a brief or the specification is silent, ambiguous,
-self-contradictory or contradicted by another document, together with what was assumed instead. One
+Decisions taken without the author. Every place the specification is silent, ambiguous,
+self-contradictory or contradicted by the code, together with what was assumed instead. One
 entry per question, and every entry in this file is still open: an answered question leaves it, and
 whatever a reader of the library needs to know about the answer belongs in `docs/` or in the
 specification.
-
-> **See also `NEXT.md`.** The questions raised after the fastapi-viewsets rework — whether
-> `contrib/fastapi.py` should be deleted now that the viewset supersedes it, and whether the demo
-> should mount `taskwire/vuetify` — live there with the work queue they belong to.
 
 ---
 
@@ -43,29 +39,25 @@ normalises empty params to absent, and no fixture or rule distinguishes the two 
 
 ---
 
-## taskwire-m1b-ts-client-core.md §5 vs taskwire-spec.md §5.5 — `ProgressState` names two different things
+## taskwire-spec.md §5.5 / §5.5a — `ProgressState` is the state vocabulary, not the document
 
 **What I needed:** a type for `Operation.progress`.
 
-**What the brief/spec said:** §5.5 declared `readonly progress: ProgressState | null` and imported
-`type ProgressState` from `'taskwire'`, so there `ProgressState` was the *progress document*.
-`vue/wire/wire.ts` uses `ProgressState` for the closed state vocabulary (`queued | running | …`) and calls
-the document `Progress`, matching Python's `models.py`.
-
-**What I assumed:** `wire.ts` wins, because TW-SYM-002 makes the two languages one protocol and
-Python's document is `Progress`. `Operation.progress` and `use_operation`'s ref are therefore
-`Progress | null`, and `ProgressState` stays the state union. §5.5 and §5.5a now read `Progress`,
-which is a correction to the specification made without the author.
+**What I assumed:** `vue/wire/wire.ts` uses `ProgressState` for the closed state vocabulary
+(`queued | running | …`) and `Progress` for the document, matching Python's `models.py`, because
+TW-SYM-002 makes the two languages one protocol. `Operation.progress` and `use_operation`'s ref are
+`Progress | null`. §5.5 and §5.5a read `Progress`, which is a correction to the specification made
+without the author.
 
 ---
 
-## taskwire-m1b-ts-client-core.md §5 — what settles a `track()` handle's promise
+## taskwire-spec.md §5.5a — TW-TS-004 — what settles a `track()` handle's promise
 
 **What I needed:** `track<T>(token): Operation<T>` is a `PromiseLike<T>` with no `fn` behind it, so
 something has to settle it.
 
-**What the brief says:** only what settles a `run()` handle (TW-TS-002: `fn`'s own promise). It is silent
-on `track()`.
+**What the spec says:** what settles a `run()` handle (TW-TS-002: `fn`'s own promise), and how a
+`track()` handle treats absence (TW-TS-004). It does not say what value settles a `track()` handle.
 
 **What I assumed:** the terminal state settles it — `done` resolves with `undefined`, `failed` and
 `cancelled` reject with an `OperationFailed` carrying `progress.error`. The handle reads that state
@@ -82,13 +74,13 @@ says that the `fn`-settled-and-never-written case resolves rather than rejects.
 
 ---
 
-## taskwire-m1b-ts-client-core.md §6 — `previousDelay` is ambiguous in `nextDelay`
+## taskwire-spec.md §2.16 — TW-REST-010 — `previousDelay` is ambiguous in `nextDelay`
 
 **What I needed:** to know whether `nextDelay({ ..., previousDelay })` is fed the previous *emitted*
 (jittered) delay or the previous *ladder* interval.
 
-**What the brief says:** `nextDelay({ anyActive, anyDialogOpen, revChanged, previousDelay, pollAfterMs },
-draw)`, with no statement either way.
+**What the spec says:** TW-REST-010 defines the ladder and the jitter, and nothing about
+`nextDelay({ anyActive, anyDialogOpen, revChanged, previousDelay, pollAfterMs }, draw)` either way.
 
 **What I assumed:** the previous **un-jittered ladder interval**. Feeding the jittered emission back would
 compound the jitter — a run of unlucky draws would climb 20 % faster than ×1.5 and a run of lucky ones
@@ -97,7 +89,7 @@ would never reach the ceiling. `PollLadder` carries the value so a scheduler can
 
 ---
 
-## taskwire-m1b-ts-client-core.md — three client behaviours the brief does not specify
+## taskwire-spec.md §5.5 — three client behaviours the specification does not state
 
 **The first poll.** Nothing says whether watching a token polls immediately or after an interval. I
 schedule the first poll one base interval out: TW-REST-010 says a client MUST NOT poll sooner than its base
@@ -115,15 +107,15 @@ needs the interceptor back off the instance and the timers stopped.
 
 ---
 
-## taskwire-m1c-ts-register-and-vue.md §6 — when does the register poll start?
+## taskwire-spec.md §5.5a — when does the register poll start?
 
 **What I needed:** something has to decide when `GET {prefix}` begins.
 
-**What the brief says:** nothing. It describes the loop, the ladder and the payload, but never says
+**What the spec says:** nothing. It describes the loop, the ladder and the payload, but never says
 whether a client polls the register from construction or on demand.
 
 **What I assumed:** on demand. Reading `tw.register`, `tw.aggregate` or `tw.selected`, or calling
-`onRegisterChange()`, starts the loop; `tw.operations` and `onOperationsChange()` deliberately do not,
+`onRegisterChange()`, starts the loop; `tw.operations` and `onOperationsChange()` do not,
 because the visible collection is local policy over handles this tab already has and is never
 populated from the register (TW-REG-021). An application that only ever calls `run()` therefore polls
 its own tokens and never a second endpoint. The cost is that the first read of `tw.register` is empty
@@ -133,21 +125,21 @@ its clock.
 
 ---
 
-## taskwire-m1c-ts-register-and-vue.md §6 — what reads between rungs
+## taskwire-spec.md §2.16 — TW-REST-010 — what reads between rungs
 
 **What I needed:** the row of a shared operation comes from the register payload and from nowhere
 else (TW-PRIV-002 leaves the per-token reads only the private half). Something has to decide when
 that payload is asked for, other than the ladder.
 
-**What the brief says:** the ladder, and nothing else. §8.2 puts the interval at the five second
-ceiling whenever nothing in the last payload was active — which is the state of every client at the
+**What the spec says:** the ladder, and nothing else. TW-REST-010 puts the interval at the five
+second ceiling whenever nothing in the last payload was active — which is the state of every client at the
 moment somebody starts the first job of the day.
 
 **What I assumed:** five triggers, all of them off the ladder and all of them one read.
 
 1. A push naming a token this client cannot place, and
-2. a push for a token it has a handle for but no row — both already the brief's own consequence of
-   TW-REG-006, since a push carries what changes and the register is what says who is in it.
+2. a push for a token it has a handle for but no row — both consequences of TW-REG-006, since a
+   push carries what changes and the register is what says who is in it.
 3. **The command of a `run()` that declared a `resultKind` answering.** The front end mints the token
    and sends it with the command, and the server writes `queued` before it replies (TW-CORE-007), so
    the reply is proof that the list can answer for this token.
@@ -160,7 +152,7 @@ private operation asks for none of them: no payload carries one for any caller i
 and its row is the copy its own poller already holds.
 
 5. **One of the four writes of TW-REST-004 returning**, on *both* loops, with the token's own ladder
-   set back to its base rung. Two of §8.2's four branches answer the ceiling, and both describe a
+   set back to its base rung. Two of TW-REST-010's branches poll at the ceiling, and both describe a
    situation a write ends: a question a human is deciding, and an operation with nothing left to do.
    So the rung in flight when a reply, a cancel, a collect or a dismiss returns was chosen for a
    situation that has just stopped being true, and a client that kept it would show a bar standing
@@ -172,12 +164,12 @@ change sooner, and the ladders are held for that reason (TW-TS-007).
 
 ---
 
-## taskwire-m1c-ts-register-and-vue.md §4 — what a departing entry does to its handle
+## taskwire-spec.md §2.10 / §4.3 — TW-REG-007 — what a departing entry does to its handle
 
 **What I needed:** a register entry vanishes from the payload. The handle behind it has to do
 something.
 
-**What the brief says:** that the entry leaves `tw.register`, and (§4.3) that `close()`/dispose
+**What the spec says:** that the entry leaves `tw.register` (TW-REG-007), and (§4.3) that `close()`/dispose
 removes it from the visible collection. It does not say what settles the handle.
 
 **What I assumed:** the loop closes **only the handles it minted itself** — the ones adopted for
@@ -201,11 +193,11 @@ fail (TW-REG-015), and for a register-only row the client never sees the failure
 
 ---
 
-## taskwire-m1c-ts-register-and-vue.md §5 — TW-TS-012 — a pinned selection whose entry leaves
+## taskwire-spec.md §5.5a — TW-TS-012 — a pinned selection whose entry leaves
 
 **What I needed:** `select(token)` pins an entry; that entry then leaves the register.
 
-**What the brief says:** `select(token)` pins a different one, `select(null)` returns to FIFO, and the
+**What the spec says:** `select(token)` pins a different one, `select(null)` returns to FIFO, and the
 FIFO default advances on its own. It is silent about a pin that outlives its operation.
 
 **What I assumed:** the pin is dropped and FIFO resumes. A footer that went permanently blank because
@@ -220,13 +212,12 @@ register entry never returns, so "drop the pin" and "fall back while absent" are
 `wire.spec.ts` present the corpus as the thing that keeps the two languages from drifting apart, and
 TW-PKG-002 forbids a copy step on that basis.
 
-**What it actually does**, measured rather than argued:
+**What it actually does**:
 
 - Rename a wire field in Python symmetrically — in `to_dict` *and* `from_dict`, so Python stays
   self-consistent — and the TypeScript suite stays green. Neither suite ever reads the other's
   output; both read the fixtures. It is a per-language check against a written-down spelling, not a
-  cross-language instrument. What catches two halves that have genuinely stopped speaking is
-  `demo.py`, which is also the only thing that has ever caught one.
+  cross-language instrument. What catches two halves that disagree is `demo.py`.
 - Of the four Python failures that rename produced, two came from the corpus and two from
   `rest_test.py` and `viewsets_test.py`, which assert over real JSON bodies and caught it
   independently.
@@ -247,7 +238,7 @@ prohibition on the strength of a branch-coverage matrix and a ratchet, or is dem
 per-language test data with the cross-language claim struck from all four headers. Either way the
 claim as written is false and should not survive into the user documentation.
 
-**Three loose ends found alongside it**:
+**Three related points**:
 
 - `toCamel`, `toSnake`, `convertKeys` and `OPAQUE_KEYS` (`vue/wire/wire.ts`) have **no caller**
   outside the export list in `index.ts` and their own tests. The `snake_case` → `camelCase` mapping
@@ -256,8 +247,8 @@ claim as written is false and should not survive into the user documentation.
   never on a code path. This is the "which public symbol does nothing but a test call?" question
   answering yes.
 - `conformance/sequences/` is empty but for `.gitkeep`, and `vue/packaging.spec.ts` asserts that the
-  empty directory exists. `taskwire-spec.md` §2.2 and three briefs reference
-  `conformance/sequences/out-of-order-dialog.json`, which was never written. The behaviour it was to
+  empty directory exists. `taskwire-spec.md` §2.2 references
+  `conformance/sequences/out-of-order-dialog.json`, which does not exist. The behaviour it was to
   cover (TW-REV-006) is implemented at `vue/operation/base/operation.ts` and tested in `client.spec.ts` and
   `operation.spec.ts`, so nothing is uncovered — only promised.
 - A wire mismatch is not always loud. Required fields throw with the field path, but
@@ -346,9 +337,6 @@ per-call keyword) and falls back to `settings.raise_on_cancel` — two levels, n
 named `raise_on_cancel` off a viewset or an action. Grepping the whole package for
 `ActionConfiguration`/`action_configuration` finds only the docstring's own two mentions.
 
-**Found while:** writing `docs/guide/fastapi-viewsets.md`, checking the claim before repeating it in
-new documentation.
-
 **Still needs deciding:** whether the middle level was meant to exist and never got built, or the
 docstring describes an idea that was dropped and never corrected. Either the resolution gains a third
 level that actually reads per-viewset/per-action configuration, or the docstring's claim is struck.
@@ -363,20 +351,6 @@ level that actually reads per-viewset/per-action configuration, or the docstring
 refuses a token that is not a UUID before touching the store (TW-REST-006), so an operation under any
 other key could be written but never read. A malformed header or a non-UUID key leaves the call
 untracked; taskwire does not reject it, since rejecting is `Idempotency`'s decision.
-
----
-
-## taskwire-spec.md §2.23 — TW-CALL-002 — a read is not tracked by its `Idempotency-Key`
-
-**What I needed:** whether every call that carries a UUID `Idempotency-Key` is an operation.
-
-**What I assumed:** not a `GET`, `HEAD` or `OPTIONS`. A fastapi-viewsets proxy puts a key on every
-call, its reads included, and tracking each `list` and `retrieve` would cost four store writes, a push
-and a 900-second tombstone per read. A read is tracked under an explicit `X-Taskwire-Token`, which
-`run()` puts on it.
-
-**Still needs deciding:** whether reads should be tracked by their key, or the safe methods made a
-setting.
 
 ---
 

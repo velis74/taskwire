@@ -279,6 +279,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SESSION_KWARG`. fastapi-viewsets 0.9.0 has no Celery kwargs or dispatch hooks; a `celery_viewset`
   action is reported by `TaskwireMiddleware` in the worker.
 
+## [0.1.2] - 2026-08-24
+
+### Fixed
+
+- `MemoryStore`'s reply wait catches `asyncio.TimeoutError` from `asyncio.wait_for` on Python 3.10,
+  where it is a class distinct from the builtin `TimeoutError`.
+
+## [0.1.1] - 2026-08-23
+
+### Fixed
+
+- The README icon renders at its intended size on npmjs.
+
 ## [0.1.0] - 2026-08-23
 
 ### Added

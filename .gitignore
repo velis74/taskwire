@@ -1,6 +1,3 @@
-# Claude Code session artefacts
-.claude/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -27,7 +24,8 @@ docs/.vitepress/dist/
 # Editors / OS
 .idea/
 .vscode/
+.claude/
 .DS_Store
 
-# Scratch drivers written while chasing something down
+# Local scratch scripts
 .scratch/
