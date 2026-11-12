@@ -8,6 +8,7 @@ code.
 from __future__ import annotations
 
 import asyncio
+import gc
 
 from collections.abc import Coroutine, Iterator
 from typing import Any, TypeVar
@@ -936,3 +937,15 @@ def test_a_call_whose_outcome_is_unknown_or_interrupted_stays_queued(tracked) ->
 
     assert _states(seen, stopped) == ["queued"]
     assert _states(seen, interrupted) == ["queued"]
+
+
+@pytest.mark.usefixtures("store")
+def test_a_new_router_is_mounted_after_an_earlier_one_was_collected() -> None:
+    """A router created after an earlier registered router was garbage-collected gets the six routes,
+    also when it takes over the collected router's `id()`."""
+    for _ in range(50):
+        router = APIRouter()
+        register_taskwire_rest(router, track_calls=False)
+        assert router.routes, "register_taskwire_rest mounted nothing on a new router"
+        del router
+        gc.collect()
