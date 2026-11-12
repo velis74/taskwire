@@ -31,6 +31,7 @@ The endpoints run through fastapi-viewsets' middleware chain and appear in its `
 # the string "None" it would get makes FastAPI reject the 204 routes.
 
 import os
+import weakref
 
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -440,7 +441,8 @@ def track_viewset_calls() -> None:
         middlewares.append(TaskwireMiddleware())
 
 
-_registered: set[int] = set()
+_registered: list[weakref.ref[APIRouter]] = []
+"""The routers `register_taskwire_rest` mounted on, by identity (`APIRouter` is not hashable)."""
 
 
 def register_taskwire_rest(
@@ -475,9 +477,10 @@ def register_taskwire_rest(
     elif taskwire_context_processor not in viewset_settings.viewsets_context_processors:
         viewset_settings.viewsets_context_processors.append(taskwire_context_processor)
 
-    if id(router) in _registered:
+    _registered[:] = [ref for ref in _registered if ref() is not None]
+    if any(ref() is router for ref in _registered):
         return TaskwireViewSet
-    _registered.add(id(router))
+    _registered.append(weakref.ref(router))
 
     return route_viewset(
         router,

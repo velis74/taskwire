@@ -6,6 +6,13 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-11-12
+
+### Fixed
+
+- `register_taskwire_rest` mounts the endpoints on a new router that takes over the `id()` of an earlier,
+  garbage-collected router it registered on; before, that router got no routes and answered `404`.
+
 ## [0.4.4] - 2026-10-27
 
 ### Changed
