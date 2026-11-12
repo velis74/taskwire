@@ -343,7 +343,7 @@ def test_a_dialog_is_answered_over_the_stream_and_the_loser_told_so(
 
     second = command(http, "POST", f"/taskwire/{token}/dialogs/ask-1", body={"button": "no", "values": {}})
     assert second.status == 409, "the store arbitrated, and the second answer lost"
-    assert second.payload["detail"] == "taskwire.already_answered"
+    assert second.payload["detail_code"] == "taskwire.already_answered"
     assert second.payload["dialog"]["reply"]["button"] == "yes", "the loser is told who won (TW-DLG-010)"
 
 
@@ -363,7 +363,7 @@ def test_the_loser_of_a_dialog_reply_is_shown_the_winning_reply(http: TestClient
     lost = http.post(url, json={"button": "yes", "values": {}}, headers=HEADERS)
     assert lost.status_code == 409
     body = lost.json()
-    assert body["detail"] == "taskwire.already_answered"
+    assert body["detail_code"] == "taskwire.already_answered"
     assert (body["dialog"]["state"], body["dialog"]["reply"]["values"]) == ("answered", {"note": "first"})
 
 
@@ -374,23 +374,27 @@ def test_a_reply_to_a_withdrawn_dialog_is_410_with_the_dialog(http: TestClient, 
 
     gone = http.post(f"/taskwire/{token}/dialogs/ask-1", json={"button": "yes", "values": {}}, headers=HEADERS)
     assert gone.status_code == 410
-    assert gone.json()["detail"] == "taskwire.cancelled"
+    assert gone.json()["detail_code"] == "taskwire.cancelled"
     assert gone.json()["dialog"]["state"] == "cancelled"
 
     unknown = http.post(f"/taskwire/{token}/dialogs/ask-2", json={"button": "yes", "values": {}}, headers=HEADERS)
-    assert (unknown.status_code, unknown.json()) == (404, {"detail": "taskwire.not_found"})
+    assert (unknown.status_code, unknown.json()) == (
+        404,
+        {"detail": "Dialog not found.", "detail_code": "taskwire.not_found", "detail_params": {}, "field_errors": {}},
+    )
 
 
 def test_an_invalid_reply_is_422_with_a_code_and_what_failed(http: TestClient, store: taskwire.MemoryStore) -> None:
-    """TW-DLG-015: `taskwire.invalid_reply`, with `params` naming the failure and `detail` in English."""
+    """TW-DLG-015: `taskwire.invalid_reply`, with `detail_params` naming the failure and `detail` in English."""
     token = _asking(http, store)
 
     wrong = http.post(f"/taskwire/{token}/dialogs/ask-1", json={"button": "maybe", "values": {}}, headers=HEADERS)
     assert wrong.status_code == 422
     assert wrong.json() == {
-        "detail": "button 'maybe' is not one of this dialog's buttons",
-        "code": "taskwire.invalid_reply",
-        "params": {"reason": "unknown_button", "button": "maybe"},
+        "detail": "Button 'maybe' is not one of this dialog's buttons.",
+        "detail_code": "taskwire.invalid_reply",
+        "detail_params": {"reason": "unknown_button", "button": "maybe"},
+        "field_errors": {},
     }
 
 

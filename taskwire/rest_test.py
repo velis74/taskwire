@@ -29,6 +29,13 @@ NS_B = "account-9"
 
 PREFIX = "/taskwire"
 
+NOT_FOUND_BODY = {
+    "detail": "Operation not found.",
+    "detail_code": "taskwire.not_found",
+    "detail_params": {},
+    "field_errors": {},
+}
+
 # A well-formed UUID no test writes a document for; no endpoint creates a token (TW-REST-005).
 UNCLAIMED_TOKEN = "9f0c1b2a-3d4e-4f60-8a91-b2c3d4e5f607"
 
@@ -304,7 +311,7 @@ async def test_unknown_token_returns_404(store):
 
     status, payload = await get_snapshot(client, UNCLAIMED_TOKEN)
     assert status == 404
-    assert payload == {"detail": "taskwire.not_found"}
+    assert payload == NOT_FOUND_BODY
 
     # A second ask is still 404 and the register is still empty.
     again_status, _again = await get_snapshot(client, UNCLAIMED_TOKEN)
@@ -327,14 +334,14 @@ async def test_session_resolver_returning_none_is_404(counting_store):
     assert register_status == 404
     assert token_status not in (401, 403)
     assert register_status not in (401, 403)
-    assert token_payload == {"detail": "taskwire.not_found"}
-    assert register_payload == {"detail": "taskwire.not_found"}
+    assert token_payload == NOT_FOUND_BODY
+    assert register_payload == NOT_FOUND_BODY
     assert counting_store.reads == 0, "TW-SEC-001: no code path reaches the store without a namespace"
 
     # The handlers called directly answer the same.
     opted_out = Client(session=None)  # type: ignore[arg-type]
-    assert await get_snapshot(opted_out, UNCLAIMED_TOKEN) == (404, {"detail": "taskwire.not_found"})
-    assert await get_operations(opted_out) == (404, {"detail": "taskwire.not_found"})
+    assert await get_snapshot(opted_out, UNCLAIMED_TOKEN) == (404, NOT_FOUND_BODY)
+    assert await get_operations(opted_out) == (404, NOT_FOUND_BODY)
     assert counting_store.reads == 0
 
 
@@ -399,3 +406,37 @@ async def test_register_entry_carries_the_whole_snapshot(store):
     assert embedded["progress"]["state"] == "running"
     assert embedded["dialogs"] == []
     assert embedded["cancel_requested"] is False
+
+
+# --------------------------------------------------------------------------- asgi dialog reply
+
+
+async def test_asgi_reply_reads_a_malformed_body_as_empty_and_answers_204_without_a_body(store):
+    """TW-REST-015: a body that is not a JSON object answers `taskwire.invalid_reply` as through every
+    adapter; an accepted reply answers `204` with no body (§6.2)."""
+    token = await seed(store, NS_A, taskwire.new_token())
+    question = taskwire.DialogRequest(id="ask-1", dialog_id="acme.overwrite", buttons=[taskwire.Button(id="yes")])
+    await store.put_dialog(make_key(NS_A, token), question, 3600)
+    application = asgi_app(PREFIX)
+
+    async def post(body: bytes) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+        sent: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            sent.append(message)
+
+        path = f"{PREFIX}/{token}/dialogs/ask-1"
+        await application({"type": "http", "method": "POST", "path": path, "headers": []}, receive, send)
+        return sent[0]["status"], sent[0]["headers"], sent[1]["body"]
+
+    for malformed in (b"not json", b"[1]", b'"s"'):
+        status, _headers, body = await post(malformed)
+        assert status == 422
+        assert json.loads(body)["detail_params"] == {"reason": "button_required"}
+
+    status, headers, body = await post(b'{"button": "yes"}')
+    assert (status, body) == (204, b"")
+    assert (b"content-type", b"application/json") not in headers

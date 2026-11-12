@@ -55,12 +55,43 @@ ALREADY_ANSWERED = f"{ERROR_NAMESPACE}.already_answered"
 
 INVALID_REPLY = f"{ERROR_NAMESPACE}.invalid_reply"
 """`422` on a dialog reply the dialog cannot take, rejected before the store is touched (TW-DLG-015).
-The body is `{"detail": <English text>, "code": INVALID_REPLY, "params": {"reason": ..., ...}}`."""
+`detail_params.reason` names the problem."""
 
 REQUESTED = f"{ERROR_NAMESPACE}.requested"
 """`202` on cancel: the cancel was requested (TW-REST-009)."""
 
-_RESOLUTION_DETAIL = {DialogResolution.ALREADY_ANSWERED: ALREADY_ANSWERED, DialogResolution.CANCELLED: CANCELLED}
+_DETAIL = {
+    NOT_FOUND: "Operation not found.",
+    ALREADY_TERMINAL: "The operation has ended.",
+    HOLDS_AN_UNCOLLECTED_RESULT: "The operation holds an uncollected result.",
+    NO_UNCOLLECTED_RESULT: "The operation holds no uncollected result.",
+    ALREADY_ANSWERED: "The dialog has already been answered.",
+    CANCELLED: "The dialog was withdrawn.",
+}
+"""The English `detail` of each error code that takes no parameters."""
+
+DIALOG_NOT_FOUND_DETAIL = "Dialog not found."
+"""The `detail` of a `404` for an unknown dialog of a known operation."""
+
+_RESOLUTION_CODE = {DialogResolution.ALREADY_ANSWERED: ALREADY_ANSWERED, DialogResolution.CANCELLED: CANCELLED}
+
+
+def error_body(code: str, detail: str | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The body of an error answer, in fastapi-viewsets' `ApiErrorBody` shape.
+
+    `detail` defaults to the English text of `code`; `field_errors` is always empty.
+    """
+    return {
+        "detail": detail if detail is not None else _DETAIL[code],
+        "detail_code": code,
+        "detail_params": params or {},
+        "field_errors": {},
+    }
+
+
+def not_found(detail: str | None = None) -> Response:
+    """`404` with `taskwire.not_found`."""
+    return 404, error_body(NOT_FOUND, detail)
 
 
 def _is_uuid(token: str) -> bool:
@@ -73,17 +104,11 @@ def _is_uuid(token: str) -> bool:
     return True
 
 
-def _not_found() -> Response:
-    """TW-SEC-002: unknown and foreign tokens both return 404, never 403, so a response does not
-    reveal whether a token exists in another namespace."""
-    return 404, {"detail": NOT_FOUND}
-
-
 async def get_operations(client: Client) -> Response:
     """`GET {prefix}`: the whole register of the client's namespace; takes no parameters (TW-REG-003)."""
     if client.session is None:
         # TW-AMB-009: a `session_resolver` that returned None opts the caller out; 404.
-        return _not_found()
+        return not_found()
 
     store = configured.store
     if store is None:
@@ -107,17 +132,17 @@ async def get_snapshot(client: Client, token: str) -> Response:
     authorisation scope. The payload carries no `progress_delivery` (TW-REST-007).
     """
     if client.session is None:
-        return _not_found()
+        return not_found()
     if not _is_uuid(token):
-        return _not_found()
+        return not_found()
 
     store = configured.store
     if store is None:
-        return _not_found()
+        return not_found()
 
     snapshot = await store.snapshot(make_key(client.session, token))
     if snapshot is None:
-        return _not_found()
+        return not_found()
 
     snapshot.server_time = now_iso()
     snapshot.poll_after_ms = poll_after_ms([snapshot])
@@ -125,32 +150,32 @@ async def get_snapshot(client: Client, token: str) -> Response:
 
 
 def _validate_reply(dialog: Any, body: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    """TW-DLG-015: the English text and `params` of `taskwire.invalid_reply`, or None for a valid
+    """TW-DLG-015: the English `detail` and the `detail_params` of `taskwire.invalid_reply`, or None for a valid
     reply. Runs before the store is touched, so an invalid reply never resolves the dialog."""
     button = body.get("button")
     if not isinstance(button, str):
-        return "button is required", {"reason": "button_required"}
+        return "The reply names no button.", {"reason": "button_required"}
     if button not in {b.id for b in dialog.buttons}:
-        return f"button {button!r} is not one of this dialog's buttons", {"reason": "unknown_button", "button": button}
+        return f"Button {button!r} is not one of this dialog's buttons.", {"reason": "unknown_button", "button": button}
 
     values = body.get("values") or {}
     if not isinstance(values, dict):
-        return "values must be an object", {"reason": "values_not_an_object"}
+        return "The reply's values are not an object.", {"reason": "values_not_an_object"}
     for field in dialog.inputs:
         if field.required and values.get(field.name) is None:
-            return f"input {field.name!r} is required", {"reason": "input_required", "input": field.name}
+            return f"Input {field.name!r} is required.", {"reason": "input_required", "input": field.name}
         given = values.get(field.name)
         if given is None:
             continue
         if field.type not in INPUT_TYPES:
             return (
-                f"input {field.name!r} declares an unknown type {field.type!r}",
+                f"Input {field.name!r} declares an unknown type {field.type!r}.",
                 {"reason": "unknown_input_type", "input": field.name, "type": field.type},
             )
         expected = _EXPECTED_TYPE.get(field.type)
         if expected is not None and not isinstance(given, expected[1]):
             return (
-                f"input {field.name!r} must be a {expected[0]}",
+                f"Input {field.name!r} must be a {expected[0]}.",
                 {"reason": "wrong_input_type", "input": field.name, "expected": expected[0]},
             )
     return None
@@ -179,35 +204,36 @@ async def reply_to_dialog(client: Client, token: str, did: str, body: dict[str, 
     The client library resolves, not rejects, on a 409 and shows nothing (TW-DLG-011).
     """
     if client.session is None or not _is_uuid(token):
-        return _not_found()
+        return not_found()
     store = configured.store
     if store is None:
-        return _not_found()
+        return not_found()
 
     key = make_key(client.session, token)
     snapshot = await store.snapshot(key)
     if snapshot is None:
-        return _not_found()
+        return not_found()
     dialog = next((d for d in snapshot.dialogs if d.id == did), None)
     if dialog is None:
-        return _not_found()
+        return not_found(DIALOG_NOT_FOUND_DETAIL)
 
-    problem = _validate_reply(dialog, body or {})
+    body = body if isinstance(body, dict) else {}
+    problem = _validate_reply(dialog, body)
     if problem is not None:
         text, params = problem
-        return 422, {"detail": text, "code": INVALID_REPLY, "params": params}
+        return 422, error_body(INVALID_REPLY, text, params)
 
     reply = DialogReply(button=body["button"], values=body.get("values") or {})
     resolution = await store.resolve_dialog(key, did, reply)
     if resolution is DialogResolution.ACCEPTED:
         return 204, None
     if resolution is DialogResolution.NOT_FOUND:
-        return _not_found()
+        return not_found()
 
     # TW-DLG-010: the losing reply receives the dialog with the winning reply.
     after = await store.snapshot(key)
     settled = next((d for d in (after.dialogs if after else []) if d.id == did), None)
-    payload = {"detail": _RESOLUTION_DETAIL[resolution], "dialog": settled.to_dict() if settled else None}
+    payload = {**error_body(_RESOLUTION_CODE[resolution]), "dialog": settled.to_dict() if settled else None}
     if resolution is DialogResolution.CANCELLED or (
         settled is not None and DialogState(settled.state) is DialogState.CANCELLED
     ):
@@ -224,21 +250,21 @@ async def request_cancel(client: Client, token: str) -> Response:
     `already_terminal`; one holding an uncollected result answers 409 (TW-CANCEL-010).
     """
     if client.session is None or not _is_uuid(token):
-        return _not_found()
+        return not_found()
     store = configured.store
     if store is None:
-        return _not_found()
+        return not_found()
 
     key = make_key(client.session, token)
     snapshot = await store.snapshot(key)
     if snapshot is None:
-        return _not_found()
+        return not_found()
 
     progress = snapshot.progress
     if progress.is_terminal:
-        return 409, {"detail": ALREADY_TERMINAL}
+        return 409, error_body(ALREADY_TERMINAL)
     if progress.result is not None:
-        return 409, {"detail": HOLDS_AN_UNCOLLECTED_RESULT}
+        return 409, error_body(HOLDS_AN_UNCOLLECTED_RESULT)
 
     rev = await store.request_cancel(key)
     await _publish(
@@ -253,27 +279,27 @@ async def _release(client: Client, token: str, *, idempotent: bool) -> Response:
     `result_released` fires once per released result.
     """
     if client.session is None or not _is_uuid(token):
-        return _not_found()
+        return not_found()
     store = configured.store
     if store is None:
-        return _not_found()
+        return not_found()
 
     key = make_key(client.session, token)
     snapshot = await store.snapshot(key)
     if snapshot is None:
         # Unknown, foreign, or a tombstone whose TTL is up: 204 for dismiss, 404 for collect.
-        return (204, None) if idempotent else _not_found()
+        return (204, None) if idempotent else not_found()
 
     if snapshot.progress.result is None:
         # Nothing to release: dismiss of a tombstone (TW-RET-004) is 204; anything else is 409
         # (TW-REST-008).
         if idempotent and snapshot.progress.is_terminal:
             return 204, None
-        return 409, {"detail": NO_UNCOLLECTED_RESULT}
+        return 409, error_body(NO_UNCOLLECTED_RESULT)
 
     released = await store.release_result(key)
     if released is None:
-        return (204, None) if idempotent else (409, {"detail": NO_UNCOLLECTED_RESULT})
+        return (204, None) if idempotent else (409, error_body(NO_UNCOLLECTED_RESULT))
 
     # TW-RES-010: the release writes `done`, in one write and one envelope: the entry leaves the
     # register (TW-REG-007) and the tombstone remains (TW-RET-004).

@@ -133,8 +133,8 @@ export const UNHANDLED_EXCEPTION = `${ERROR_NAMESPACE}.unhandled_exception`;
 /** A failure without a code of its own: Python `TaskwireMiddleware.on_transition()` for an executor error
  * without `code`, and `OperationFailed.code` of a `failed` document without an `error`. */
 export const FAILED = `${ERROR_NAMESPACE}.failed`;
-/** A cancellation: `OperationFailed.code` of a `cancelled` operation, and the `detail` of a `410` reply to
- * a dialog the operation withdrew. Never written into a document. */
+/** A cancellation: `OperationFailed.code` of a `cancelled` operation, and the `detail_code` of a `410` reply
+ * to a dialog the operation withdrew. Never written into a document. */
 export const CANCELLED = `${ERROR_NAMESPACE}.cancelled`;
 
 /**

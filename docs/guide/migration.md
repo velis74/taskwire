@@ -9,6 +9,41 @@ exists.
 
 <!-- New releases go directly below this comment, above the previous one, as `## Upgrading to vX.Y.Z (from vA.B.x)`. -->
 
+## Upgrading to v0.5.0 (from v0.4.x)
+
+### The REST error body
+
+Every error answer of the REST endpoints, through every adapter and over muxws, has the fields of
+fastapi-viewsets' `ApiErrorBody`. The code moves from `detail` to `detail_code`, `params` becomes
+`detail_params`, and `code` is gone:
+
+| Old field | New field |
+|---|---|
+| `detail` (the code, e.g. `taskwire.not_found`) | `detail_code`; `detail` is now English text |
+| `code` (`422` of a dialog reply) | `detail_code` |
+| `params` (`422` of a dialog reply) | `detail_params`, `{}` when there are none |
+| — | `field_errors`, always `{}` |
+| `dialog` (`409` and `410` of a dialog reply) | `dialog`, unchanged |
+
+```json
+{"detail": "taskwire.not_found"}
+```
+
+becomes
+
+```json
+{
+  "detail": "Operation not found.",
+  "detail_code": "taskwire.not_found",
+  "detail_params": {},
+  "field_errors": {}
+}
+```
+
+A client that reads an error body branches on `detail_code` instead of `detail` (or `code`), and reads
+`detail_params.reason` instead of `params.reason`. The TypeScript client reads only the status and
+needs no change. The `202` of an accepted cancel still answers `{"detail": "taskwire.requested"}`.
+
 ## Upgrading to v0.4.3 (from v0.4.2)
 
 ### `GET` calls are tracked

@@ -430,16 +430,16 @@ wheels = [
 
 [[package]]
 name = "dynamicforms-fastapi-viewsets"
-version = "0.14.2"
+version = "0.15.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/b7/1777c41b1148887e64261685a530bb00aee532ce6cd45011a1b9dc835107/dynamicforms_fastapi_viewsets-0.14.2.tar.gz", hash = "sha256:7fd37690b6eeaa1b5bfdf2f91da2350b2558b9c211aed0562fd287205f1359c9", size = 130791, upload-time = "2026-10-27T17:00:51.784Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/53/02d9a9fb6cf54c54b18e6d3142a9bc817d4118c38d35dcd2be93f1da534f/dynamicforms_fastapi_viewsets-0.15.2.tar.gz", hash = "sha256:7438c6ae528b6e4b391cedf532cb32179add2f8bdff825d833afa82bd67d60b2", size = 136398, upload-time = "2026-11-12T19:22:03.589Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/58/ff2934bb3cd34c66a374b1d2b4df919b9457d0a46e68e213ba52f73e0140/dynamicforms_fastapi_viewsets-0.14.2-py3-none-any.whl", hash = "sha256:0bcfdbf27c3ade7235237c4ee04ac224eb6ab1b35bbd4a138e782ebe82b47330", size = 160543, upload-time = "2026-10-27T17:00:50.087Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/d2/5366e4bb1b3b61196c10ddce70727711b09f4f7a4ec78b31cc4a51aff700/dynamicforms_fastapi_viewsets-0.15.2-py3-none-any.whl", hash = "sha256:0aae170841f3008740850f5ec7774e557ed439573ce6b141b12074d13a434cdb", size = 166540, upload-time = "2026-11-12T19:22:02.207Z" },
 ]
 
 [package.optional-dependencies]
@@ -1132,7 +1132,7 @@ wheels = [
 
 [[package]]
 name = "taskwire"
-version = "0.4.5"
+version = "0.5.0"
 source = { editable = "." }
 
 [package.optional-dependencies]

@@ -187,7 +187,8 @@ and `build_register(snapshots, client) -> Register` assembles the document `GET 
 sorted, with `poll_after_ms` and the client's `progress_delivery`.
 
 `taskwire.contrib.schema` holds pydantic mirrors of these documents, plus `ErrorBody` and `Accepted`,
-for the OpenAPI schema of `register_taskwire_rest`; they emit an absent optional field as `null`.
+for the OpenAPI schema of `register_taskwire_rest` and `router()`; they emit an absent optional field
+as `null`.
 
 ## Result decorators
 
@@ -409,8 +410,9 @@ decides display only. `register_taskwire_muxws`'s `watch` reply carries `"topics
 transport is configured.
 
 `taskwire.contrib.fastapi.router(prefix=None)` returns a plain FastAPI `APIRouter` with the same six
-routes, and `taskwire.contrib.asgi.app(prefix=None)` serves them from a framework-free ASGI callable.
-The endpoint logic is in `taskwire.rest`, which imports no framework.
+routes, statuses, request and response models as `register_taskwire_rest`, and
+`taskwire.contrib.asgi.app(prefix=None)` serves them from a framework-free ASGI callable. The endpoint
+logic is in `taskwire.rest`, which imports no framework.
 
 ## The WebSocket transport
 
@@ -624,11 +626,27 @@ answers by token. A dialog has no deadline.
 Unknown and foreign tokens both return 404, so the answer does not reveal that a token exists in
 another namespace.
 
-Every error answers `{"detail": ...}` (`taskwire.invalid_reply` adds `code` and `params` to a `422`;
-see [Error codes](../guide/error-codes.md#rest-detail-codes)), through every adapter (`router()`, `contrib.asgi` and
-`register_taskwire_rest`); the OpenAPI schema of `register_taskwire_rest`'s endpoints declares it as
-`ErrorBody`. The `409` and `410` of a dialog
-reply also carry `dialog`: the dialog in its settled state, with the winning reply on a `409`.
+Every error answers the error body `{detail, detail_code, detail_params, field_errors}`, the fields
+of fastapi-viewsets' `ApiErrorBody` (see [Error codes](../guide/error-codes.md#rest-error-body)),
+through every adapter (`register_taskwire_rest`, `router()`, `contrib.asgi`) and over
+muxws. `detail_code` is the code, `detail` English text. The `409` and `410` of a dialog reply also
+carry `dialog`: the dialog in its settled state, with the winning reply on a `409`.
+
+The OpenAPI documents of `register_taskwire_rest` and `router()` declare every operation's
+parameters (`token`, `did`, the optional `X-Taskwire-Connection` header), request and response
+bodies and error responses, with a description on every field; the error body is `ErrorBody`.
+The operations carry the tag `taskwire.contrib.openapi.TAG` (`Taskwire`), and
+`taskwire.contrib.openapi.TAG_DESCRIPTION` describes it. With `register_taskwire_rest`,
+`apply_viewset_tags(app)` from `fastapi_viewsets.endpoint_docs` adds the description to the document; with `router()`,
+the application passes it itself:
+
+```python
+from fastapi import FastAPI
+from taskwire.contrib import fastapi as taskwire_fastapi, openapi
+
+app = FastAPI(openapi_tags=[{"name": openapi.TAG, "description": openapi.TAG_DESCRIPTION}])
+app.include_router(taskwire_fastapi.router())
+```
 
 While the tombstone is readable these endpoints distinguish an ended operation from an unknown token:
 a cancel on a finished operation is `409 taskwire.already_terminal`, a reply to a dialog its terminal

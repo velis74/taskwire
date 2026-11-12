@@ -5,6 +5,7 @@ fastapi is an optional extra (`taskwire[fastapi]`); the module skips when it is 
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from collections.abc import Iterator
@@ -248,3 +249,40 @@ def test_the_register_is_the_prefix_itself(store: object) -> None:
         body = response.json()
         assert set(body) >= {"v", "operations", "aggregate", "server_time", "poll_after_ms"}
         assert "progress" not in body, "the register was parsed as a token and answered a snapshot"
+
+
+def test_the_router_answers_the_error_body_and_validates_a_reply_itself(store: taskwire.MemoryStore) -> None:
+    """TW-REST-015, TW-DLG-015: errors carry the four `ApiErrorBody` fields; a body that is not a
+    `DialogReply` reaches `taskwire.rest` and answers `taskwire.invalid_reply`."""
+
+    headers = {USER_HEADER: "alice"}
+    with TestClient(_make_app(store)) as http:
+        token = http.post("/start", headers=headers).json()["token"]
+        question = taskwire.DialogRequest(id="ask-1", dialog_id="acme.overwrite", buttons=[taskwire.Button(id="yes")])
+        asyncio.run(store.put_dialog(taskwire.key("ns:alice", token), question, 3600))
+        url = f"/taskwire/{token}/dialogs/ask-1"
+
+        unknown = http.get(f"/taskwire/{taskwire.new_token()}", headers=headers)
+        assert (unknown.status_code, unknown.json()) == (
+            404,
+            {
+                "detail": "Operation not found.",
+                "detail_code": "taskwire.not_found",
+                "detail_params": {},
+                "field_errors": {},
+            },
+        )
+
+        for body in ({"values": {}}, [1, 2], None):
+            rejected = http.post(url, json=body, headers=headers)
+            assert rejected.status_code == 422
+            assert rejected.json()["detail_code"] == "taskwire.invalid_reply"
+            assert rejected.json()["detail_params"] == {"reason": "button_required"}
+
+        accepted = http.post(url, json={"button": "yes"}, headers=headers)
+        assert (accepted.status_code, accepted.content) == (204, b"")
+
+        lost = http.post(url, json={"button": "yes"}, headers=headers)
+        assert lost.status_code == 409
+        assert set(lost.json()) == {"detail", "detail_code", "detail_params", "field_errors", "dialog"}
+        assert lost.json()["dialog"]["state"] == "answered"

@@ -179,7 +179,7 @@ async def test_dismiss_is_idempotent_and_collect_is_not(configured_store):
     # The tombstone makes the repeat a 409, not a 404 (TW-RET-004).
     status, payload = await collect_result(Client(session=NS), other)
     assert status == 409, "collect is not"
-    assert payload["detail"] == "taskwire.no_uncollected_result"
+    assert payload["detail_code"] == "taskwire.no_uncollected_result"
 
 
 @pytest.mark.usefixtures("_unthrottled")
@@ -212,7 +212,7 @@ async def test_a_parked_result_refuses_a_cancel_with_409(configured_store):
 
     status, payload = await request_cancel(Client(session=NS), token)
     assert status == 409, payload
-    assert payload["detail"] == "taskwire.holds_an_uncollected_result"
+    assert payload["detail_code"] == "taskwire.holds_an_uncollected_result"
 
 
 @pytest.mark.usefixtures("_unthrottled")

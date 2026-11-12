@@ -1372,7 +1372,15 @@ describe('the write path (TW-REST-004)', () => {
     server.handler = (url) =>
       url === `${DEFAULT_BASE_PATH}/${token}`
         ? { status: 200, data: parkedPayload(token) }
-        : { status: writeStatus, data: { detail: 'taskwire.already_terminal' } };
+        : {
+            status: writeStatus,
+            data: {
+              detail: 'The operation has ended.',
+              detail_code: 'taskwire.already_terminal',
+              detail_params: {},
+              field_errors: {},
+            },
+          };
 
     const handle = tw.track(token);
     await vi.advanceTimersByTimeAsync(BASE);

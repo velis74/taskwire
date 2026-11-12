@@ -1,8 +1,8 @@
 # Error codes
 
 An operation that ends `failed` carries `error`: `{code, message, retryable}`. `message` is a `Text`
-the frontend renders; `code` is what an application branches on. The REST endpoints answer an error,
-and a cancel request, with `{"detail": code}`.
+the frontend renders; `code` is what an application branches on. The REST endpoints answer an error
+with the [error body](#rest-error-body), whose `detail_code` is the code.
 
 ## Namespaced codes
 
@@ -48,8 +48,8 @@ export each one from `taskwire` as a constant built from `ERROR_NAMESPACE`:
 the message is empty.
 
 `CANCELLED` (`taskwire.cancelled`) is never written into a document: a `cancelled` operation
-carries no `error`. It is the `OperationFailed.code` of a cancelled operation and the `detail` of a
-`410` dialog reply.
+carries no `error`. It is the `OperationFailed.code` of a cancelled operation and the `detail_code` of
+a `410` dialog reply.
 
 Every other `error.code` is written as given:
 
@@ -86,22 +86,49 @@ steps in order:
 
 `conformance/exception-names.json` holds the cases both test suites check.
 
-## REST `detail` codes
+## REST error body
 
-| Endpoint | Status | `detail` |
+Every error answer of the REST endpoints has the fields of fastapi-viewsets' `ApiErrorBody`, through
+every adapter (`register_taskwire_rest`, `router()`, `contrib.asgi`) and over muxws:
+
+| Field | Type | Content |
+|---|---|---|
+| `detail` | string | English text for the code, interpolated from `detail_params` |
+| `detail_code` | string | the code, `taskwire.<code>` |
+| `detail_params` | object | interpolation values; `{}` when there are none |
+| `field_errors` | object | always `{}` |
+| `dialog` | object | only on the `409` and `410` of a dialog reply: the settled dialog, with the winning reply on a `409` |
+
+```json
+{
+  "detail": "Operation not found.",
+  "detail_code": "taskwire.not_found",
+  "detail_params": {},
+  "field_errors": {}
+}
+```
+
+An application branches on `detail_code`; `detail` is for logs and is not translated. The
+TypeScript client reads only the status of an error. fastapi-viewsets' `errorBodyOf()`,
+`isApiErrorBody()` and `toErrorDescription()` read a taskwire error body as they read their own.
+
+## REST error codes
+
+| Endpoint | Status | `detail_code` |
 |---|---|---|
 | any `{token}` endpoint, `GET {prefix}` without a namespace | `404` | `taskwire.not_found` |
-| `POST {prefix}/{token}/cancel` | `202` | `taskwire.requested` |
 | `POST {prefix}/{token}/cancel` | `409` | `taskwire.already_terminal`, `taskwire.holds_an_uncollected_result` |
 | `POST {prefix}/{token}/collect`, `POST {prefix}/{token}/dismiss` | `409` | `taskwire.no_uncollected_result` |
 | `POST {prefix}/{token}/dialogs/{did}` | `409` | `taskwire.already_answered`, with the settled `dialog` |
 | `POST {prefix}/{token}/dialogs/{did}` | `410` | `taskwire.cancelled`, with the settled `dialog` |
-| `POST {prefix}/{token}/dialogs/{did}` | `422` | English text naming the problem, with `code` and `params` |
+| `POST {prefix}/{token}/dialogs/{did}` | `422` | `taskwire.invalid_reply`, with `detail_params.reason` |
 
-The `422` of a dialog reply answers `{"detail": <English text>, "code": "taskwire.invalid_reply",
-"params": {...}}`. `params.reason` says what failed:
+A cancel that is accepted answers `202` with `{"detail": "taskwire.requested"}`; it is not an error
+body.
 
-| `params.reason` | Other `params` |
+`detail_params.reason` of `taskwire.invalid_reply` says what failed:
+
+| `detail_params.reason` | Other `detail_params` |
 |---|---|
 | `button_required` | — |
 | `unknown_button` | `button` |
@@ -110,10 +137,24 @@ The `422` of a dialog reply answers `{"detail": <English text>, "code": "taskwir
 | `unknown_input_type` | `input`, `type` |
 | `wrong_input_type` | `input`, `expected` (`number`, `boolean` or `string`) |
 
+```json
+{
+  "detail": "Button 'maybe' is not one of this dialog's buttons.",
+  "detail_code": "taskwire.invalid_reply",
+  "detail_params": {"reason": "unknown_button", "button": "maybe"},
+  "field_errors": {}
+}
+```
+
+Through `register_taskwire_rest`, a dialog reply body that is not a `DialogReply` (no string
+`button`, or `values` not an object, `null` included) fails the route's model validation and is
+answered by fastapi-viewsets: `422`, `detail_code` `fastapi-viewsets.validation_failed`, the same
+four fields. `values_not_an_object` therefore comes only from `router()` and `contrib.asgi`, which
+read `values: null` as `{}`.
+
 Python exports the codes from `taskwire.rest` as `NOT_FOUND`, `REQUESTED`, `ALREADY_TERMINAL`,
 `HOLDS_AN_UNCOLLECTED_RESULT`, `NO_UNCOLLECTED_RESULT`, `ALREADY_ANSWERED` and `INVALID_REPLY`, and
-`CANCELLED` from `taskwire`. `register_taskwire_rest`, `router()` and `contrib.asgi` answer with these
-bodies alike.
+`CANCELLED` from `taskwire`.
 
 ## `OperationFailed`
 

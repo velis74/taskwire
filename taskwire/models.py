@@ -49,8 +49,9 @@ def encoded_size(value: Any) -> int:
     return len(json.dumps(value, separators=(",", ":"), default=str).encode("utf-8"))
 
 
+# TW-PROG-001
 class ProgressState(str, Enum):
-    """TW-PROG-001. There is no `received`: an operation begins at `queued`."""
+    """Lifecycle state of an operation: `queued`, `running`, `waiting_input`, `done`, `failed` or `cancelled`."""
 
     QUEUED = "queued"
     RUNNING = "running"
@@ -67,8 +68,9 @@ ACTIVE_STATES = frozenset({ProgressState.QUEUED, ProgressState.RUNNING})
 """`queued` and `running`: the states that make a register active."""
 
 
+# §4.2, TW-DLG-005
 class DialogState(str, Enum):
-    """§4.2. There is no `expired`: a dialog has no deadline to expire against (TW-DLG-005)."""
+    """State of a dialog: `open`, `answered` or `cancelled`."""
 
     OPEN = "open"
     ANSWERED = "answered"
@@ -176,8 +178,8 @@ FAILED = f"{ERROR_NAMESPACE}.failed"
 `retryable: false`."""
 
 CANCELLED = f"{ERROR_NAMESPACE}.cancelled"
-"""A cancellation: the client-side error code of a `cancelled` operation, and the `detail` of a `410`
-reply to a dialog the operation withdrew. Never written into a document: a `cancelled` operation
+"""A cancellation: the client-side error code of a `cancelled` operation, and the `detail_code` of a
+`410` reply to a dialog the operation withdrew. Never written into a document: a `cancelled` operation
 carries no `error`."""
 
 _ACRONYM_BOUNDARY = re.compile(r"([A-Z])([A-Z][a-z])")

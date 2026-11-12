@@ -56,7 +56,9 @@ taskwire's routes exist on muxws; `register_taskwire_muxws` decides whether one 
 
 Requires `dynamicforms-fastapi-viewsets >= 0.13.0`. Every call a fastapi-viewsets proxy makes carries
 an `Idempotency-Key`, so every viewset command is a [tracked call](./tracking-calls.md) without the
-frontend sending a token of its own. `TaskwireMiddleware` is the binding:
+frontend sending a token of its own. With fastapi-viewsets 0.15.2 or later, each operation of the
+application's viewsets declares the optional `X-Taskwire-Token` header in OpenAPI.
+`TaskwireMiddleware` is the binding:
 
 | Step | Written by | Where |
 |---|---|---|
