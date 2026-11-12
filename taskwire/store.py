@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum
 
+from . import reader
 from .models import (
     DialogReply,
     DialogRequest,
@@ -376,8 +377,6 @@ class MemoryStore(TaskwireStore):
 
         TW-STORE-008: never raises; the state is already written (TW-CORE-002).
         """
-        from . import reader
-
         with contextlib.suppress(Exception):
             await reader.dispatch(ns, envelope)
 

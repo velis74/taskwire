@@ -178,18 +178,18 @@ async def test_string_buttons_expand_to_the_object_form_with_catalogue_keys():
 
 @pytest.mark.usefixtures("_unthrottled")
 async def test_answered_dialogs_stay_in_the_snapshot():
-    """TW-DLG-013: dialogs answered in two operations in turn each return to their worker."""
+    """TW-DLG-013: an answered dialog stays in the snapshot, `answered`, with its reply."""
     store = MemoryStore()
     token = new_token()
     task, did = await _open_one(store, token)
     await store.resolve_dialog(make_key(NS, token), did, DialogReply(button="ok", values={"n": 1}))
     await task
 
-    second = new_token()
-    task, did = await _open_one(store, second, "second")
-    await store.resolve_dialog(make_key(NS, second), did, DialogReply(button="cancel"))
-    await task
-    assert True
+    snapshot = await store.snapshot(make_key(NS, token))
+    assert snapshot is not None
+    [dialog] = [d for d in snapshot.dialogs if d.id == did]
+    assert DialogState(dialog.state) is DialogState.ANSWERED
+    assert dialog.reply == DialogReply(button="ok", values={"n": 1})
 
 
 @pytest.mark.usefixtures("_unthrottled")

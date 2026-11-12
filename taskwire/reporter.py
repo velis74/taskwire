@@ -714,7 +714,6 @@ class OperationScope:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._ambient_token: Any = None
-        self._asking = 0
         # True when the caller binds the ambient reporter in its own context
         # (`bind_ambient_in_caller`).
         self._caller_binds_ambient = False
