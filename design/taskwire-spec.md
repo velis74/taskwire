@@ -7,10 +7,7 @@ outline: deep
 
 # taskwire - normative specification
 
-Extracted requirements for `taskwire` (PyPI) / `taskwire` (npm).
-Rationale, alternatives considered and worked examples live in the design brief:
-[taskwire - progress reporting and awaitable dialogs](./taskwire-progress-and-dialogs.md).
-This document states only what must be built. RFC 2119 keywords are normative.
+Requirements for `taskwire` (PyPI) / `taskwire` (npm). RFC 2119 keywords are normative.
 
 Rule ids are stable. Cross-references use ids only.
 
@@ -21,8 +18,8 @@ Rule ids are stable. Cross-references use ids only.
 | Term | Definition |
 |---|---|
 | **operation** | One unit of long-running server-side work that reports commentary. Identified by a token. |
-| **token** | Client- or server-minted UUIDv4 string. An *address*, never an authorization grant, never a store key on its own. |
-| **namespace** / `ns` | The identity string produced by `session_resolver`: the account when a user is logged in, the session otherwise (§2.7). The only authorization scope. |
+| **token** | Client- or server-minted UUIDv4 string. An *address*, never an authorisation grant, never a store key on its own. |
+| **namespace** / `ns` | The identity string produced by `session_resolver`: the account when a user is logged in, the session otherwise (§2.7). The only authorisation scope. |
 | **key** | `f"{ns}:{token}"`. The only value store methods accept for per-operation reads/writes. |
 | **snapshot** | The complete current state of one operation (§3.6). |
 | **register** | The set of all **shared** live operations under one namespace (§3.8). |
@@ -45,8 +42,9 @@ Rule ids are stable. Cross-references use ids only.
 | **private operation** | One that declared no `result_kind`. Its listing and its progress fan-out are scoped to the connection that started it; its dialogs are not (§2.21). |
 | **collectable result** | A written `Result` that has not been released. Holds the operation in `waiting_input` without holding a worker. |
 
-Packaging: Python package root `taskwire`, extras `[redis]`, `[muxws]`, `[fastapi]`, `[celery]`;
-npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`, `/fastapi-viewsets`. Both
+Packaging: Python package root `taskwire`, extras `[redis]`, `[muxws]`, `[fastapi]`, `[celery]`,
+`[viewsets]`; npm package `taskwire` with subpath exports `/vue`, `/muxws`, `/vuetify`,
+`/fastapi-viewsets`, `/conformance`. Both
 roots carry the whole operating half (TW-SYM-001) with no optional dependency: the store port with
 `MemoryStore`, the `Reporter`, `operation()`, `LocalTransport` and `NullTransport`. The subpaths and the extras add
 adapters to things outside the process, never a capability the core lacks.
@@ -79,30 +77,18 @@ adapters to things outside the process, never a capability the core lacks.
   Framework imports are confined to `taskwire.contrib.*`. The npm core MUST NOT import Vue, Vuetify
   or the modal kit outside a subpath export.
 
-  > **taskwire uses fastapi-viewsets as a tool to build its own REST API** (`contrib/viewsets.py`),
-  > under the same confinement as FastAPI and Celery — banned from the core, allowed in `contrib`,
-  > and nothing more. Separately, applications built *with* fastapi-viewsets use taskwire for
-  > progress. Two relationships, and neither closes a circle.
+  > taskwire builds its REST API with fastapi-viewsets (`contrib/viewsets.py`), under the same
+  > confinement as FastAPI and Celery: excluded from the core, allowed in `contrib`. fastapi-viewsets
+  > does not depend on taskwire.
 - **TW-CORE-007** The wire vocabulary is closed at the six kinds listed in §1. A seventh kind is a
   breaking change requiring a bump of `Envelope.v`. `command` MUST NOT be added.
 
-  > **Scope clarified.** What this forbids is taskwire carrying the **application's** commands —
-  > `export`, `import`, `recalculate_balances`, and whatever is added next week. That is an open set
-  > whose delivery would require taskwire to know about actions, routing, model serialization and
-  > per-command authorization, at which point it is the viewset layer with a progress bar bolted on.
-  >
-  > It does **not** forbid taskwire's own calls travelling as muxws streams. Those are the closed
-  > set of six enumerated in TW-REST-004, and they travel as the viewset's own commands —
-  > `route_viewset` publishes the same six routes over muxws, and `fastapi_viewsets.mux_ws`
-  > dispatches an inbound command stream into them. No taskwire vocabulary is involved and no
-  > envelope kind is added: `{":method": "POST", ":path": "/taskwire/{token}/cancel"}` on a stream is
-  > the viewset layer addressing a resource, not taskwire growing a `command`. `watch` is the one
-  > call that remains taskwire's own stream kind, because it declares per-connection state held on
-  > the Peer and has no `{token}` to hang off (TW-WS-009).
-  >
-  > The line is the set, not the medium. taskwire may carry its own six over any transport it
-  > implements; it may not carry the application's `export` or `recalculate_balances` over any of
-  > them.
+  taskwire never carries an application's commands, on any transport: delivering an open set of
+  commands would require it to know about actions, routing, serialisation and per-command
+  authorisation. The six calls of TW-REST-004 travel over muxws as viewset commands
+  (`{":method": "POST", ":path": "/taskwire/{token}/cancel"}`, dispatched by
+  `fastapi_viewsets.mux_ws`) and add no envelope kind. `watch` is taskwire's only stream kind: it
+  declares per-connection state held on the peer and has no `{token}` (TW-WS-009).
 - **TW-CORE-008** `snapshot` is not a seventh kind; it is the four pushed kinds bundled into one
   document and is spelled in `Envelope.kind` only because it arrives on the same path.
 - **TW-CORE-009** No `Envelope` MAY travel client to server. `dialog.reply` and `watch` originate
@@ -121,8 +107,8 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-REV-001** Every committed change MUST bump `rev` on the operation's document.
 - **TW-REV-002** A new document's `rev` MUST be seeded from `max(now_ms, previous + 1)` computed
   inside the same atomic write, where `now_ms` is the server clock in milliseconds. It MUST NOT be
-  seeded from zero or one (a key expiring under a live operation would otherwise resurrect below the
-  client's last-seen value and freeze the bar forever). Test:
+  seeded from zero or one: a key expiring under a live operation would otherwise be recreated below
+  the client's last-seen `rev`, and the client would drop every later envelope. Test:
   `conformance` — `test_commit_after_expiry_exceeds_previous_max`.
 - **TW-REV-003** `rev` and the document it labels MUST be written together, atomically. The `rev`
   returned by `commit`/`put_dialog` MUST be the `rev` a concurrent `snapshot()` reads alongside that
@@ -132,9 +118,9 @@ adapters to things outside the process, never a capability the core lacks.
   revisions freely and MUST NOT request one.
 - **TW-REV-006** `rev` gates *the progress document only*. A client MUST apply `dialog.open` and
   `dialog.close` to its dialog map by dialog `id` regardless of `rev`, and MUST treat `cancel` as
-  idempotent. A stale `rev` on a dialog envelope means only "do not touch progress". Test:
-  `conformance/sequences/out-of-order-dialog.json` — a `dialog.open` at rev 40 arriving after a
-  `progress` at rev 41 must be applied while the progress is dropped.
+  idempotent. A stale `rev` on a dialog envelope means only "do not touch progress". Tests:
+  `operation.spec.ts::applies a dialog regardless of rev, and never reopens a settled one`,
+  `client.spec.ts::gates progress on rev and applies dialogs regardless of it`.
 - **TW-REV-007** A client MUST NOT move a dialog backwards out of a terminal state.
 
 ### 2.3 The store port (`TW-STORE-*`)
@@ -178,7 +164,8 @@ adapters to things outside the process, never a capability the core lacks.
   holding an uncollected result, write the terminal state `done`, bump `rev`, and return the released
   `Result`; otherwise it MUST change nothing and return `None`. It is the single arbiter of the three
   release paths in TW-RES-010, so collection and dismissal racing each other release exactly once.
-  Test: `conformance` — `test_release_result_fires_once_under_concurrency`.
+  Tests: `results_test.py::test_release_result_fires_once_under_concurrency`,
+  `results.spec.ts::releases exactly once under concurrency`.
 - **TW-STORE-007** `drop(key)` MUST remove the operation from the document space, from the namespace
   index and from the asking set (TW-KEY-005), MUST be idempotent, and MUST leave every other
   operation in that namespace untouched. It is how a document is removed **outright** — `migrate`
@@ -191,10 +178,9 @@ adapters to things outside the process, never a capability the core lacks.
   `data` and `updated_at` and MUST NOT change `state`. Enforced by the store, not by the caller.
   Test: `conformance` — `test_commit_after_terminal_keeps_state`.
 - **TW-STORE-011** `MemoryStore` MUST ship in the core of **both** languages. `RedisStore` MUST ship
-  in the Python extra `[redis]` and MUST pass the exported conformance suite unchanged. There is
-  deliberately **no** TypeScript `RedisStore`: omitting one costs nothing, since the store is a port
-  and an implementation that is not written is simply absent. The port stays open, and TW-STORE-012
-  is what an application writing its own would prove it against.
+  in the Python extra `[redis]` and MUST pass the exported conformance suite unchanged. There is no
+  TypeScript `RedisStore`; an application's own store implementation proves itself against
+  TW-STORE-012.
 - **TW-STORE-012** The conformance suite MUST be exported by both languages
   (`taskwire.conformance`, `taskwire/conformance`) so that an application's own store implementation
   can import and run it. The two suites MUST assert the same behaviours, so that a store is judged
@@ -207,7 +193,7 @@ adapters to things outside the process, never a capability the core lacks.
   trip, for **every** store: the port's return is `Commit(rev, cancelled)`. `Reporter` refreshes
   `cancelled` from it after every commit (TW-CANCEL-004) and MUST NOT ask the store a second time.
   Tests: `conformance` — `test_commit_reports_the_cancel_flag`, for every store; and
-  `redis_store_test.py::test_commit_returns_the_cancel_flag_in_one_round_trip` against a counting
+  `contrib/redis_store_test.py::test_commit_returns_the_cancel_flag_in_one_round_trip` against a counting
   Redis client, for the round trip itself.
 
 ### 2.4 Store keys (`TW-KEY-*`)
@@ -231,19 +217,19 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-KEY-002** There MUST be no `:seen` key, no watcher list, and no per-tab bookkeeping anywhere
   in the keyspace.
 - **TW-KEY-003** `tw:{ns}:index` MUST be added to at `start()` **only for a shared operation** and
-  pruned lazily on listing reads. The register endpoint MUST NOT `SCAN`. A private operation is
-  addressable but unlisted, which is the whole of its privacy in the store (TW-PRIV-002).
+  pruned lazily on listing reads. The register endpoint MUST NOT `SCAN`. In the store, a private
+  operation is addressable but unlisted, and nothing more (TW-PRIV-002).
 - **TW-KEY-005** `tw:{ns}:asking` MUST be maintained by the dialog scripts and by nothing else:
   `put_dialog` adds the token, and `resolve_dialog`, `withdraw_dialogs` and `drop` remove it in the
   same atomic step **once no dialog under that token is still `open`**. It MUST be pruned lazily on
   listing reads exactly as the index is, MUST NOT be written by any read, and MUST NOT be used for
   anything but answering TW-STORE-006's second term — it is not a subscription, not a watcher list,
-  and never an authorization scope. Membership is a fact about a token's *dialogs*, so it never makes
+  and never an authorisation scope. Membership is a fact about a token's *dialogs*, so it never makes
   a private operation shared: the moment its last question closes it leaves the set and the entry
   leaves the register, while `result_kind` stays what it was at start (TW-PROG-006).
 - **TW-KEY-004** `tw:{ns}:{token}:d:{did}:reply` MUST carry the same TTL as the operation's own
-  document and MUST be refreshed by the same keepalive (TW-RET-002). A reply list that dies before
-  its dialog would silently convert an answered dialog into an unanswerable one, and a dialog has no
+  document and MUST be refreshed by the same keepalive (TW-RET-002): a reply list that expires
+  before its dialog makes an answered dialog unanswerable, and a dialog has no
   deadline of its own to size the list against.
 
 ### 2.5 Progress and states (`TW-PROG-*`)
@@ -263,10 +249,10 @@ adapters to things outside the process, never a capability the core lacks.
   no exception, `cancelled` on `OperationCancelled`, `failed` on any other exception. There is no
   `received` state; an operation begins at `queued`. Test:
   `reporter_test.py::test_set_rejects_state_keyword`.
-- **TW-PROG-013** **`waiting_input` MUST have exactly two causes, and they are not alike.** An open
-  dialog holds a worker; an uncollected result holds nothing at all. Both are derived, neither is
-  written by a caller, and any passage or implementation that reasons "`waiting_input` implies a
-  pinned worker" is wrong. Test: `register.spec.ts::result parked in waiting_input pins no worker`.
+- **TW-PROG-013** `waiting_input` MUST have exactly two causes: an open dialog, which holds a
+  worker, and an uncollected result, which holds none. Both are derived; neither is written by a
+  caller. Tests: `results_test.py::test_waiting_input_has_two_causes_and_they_are_not_alike`,
+  `results.spec.ts::parks without blocking the caller`.
 - **TW-PROG-005** `error` MUST be `{"code": str, "message": Text, "retryable": bool}` and MUST NOT
   carry a stack trace.
 - **TW-PROG-006** `result_kind`, `origin_session` and `origin_connection` MUST be fixed when the
@@ -283,7 +269,7 @@ adapters to things outside the process, never a capability the core lacks.
   (TW-PRIV-001) on its first push.
 - **TW-PROG-010** A client and the server MUST both **derive** `waiting_input` — from the entry's own
   open dialogs and from its uncollected result — never from the last `progress` envelope. Test:
-  `register.spec.ts::waiting_input derived from dialog.open with polling suspended`.
+  `dialog.spec.ts::derives waiting_input while a dialog is open and never writes it`.
 - **TW-PROG-011** Only the root reporter's terminal transition MAY put the operation into a terminal
   state; in practice only `operation()`'s exit calls it.
 
@@ -333,12 +319,12 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-AMB-005** The binding MUST be reset in a `finally` via the `contextvars.Token`, never merely
   overwritten — otherwise a raising task leaks its token to the next task on the same pooled thread
   and progress for A lands on B's key. Test:
-  `reporter_test.py::test_contextvar_does_not_leak_across_sequential_operations` (first operation
+  `ambient_test.py::test_contextvar_does_not_leak_across_sequential_operations` (first operation
   raises; assert the second's commits land on the second token and the proxy is unbound afterwards).
 - **TW-AMB-006** The library MUST ship `taskwire.contrib.threads.copy_context_to(fn)` and the docs
   MUST name `loop.run_in_executor` explicitly as the trap that does not propagate contextvars
   (`asyncio.to_thread` does). Test:
-  `contrib/threads_test.py::test_run_in_executor_propagates_with_helper`.
+  `ambient_test.py::test_run_in_executor_propagates_with_helper`.
 - **TW-AMB-007** `operation()` MUST take an **already-resolved namespace string**, never a user, a
   request or an identity object.
 - **TW-AMB-008** `session_resolver` MUST be the only producer of a namespace. No second derivation
@@ -346,17 +332,16 @@ adapters to things outside the process, never a capability the core lacks.
   re-resolved on the far side.
 - **TW-AMB-009** **`session_resolver` MUST return an identity that is always present: the account
   when a user is logged in, the session otherwise.** An anonymous visitor still has a session,
-  carrying an anonymous user, so anonymity is never a reason to return `None`. Returning `None`
-  remains legal and still means "no taskwire for this caller at all" — every operation becomes a
-  no-op — but it is an application opting a request out, not the library's answer to "nobody is
-  logged in". The return value MUST be stable for the lifetime of one session or login and MUST NOT
-  be attacker-chosen.
+  carrying an anonymous user, so anonymity is never a reason to return `None`. Returning `None` is
+  legal and means "no taskwire for this caller": every operation becomes a no-op. It is how an
+  application opts a request out. The return value MUST be stable for the lifetime of one session or
+  login and MUST NOT be attacker-chosen.
 - **TW-AMB-011** **`migrate_namespace(from_ns, to_ns)` MUST be the only way operations change
   namespace, and the application MUST be the only caller.** On login an application moves the
-  anonymous session's operations onto the account with one call, the same shape as merging a shopping
-  cart. taskwire MUST NOT infer that a login happened, MUST NOT compare a request's resolved
-  namespace against a stored one, and MUST NOT expose migration over REST. It delegates to
-  `store.migrate` (TW-STORE-015) and is therefore idempotent.
+  anonymous session's operations onto the account with one call. taskwire MUST NOT infer that a
+  login happened, MUST NOT compare a request's resolved namespace against a stored one,
+  and MUST NOT expose migration over REST. It delegates to `store.migrate` (TW-STORE-015) and is
+  therefore idempotent.
 - **TW-AMB-012** After a migration, a socket whose session tag names the old namespace MUST be closed
   with `goaway` rather than reused (TW-WS-007 applies unchanged); the client's next register read
   under the new namespace is the whole of the recovery.
@@ -377,7 +362,7 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-THR-004** `subtask.__exit__`, `done()`, `fail()`, `set_result()`, `ask()`, a result release and
   `operation()`'s exit MUST each force an unthrottled flush.
 - **TW-THR-005** A terminal state, a dialog open, a dialog resolution and a cancel notification MUST
-  NEVER be throttled. Test: `reporter_test.py::test_terminal_and_dialog_flush_immediately`.
+  NEVER be throttled. Test: `reporter_test.py::test_terminal_flushes_immediately`.
 - **TW-THR-006** The guaranteed behaviour between forced flush points is: the value visible after a
   burst is *one of* that burst's values; the burst's last value is guaranteed only at the next forced
   flush. Tests MUST assert that, not the stronger claim.
@@ -403,8 +388,9 @@ adapters to things outside the process, never a capability the core lacks.
   one of the two used as a key, a path segment or a store argument (spelled `did` as a parameter).
   An answer MUST target the instance `id`.
 - **TW-DLG-002** `dialog_id` MUST NOT be used as a store key (two concurrent operations rendering the
-  same component would otherwise answer each other's question). Test:
-  `test_concurrent_dialogs_route_to_their_own_operation` (both suites).
+  same component would otherwise answer each other's question). Tests:
+  `dialogs_test.py::test_concurrent_dialogs_route_to_their_own_operation`,
+  `dialog.spec.ts::routes concurrent dialogs to their own operation`.
 - **TW-DLG-003** `buttons` MUST be the object form on the wire. The Python API MUST accept a list of
   strings as sugar and expand it, defaulting each label to `Text(key=f"taskwire.button.{id}")`
   with no `text`.
@@ -414,20 +400,20 @@ adapters to things outside the process, never a capability the core lacks.
   `settings.dialog_timeout`, no `timeout_at` field, no declared default outcome, no `DialogTimeout`
   exception, no `expired` dialog state and no validation against an executor's time limit. A
   programmer who wants a deadline implements one at whatever level suits them.
-- **TW-DLG-006** The consequence MUST be stated plainly in the docs rather than softened: **an
-  unanswered dialog blocks its worker until the executor's own time limit ends the work**, at which
+- **TW-DLG-006** The docs MUST state the consequence: **an unanswered dialog blocks its worker until
+  the executor's own time limit ends the work**, at which
   point the operation becomes `failed` with `code: "taskwire.dialog_timeout"` and `retryable: true`, and its
   open dialogs are withdrawn (TW-STORE-004). taskwire does not solve the general problem of a blocked
   worker (TW-CELERY-010).
 
   `taskwire.dialog_timeout` MUST be written only when the operation was holding an open question. Work ended
-  while doing the work reports `taskwire.interrupted` (TW-CALL-008) or the error its own exception names,
-  because a code telling a reader to answer a question nobody asked is worse than none. Where the
+  while doing the work reports `taskwire.interrupted` (TW-CALL-008) or the error its own exception
+  names. Where the
   limit raises into the work, the condition MUST be answerable without a store read - the operation
   knows whether it is waiting - since it is read at the moment the work is being ended. Where the
   executor ends the work's process from outside, the process that observes the end decides it from
   the stored dialogs (TW-CALL-008). Tests:
-  `celery_test.py::test_an_execution_limit_still_writes_the_terminal_state`,
+  `contrib/celery_test.py::test_an_unanswered_dialog_ends_as_dialog_timeout_and_retryable`,
   `contrib/viewsets_test.py::test_an_interrupted_execution_ends_dialog_timeout_or_interrupted`,
   `contrib/viewsets_worker_test.py`.
 - **TW-DLG-007** `ask()` MUST return only when the store arbitrated a reply. There is no second
@@ -442,7 +428,7 @@ adapters to things outside the process, never a capability the core lacks.
   MUST close its dialog quietly, and MUST NOT surface an error, toast or stack trace.
 - **TW-DLG-011** The client library MUST handle 409 (and 404 and 410) on the reply path itself,
   **resolving** `answer()` rather than rejecting, so no application error handler ever sees it. 422
-  MUST still reject. Test: `dialog.spec.ts::losing tab resolves quietly and logs nothing`.
+  MUST still reject. Test: `operation.spec.ts::resolves quietly on %i and logs nothing`.
 - **TW-DLG-012** A dialog on a cancelled operation MUST be flipped to `cancelled` and `ask()` MUST
   raise `OperationCancelled` whatever `raise_on_cancel` says.
 - **TW-DLG-013** Answered and cancelled dialogs MUST stay in the snapshot for as long as the
@@ -459,8 +445,8 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-DLG-016** The client's close rule MUST be written against dialog state, not against envelope
   arrival: a dialog leaving `open` closes it, whether observed in a push or a poll, and whether it
   left for `answered` or `cancelled`.
-- **TW-DLG-017** `ask()` MUST NOT be called while holding a database transaction; the docs MUST state
-  this as strongly as the hazard warrants.
+- **TW-DLG-017** `ask()` MUST NOT be called while holding a database transaction, and the docs MUST
+  say so: the transaction holds its locks until the user answers.
 
 ### 2.10 The operations register (`TW-REG-*`)
 
@@ -478,9 +464,8 @@ adapters to things outside the process, never a capability the core lacks.
   (TW-PROG-013), and never by reading `progress.state` off the stored document.
 - **TW-REG-005** `needs_attention` MUST be the primary sort key: flagged entries sort first. The
   secondary key MUST be `created_at` **ascending** — FIFO, oldest first — within both groups. There
-  MUST be no third key: an old uncollected result therefore sorts above a fresh question, which is
-  accepted, because the result holds nothing and the aggregate's `waiting_input` state lights the
-  indicator either way.
+  MUST be no third key: an old uncollected result sorts above a fresh question, and the aggregate's
+  `waiting_input` state lights the indicator either way.
 - **TW-REG-006** While an operation is running it MUST always be in the register (if it is shared).
   There MUST be no liveness detection, no orphan grace and no listing filter.
 - **TW-REG-007** **An operation that reaches a terminal state with no uncollected result MUST leave
@@ -488,13 +473,12 @@ adapters to things outside the process, never a capability the core lacks.
   this off the **document's own state**, de-indexing inside the same atomic write rather than
   trusting a caller to follow the write with a second call: two steps leave a window in which a
   reader lists a `failed` row. There MUST be no `terminal_ttl` and no terminal linger in the
-  register. Most operations are short and must never accumulate; the terminal envelope *is* the
-  notification, and the awaiting caller already has its answer.
+  register: the terminal envelope is the notification, and the awaiting caller already has its
+  answer.
 
-  Leaving the register is not ceasing to exist. The document itself remains readable at its own
-  address for `tombstone_ttl` (TW-RET-004), which is what a client that was not watching reads to
-  learn *why* the operation ended. Test: register harness —
-  `test_terminal_entry_is_absent_from_the_very_next_read`.
+  The document itself remains readable at its own address for `tombstone_ttl` (TW-RET-004); a client
+  that was not watching reads there why the operation ended. Test:
+  `reporter_test.py::test_terminal_entry_is_absent_from_the_very_next_read`.
 - **TW-REG-008** An operation MUST NEVER be cancelled, deleted or shortened because a watcher
   vanished. A disconnect is not a statement of intent.
 - **TW-REG-009** `Register.aggregate` MUST be an `Aggregate` document (§3.8a) and MUST NOT be a
@@ -504,9 +488,8 @@ adapters to things outside the process, never a capability the core lacks.
   in the register and is therefore not in the aggregate, except while TW-PRIV-004 lists it, when it
   counts like any other entry; a client that wants its own private operations counted the rest of the
   time recomputes locally, which is the display decision TW-REG-016 permits.
-- **TW-REG-011** **`Aggregate` MUST carry no percentage, and no rule MAY reintroduce one.** There is
-  no unit in which two operations' self-reported percentages are commensurable, so there is no honest
-  number to publish. The field is absent from the wire, not `null` on it. Test:
+- **TW-REG-011** `Aggregate` MUST carry no percentage: two operations' self-reported percentages
+  have no common unit. The field is absent from the wire, not `null` on it. Test:
   `aggregate.spec.ts::aggregate carries no percent field`.
 - **TW-REG-012** **`aggregate.state` MUST be computed by domination**, ordered
   `waiting_input > running > queued`, never by majority. `waiting_input` dominating is what lights
@@ -521,14 +504,11 @@ adapters to things outside the process, never a capability the core lacks.
   MUST use key `taskwire.aggregate.title`.
 - **TW-REG-015** **The server MUST NEVER emit a `failed` or `done` aggregate state.** A terminal entry
   with no uncollected result has already left the register (TW-REG-007), so no count and no
-  domination can ever see one. `progressUi.failureLinger` is therefore purely a client-side concern —
-  a row the client saw depart, held on screen a little longer — and does not contradict TW-REG-016,
-  because the client is not recomputing the server's figure over a different set, it is displaying an
-  entry the register no longer has.
+  domination can see one. `progressUi.failureLinger` is client-side only: it keeps on screen a row
+  the register no longer has, and recomputes no aggregate (TW-REG-016).
 - **TW-REG-016** A client that recomputes the aggregate MUST use these same published rules. There
   MUST be no arbitration between the client's figure and the server's; an application that
-  deliberately recomputes over a subset, or that adds its own private operations, is making a display
-  decision.
+  recomputes over a subset, or that adds its own private operations, is making a display decision.
 - **TW-REG-017** When the register is empty the aggregate MUST report nothing so the widget can hide
   itself. Test: `aggregate.spec.ts::reaches the resting state`.
 - **TW-REG-018** The client MUST persist nothing: not the register, not the token list, not a tab id,
@@ -539,18 +519,17 @@ adapters to things outside the process, never a capability the core lacks.
   socket's `watch` reply carried.
 - **TW-REG-020** A reconnecting client MUST read the register and MUST restore nothing. It MAY send
   one `{"kind": "watch", "overrides": {}}` on the new socket to obtain that socket's connection id
-  (TW-DEL-022) — an empty declaration is not a restoration, it asserts exactly the state the new
-  socket already has. It MUST NOT re-declare the overrides the old socket held. Test:
+  (TW-DEL-022); an empty declaration asserts the state the new socket already has. It MUST NOT
+  re-declare the overrides the old socket held. Test:
   `reconnect.spec.ts::the only watch on on_reconnect declares an empty map`.
 - **TW-REG-021** `tw.operations` MUST NOT be populated wholesale from `tw.register`. Entries join the
   visible set two ways only: `startedHere` plus `progressUi.delay` elapsed, or an explicit `show()`.
 - **TW-REG-023** `tw.operations` MUST keep **insertion order**: a row appears where it entered and
-  does not move. TW-REG-005's sort is the register's, where the reader is choosing what to look at;
-  the visible collection is already on screen, and a row that reorders itself under the cursor
-  because a question opened somewhere else is worse than one that grows at the end. Test:
+  does not move: TW-REG-005's sort applies to the register, and a question opening elsewhere MUST NOT
+  move a row that is already on screen. Test:
   `register.spec.ts::tw.operations keeps the order entries were shown in`.
 - **TW-REG-022** The library MUST NOT ship cross-tab UI synchronisation and MUST NOT offer a hook for
-  it. `BroadcastChannel`-based dialog mirroring and leader-elected polling are rejected, not omitted.
+  it: no `BroadcastChannel`-based dialog mirroring and no leader-elected polling.
 
 ### 2.11 `tabId` rules (`TW-TAB-*`)
 
@@ -581,25 +560,20 @@ adapters to things outside the process, never a capability the core lacks.
   reporter only; calling it on a subtask MUST raise.
 - **TW-RES-004** **An operation that wrote a `Result` MUST NOT go to `done` when its work finishes.**
   It enters `waiting_input` holding that result and stays there until the result is released
-  (TW-RES-010). Its completion is written by `operation()`'s exit exactly as before; only the state
-  it lands in differs.
-- **TW-RES-005** **Parking a result MUST NOT block a worker, and this is emphatically not an
-  `ask()`.** The task has finished; only the *record* waits. The reporter writes the result and the
-  state and the worker exits. An implementation that waits for collection the way `ask()` waits for a
-  reply would pin a worker overnight. Test: end-to-end —
-  `test_worker_exits_while_its_result_is_still_uncollected` (asserted against the pool, not the
-  document).
+  (TW-RES-010). `operation()`'s exit writes this state in place of `done`.
+- **TW-RES-005** Parking a result MUST NOT block a worker: the reporter writes the result and the
+  state, and the worker exits. Test: `results_test.py::test_a_parked_result_holds_no_worker`
+  (asserted against the clock, not the document).
 - **TW-RES-006** An awaiting caller's promise MUST resolve **when the work finishes**, not when the
-  result is collected. Collection is a separate act so that calling code can decide how to perform
-  it. Test: `client.spec.ts::run resolves before the result is collected`.
+  result is collected. Collection is a separate act, performed as the calling code decides. Test:
+  `results.spec.ts::resolves the caller before the result is collected`.
 - **TW-RES-007** taskwire MUST NOT create, serve, refresh, proxy, validate or delete the artefact
   behind a `ref`, and MUST have no opinion about who may fetch it. It stores a pointer, never a file.
 - **TW-RES-008** A client MUST render an entry whose `ref.expires_at` has passed as a plain
   historical record with no download affordance.
 - **TW-RES-009** A `ref` fetch failing with 404 or 410 MUST be treated as an expected outcome: mark
   the result unavailable, leave the rest of the entry intact, do not retry, do not raise a failure
-  toast, do not remove the operation. Test: register harness —
-  `test_404_on_ref_leaves_entry_waiting_input`.
+  toast, do not remove the operation.
 - **TW-RES-010** A result MUST leave `waiting_input` by exactly three paths — **collection**
   (`POST {prefix}/{token}/collect`), **explicit dismissal** (`POST {prefix}/{token}/dismiss`), or the
   **`result_ttl` backstop** — all three arbitrated by `store.release_result` (TW-STORE-016) so
@@ -608,25 +582,23 @@ adapters to things outside the process, never a capability the core lacks.
   `done`**: an operation holding a result is ended by the release and not by the exit of its body
   (TW-RES-004), so a collect or a dismiss writes the terminal state, the entry leaves the register by
   TW-REG-007 and the document is committed with `tombstone_ttl` (TW-RET-004). The `result_ttl`
-  backstop releases by expiry and leaves no document behind, which is what the backstop is for.
+  backstop releases by expiry and leaves no document behind.
 - **TW-RES-011** `result_released` MUST be an application hook configured beside `session_resolver`,
   MUST be allowed to be absent, and MUST NOT be able to prevent the release: an exception out of it
   MUST be swallowed and logged. taskwire deletes nothing on the application's behalf.
-- **TW-RET-001** **Retention MUST be state-driven, not timer-driven, and exactly three TTLs
-  survive**, one per state a document can be in: `active_ttl` while the operation is `queued`,
-  `running` or holding an open dialog, `result_ttl` as the backstop on an operation holding an
-  uncollected result, and `tombstone_ttl` once it is terminal (TW-RET-004). The ephemeral/durable
-  `lifetime` that selected between terminal TTLs is **removed**: which TTL a document is on follows
-  from its state and from nothing a caller declares. An operation holding something to collect is not
-  terminal and therefore does not age out on the running clock; a terminal one is not aged out of the
-  register at all, because the register drops it in the same step that ends it (TW-REG-007) and only
-  the document is left to age out.
+- **TW-RET-001** **Retention MUST be state-driven, not timer-driven, with exactly three TTLs**, one
+  per state a document can be in: `active_ttl` while the operation is `queued`, `running` or holding
+  an open dialog, `result_ttl` as the backstop on an operation holding an uncollected result, and
+  `tombstone_ttl` once it is terminal (TW-RET-004). Which TTL a document is on follows from its state
+  alone; a caller declares none. An operation holding something to collect is not terminal and does
+  not age out on `active_ttl`; a terminal one leaves the register in the step that ends it
+  (TW-REG-007), and only its document ages out.
 - **TW-RET-002** `operation()` MUST own a keepalive calling `store.touch(key, active_ttl)` every
   `active_ttl / 4` for as long as the block is open, running **without the operation's cooperation**
-  (an asyncio task where a loop runs, a daemon thread in the synchronous form). Test: end-to-end —
-  an operation with a 90-second silent phase survives a deliberately shortened `active_ttl`.
+  (an asyncio task where a loop runs, a daemon thread in the synchronous form). Test:
+  `reporter_test.py::test_keepalive_touches_without_cooperation`.
 - **TW-RET-003** When a result is written, the key's TTL MUST be reset to `result_ttl` and no
-  keepalive MUST run against it — nobody is running, which is the point. The docs MUST state, next to
+  keepalive MUST run against it: the work has ended. The docs MUST state, next to
   the `Result.ref` example, that `result_ttl` must be set no longer than the application's own
   artefact retention.
 - **TW-RET-004** A terminal write MUST commit the document with `settings.tombstone_ttl`
@@ -638,14 +610,11 @@ adapters to things outside the process, never a capability the core lacks.
   This **tombstone** MUST be unlistable and uncountable: `list_operations` MUST NOT return it and no
   aggregate may count it (TW-REG-007, TW-REG-015), so the token is the only thing that reaches it,
   and privacy is unaffected — a shared operation's tombstone is no more listed than a private one's.
-  It is one document, the last one written; a second MUST NOT accumulate beside it, because it is a
-  document and not an event log (TW-CORE-005).
+  It is one document, the last one written; a second MUST NOT accumulate beside it (TW-CORE-005).
 
-  It exists because absence answers only *whether* an operation is still going. A client that was not
-  watching at the moment one ended cannot tell `done` from `failed` from `cancelled` — nor a
-  cancellation from an expiry — from a missing row, and over a transport with no push it has nothing
-  else to read. The same document is what lets the write endpoints refuse a known token with a
-  reason rather than a `404` (TW-REST-004). Tests: `conformance` —
+  The tombstone tells a client that was not watching when the operation ended whether it ended
+  `done`, `failed` or `cancelled`, which a missing row cannot, and lets the write endpoints refuse a
+  known token with a reason rather than a `404` (TW-REST-004). Tests: `conformance` —
   `test_terminal_commit_leaves_the_register_and_stays_readable`, which every store must pass;
   `reporter_test.py` — `test_terminal_entry_is_absent_from_the_very_next_read` (out of the register,
   readable at its address); `cancel_test.py` — `test_loop_with_no_cancellation_code_raises_and_ends_cancelled`
@@ -676,18 +645,16 @@ adapters to things outside the process, never a capability the core lacks.
   `ViewsetEventsTransport` (extra `[viewsets]`, Python, TW-EVT-*). `TaskwireTransport.crosses_processes`
   is False except on a transport whose `notify()` reaches the other processes itself.
 - **TW-TR-008** `LocalTransport` MUST deliver each envelope to every subscriber registered against
-  that namespace, in registration order, without a wire, a socket or a serialization step. It MUST
-  require no optional dependency and MUST live in the core of both languages, because an application
-  that never leaves its own process is a first-class deployment (TW-SYM-001), not a test double.
+  that namespace, in registration order, without a wire, a socket or a serialisation step. It MUST
+  require no optional dependency and MUST live in the core of both languages (TW-SYM-001).
 - **TW-TR-009** `LocalTransport` MUST hand each subscriber a document **no other party retains a
   reference to**. A subscriber that mutates what it received MUST NOT be able to alter the store,
-  another subscriber's copy, or what a later read returns. In-process delivery is the one path where
-  a live reference could leak where a wire transport would have copied, and TW-CORE-002 must hold
-  identically on all of them. Test: `local_transport_test.py::test_subscriber_mutation_is_contained`.
+  another subscriber's copy, or what a later read returns (TW-CORE-002). Test:
+  `delivery_test.py::test_subscriber_mutation_is_contained`.
 - **TW-TR-010** `LocalTransport` MUST obey TW-TR-002 and TW-TR-003 unchanged: a subscriber that
   raises, or that takes longer than `push_timeout`, is a dropped push. It MUST NOT propagate out of
   `notify()`, MUST NOT reach the reporter, and MUST NOT stop the remaining subscribers from being
-  called. Test: `local_transport_test.py::test_raising_subscriber_does_not_starve_the_others`.
+  called. Test: `delivery_test.py::test_raising_subscriber_does_not_starve_the_others`.
 
 ### 2.14 muxws transport (`TW-WS-*`)
 
@@ -702,7 +669,7 @@ adapters to things outside the process, never a capability the core lacks.
   selection.
 - **TW-WS-003** `MuxwsTransport.notify()` MUST call `peer.notify(envelope)` once per namespace peer —
   one stream opened and ended in one frame. A long-lived per-session stream MUST NOT be used. Test:
-  M5 — a ten-minute import leaves zero open streams behind.
+  `contrib/muxws_test.py::test_one_envelope_becomes_one_notify_per_peer`.
 - **TW-WS-004** The peer list from `peers_for` MUST be treated as a snapshot; a peer that raises
   `ConnectionLost` MUST be counted as a dropped push and iteration MUST continue.
 - **TW-WS-005** Stream ids MUST be allocated by muxws. The server side of taskwire MUST never see
@@ -713,32 +680,29 @@ adapters to things outside the process, never a capability the core lacks.
   `session_resolver` semantics as REST, never from a value cached at handshake time; and a peer whose
   session tag no longer matches the current identity MUST be closed with `goaway` rather than reused
   (`goaway_if_stale`). The session tag exists to address the peer for fan-out (`peers_for`) and MUST
-  NOT be read as an authorization decision on the way in.
+  NOT be read as an authorisation decision on the way in.
 
-  > **How it holds.** The six calls of TW-REST-004 reach the same context processor on a stream as
-  > on a request: `fastapi_viewsets.mux_ws.process_command` builds a synthetic ASGI request whose
-  > baseline headers are the WebSocket handshake's own, with the stream's headers winning over them,
-  > so `session_resolver` reads the same cookie or `Authorization` header either way and
-  > `X-Taskwire-Connection` arrives when the client states it. Nothing in taskwire branches on how a
-  > call arrived, and nothing may. `watch` is the one handler taskwire writes itself, and it derives
-  > the session the same way rather than reading a namespace off the message.
+  > The six calls of TW-REST-004 reach the same context processor on a stream as on a request:
+  > `fastapi_viewsets.mux_ws.process_command` builds a synthetic ASGI request whose baseline headers
+  > are the WebSocket handshake's own, with the stream's headers taking precedence, so
+  > `session_resolver` reads the same cookie or `Authorization` header either way and
+  > `X-Taskwire-Connection` arrives when the client states it. Nothing in taskwire MAY branch on how
+  > a call arrived. The `watch` handler derives the session the same way and never reads a namespace
+  > off the message.
 - **TW-WS-008** A dialog reply travelling the socket MUST travel as the viewset action it is —
   `POST {prefix}/{token}/dialogs/{did}` dispatched from a command stream — and MUST reach the same
   `taskwire.rest` handler REST reaches, so first-answer-wins (TW-DLG-009) is decided in one place
-  regardless of which way the answer arrived. REST MUST remain the default reply path: it is the one
-  that works with no socket at all.
+  regardless of which way the answer arrived. REST MUST remain the default reply path: it works with
+  no socket at all.
 
-  > The reply is one of the six and is published over muxws by the same `route_viewset` call that
-  > publishes it over REST, so the server has no per-route switch: singling one of six routes out
-  > for a flag the other five do not have is what such a switch would mean. Which transport the six
-  > calls take is the client's, where the choice belongs and where it is one call — `useCalls()` —
-  > and REST is what a client uses until it says otherwise.
+  > The server has no per-route switch. The client chooses the transport for all six calls with
+  > `useCalls()`, and uses REST until it does.
 - **TW-WS-009** `watch` MUST have no polling counterpart and needs none.
 - **TW-WS-010** taskwire MUST NOT install the peer's stream handler. A `Peer` has exactly one
   `on_stream` slot; `register_taskwire_muxws(peer, session)` **returns** its handler and the
   application composes it behind `fastapi_viewsets.mux_ws.process_command`, which returns `False`
-  having sent nothing when the stream is not a viewset command. A library that took the slot would
-  lock the application out of its own socket. Test:
+  having sent nothing when the stream is not a viewset command. A library holding the slot would leave
+  the application no handler on its own socket. Test:
   `contrib/muxws_test.py::test_taskwire_leaves_the_peers_single_handler_slot_to_the_application`.
 
   The browser half: under TW-EVT-* `attachViewsetEvents` MUST NOT install the peer's stream handler;
@@ -746,14 +710,15 @@ adapters to things outside the process, never a capability the core lacks.
   event to `fallback`. `MuxwsClientTransport`, the standalone browser half, installs the handler,
   passes a stream carrying `:event` to `handleEventStream` and parses every other stream as an
   envelope, dropping one that does not parse; it stays installed after `detachMuxws`, since muxws
-  removes no handler. Tests: `fastapi-viewsets.spec.ts::installs no stream handler`,
+  removes no handler. Tests:
+  `viewset-events.spec.ts::installs no stream handler and does not import taskwire/muxws`,
   `muxws.spec.ts::shares the peer's one stream handler`.
 - **TW-WS-011** Mounting the socket half MUST be **one call per connection**
   (`register_taskwire_muxws`), the counterpart of `register_taskwire_rest(router)`. It tags the peer
   and subscribes the process to `twx:{ns}` (TW-BP-004); the application registers the peer and serves
   it. The tag MUST be set before `PeerRegistry.register`, which indexes a peer under the tags it
-  holds at that instant (WSM-REG-010) — a peer registered untagged is indexed under nothing, receives
-  no push, and looks correct from every other angle. `release_peer` MUST `deregister` the peer and
+  holds at that instant (WSM-REG-010): a peer registered untagged is indexed under nothing and
+  receives no push. `release_peer` MUST `deregister` the peer and
   unsubscribe once the process holds no more sockets of that namespace. Under TW-EVT-* no reader
   runs, so the call subscribes nothing, and neither a `PeerRegistry` nor `release_peer` takes part:
   fastapi-viewsets drops a socket's subscriptions when it closes.
@@ -804,10 +769,9 @@ standalone path of §2.14 and §2.15 stays for applications without fastapi-view
   `..._a_connection_topic_admits_its_own_socket_only`,
   `..._an_authorizer_the_application_lists_does_not_open_a_taskwire_topic`.
 
-  > A fastapi-viewsets delivery filter is a display decision: a subscription is authorized once, at
-  > subscribe, and an exception out of a filter counts as `True`. Privacy that rested on one would
-  > fail open. The topic is the fan-out unit and the authorizer is the gate, so TW-PRIV-003 holds
-  > with every filter removed.
+  > An exception out of a fastapi-viewsets delivery filter counts as `True`, so privacy enforced by
+  > a filter would fail open. The topic is the fan-out unit and the authorizer is the gate:
+  > TW-PRIV-003 holds with no filter installed.
 - **TW-EVT-004** `taskwire_delivery_filter` MUST apply the delivery decision of TW-DEL-001 for the
   socket of each subscription, on a push and on a poll, and only to non-terminal `progress`
   (TW-DEL-010). A terminal `progress` MUST delete its token from the override map of the
@@ -820,7 +784,7 @@ standalone path of §2.14 and §2.15 stays for applications without fastapi-view
   healthy (TW-TS-007) and read the register and every polled token once. On a closed socket it MUST
   unsubscribe every topic, hold no connection id and report itself unhealthy, so the event client
   polls none of taskwire's topics and the client's ladder is the only poller. A refused topic or a
-  reply without `topics` MUST leave it unhealthy. Tests: `fastapi-viewsets.spec.ts`.
+  reply without `topics` MUST leave it unhealthy. Tests: `viewset-events.spec.ts`.
 - **TW-EVT-006** The rev and log of a connection topic MUST be dropped from the event store when its
   socket closes. Test: `..._closing_a_socket_drops_its_connection_topic`.
 - **TW-EVT-007** The browser half MUST apply an envelope by the envelope's own `rev` (TW-REV-*), and
@@ -838,8 +802,9 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-BP-002** There MUST be no per-token subscription mechanism anywhere in the system (it has a
   startup race, it leaks, and it would make the fan-out unit smaller than the security unit).
 - **TW-BP-003** Every envelope published on `twx:{ns}` MUST be delivered to every socket that
-  namespace has open, subject only to TW-DEL-010 and TW-PRIV-003. Test: M5 — an envelope published
-  for a namespace reaches every one of its peers and no peer of any other namespace.
+  namespace has open, subject only to TW-DEL-010 and TW-PRIV-003. Tests:
+  `contrib/redis_store_test.py::test_the_backplane_carries_an_envelope_between_processes`,
+  `contrib/muxws_test.py::test_one_envelope_becomes_one_notify_per_peer`.
 - **TW-BP-004** A web process MUST subscribe only to the namespaces it currently holds connections
   for, and MUST unsubscribe when it holds none. This is the only discrimination at the channel level,
   and it is per *process*.
@@ -847,8 +812,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   `stop_taskwire_reader()` and `check_taskwire_readers()`, mirroring
   `fastapi_viewsets/decorators/celery_viewset/result_reader.py`.
 - **TW-BP-006** `check_taskwire_readers()` MUST warn when a transport is configured but no reader
-  is running, in a message that names the exact call the user forgot to make. Test: M4 — the
-  missing-reader diagnostic fires when the reader is not started.
+  is running, in a message that names the call that starts it. Test:
+  `contrib/redis_store_test.py::test_the_missing_reader_diagnostic_names_the_call_you_forgot`.
 - **TW-BP-007** Pub/sub loss MUST be acceptable for notifications. The dialog reply path MUST NOT use
   pub/sub; it MUST use a Redis list (`RPUSH` / `BLPOP`), because a message published before the
   worker reaches its wait would otherwise be lost.
@@ -863,8 +828,7 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   plain async functions of `(client, token, body) -> (status, payload)` with no framework types.
   Adapters `taskwire.contrib.viewsets.register_taskwire_rest()`, `taskwire.contrib.fastapi.router()`
   and `taskwire.contrib.asgi.app()` MUST be the only places a web framework is imported. The shipped
-  integration is the viewset; `asgi` exists to keep this rule honest by serving the same protocol
-  with nothing installed but Python.
+  integration is the viewset; `asgi` serves the same protocol with no dependency beyond Python.
 - **TW-REST-002** The adapter MUST build `Client`: `session_resolver(request)` fills `session`, the
   request fills `request`, and the optional `X-Taskwire-Connection` header fills `connection`.
   The same header MUST be readable on the request that *starts* an operation, because that is where
@@ -882,41 +846,33 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   | `POST {prefix}/{token}/collect` | `204` result released | `404` unknown token; `409` `taskwire.no_uncollected_result` |
   | `POST {prefix}/{token}/dismiss` | `204` (idempotent) | `404` malformed token or no namespace; `409` `taskwire.no_uncollected_result` |
 
-  The failure columns turn on the tombstone. While the terminal document is readable
-  (TW-RET-004) the endpoints answer about a token they still know: a cancel on a finished operation
-  is `409 taskwire.already_terminal` rather than `404`, a reply to a dialog the terminal write withdrew is the
-  `410` of §6.2, and a second collect is `409 taskwire.no_uncollected_result` — the token is known and there
-  is nothing left to hand back, which is not the same answer as "unknown token". A second dismiss
-  stays `204`: an operation that has already ended is exactly the state a dismissing caller asked
-  for, and dismiss is idempotent for the same reason on a tombstone as on an unknown token. Once the
-  tombstone expires the token is unknown again — a `404` everywhere the token had to be known, and
-  still a `204` on dismiss.
+  While the terminal document is readable (TW-RET-004) the endpoints answer about a token they still
+  know: a cancel on a finished operation is `409 taskwire.already_terminal` rather than `404`, a
+  reply to a dialog the terminal write withdrew is the `410` of §6.2, and a second collect is
+  `409 taskwire.no_uncollected_result`. A second dismiss stays `204`: dismiss is idempotent on a
+  tombstone as on an unknown token. Once the tombstone expires the token is unknown again: `404`
+  wherever the token has to be known, and still `204` on dismiss.
 
-  > **Scope clarified.** These six are the whole request/response surface, and they are the surface
-  > on **every** transport that carries one: `route_viewset` publishes the same six routes over REST
-  > and over muxws from one `register_taskwire_rest(router)` call, with the same validation, the same
-  > middleware chain and the same response models. A client speaking only WebSocket therefore reaches
-  > exactly what a client speaking only HTTP reaches, and there is no second implementation to keep
-  > in step. `register_muxws=False` publishes REST alone; nothing else about the two differs.
-- **TW-REST-005** No endpoint MAY create a token. An unclaimed token MUST simply be unknown.
+  These six are the whole request/response surface on every transport: `route_viewset` publishes
+  the same six routes over REST and over muxws from one `register_taskwire_rest(router)` call, with
+  the same validation, middleware chain and response models. `register_muxws=False` publishes REST
+  alone.
+- **TW-REST-005** No endpoint MAY create a token. An unclaimed token MUST be unknown.
 - **TW-REST-006** The token handler MUST reject any token that is not a well-formed UUID before
   touching the store, so scanning the token space costs the caller a round trip and the server
   nothing.
 
-  > The register lives at `{prefix}` itself — the collection at the collection's own URL — so no
-  > literal segment follows the prefix that a token could be mistaken for, and correctness does not
-  > depend on the order two routes are declared in. The UUID check is unrelated and stands on its
-  > own.
+  > The register lives at `{prefix}` itself, so no literal segment after the prefix can be mistaken
+  > for a token, and correctness does not depend on the order in which routes are declared.
 - **TW-REST-007** The per-token `GET` MUST NOT carry `progress_delivery` (that is a fact about a
   pair, not about a document).
 - **TW-REST-008** **Collect and dismiss MUST be the same act with two names**, both routed through
   `store.release_result` (TW-RES-010): collect is "I have taken it", dismiss is "I do not want it",
   and both release the result, fire `result_released` and remove the entry for every tab at once.
-  Both MUST refuse with `409` an operation that is `queued`, `running` or holding an open dialog —
-  releasing is not cancelling, and a blocked worker is not a collectable result. Dismiss MUST be
-  idempotent (`204` again when the entry is already gone); collect MUST NOT be, because an
-  application that fires `result_released` twice deletes an artefact twice. Test: register harness —
-  `test_dismiss_running_returns_409_and_operation_continues`.
+  Both MUST refuse with `409` an operation that is `queued`, `running` or holding an open dialog.
+  Dismiss MUST be idempotent (`204` again when the entry is already gone); collect MUST NOT be,
+  since `result_released` fires once per release. Test:
+  `results_test.py::test_dismiss_running_returns_409_and_operation_continues`.
 - **TW-REST-009** Cancel MUST return `202`, not `200` — the cancel was *requested*; only the terminal
   `cancelled` state confirms it happened.
 - **TW-REST-010** Polling cadence: base **400 ms** while anything in the register is `queued` or
@@ -927,8 +883,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-REST-014** **`poll_after_ms` MAY only slow a client down.** A client MUST take
   `max(poll_after_ms, its own current ladder interval)` and MUST NOT let a server-advertised value
   pull it below its base interval. The server MUST NOT advertise a value below the base interval
-  either, but the client-side clamp is the normative one: without it a miscomputed or zeroed
-  `poll_after_ms` becomes a request flood against the server that emitted it. Test:
+  either, but the client-side clamp is the normative one: without it a miscomputed or zero
+  `poll_after_ms` sets the client polling with no lower bound. Test:
   `client.spec.ts::poll_after_ms of 0 does not accelerate the ladder`.
 - **TW-REST-011** The single-token GET MUST follow the same ladder.
 - **TW-REST-012** SSE MUST NOT be the baseline. It MAY be written by an application as a
@@ -943,9 +899,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-CANCEL-001** `POST {prefix}/{token}/cancel` MUST write a **sticky** flag and publish. The flag
   MUST NEVER be cleared.
 - **TW-CANCEL-002** By default the next progress-reporting call MUST raise `OperationCancelled`.
-  Test: `cancel_test.py::test_loop_with_no_cancellation_code_raises_and_ends_cancelled` — this single
-  assertion is the whole argument for the raising default and MUST fail loudly if raising is ever
-  made opt-in.
+  Test: `cancel_test.py::test_loop_with_no_cancellation_code_raises_and_ends_cancelled`, which fails
+  if raising is opt-in.
 - **TW-CANCEL-003** `raise_on_cancel` MUST be resolvable at three levels, most specific winning:
   the per-call keyword to `set()`, then `@action_configuration` (integration layer only), then
   `settings.raise_on_cancel` (default `True`). Test:
@@ -959,14 +914,14 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   `OperationCancelled` to the terminal state `cancelled`, not `failed`. Test:
   `cancel_test.py::test_operation_cancelled_not_swallowed_as_failed`.
 - **TW-CANCEL-007** Cancelling a token blocked on a dialog MUST push a cancellation sentinel onto the
-  dialog reply list so the worker wakes immediately. Test: end-to-end —
-  `test_cancel_wakes_dialog_blocked_worker`.
+  dialog reply list so the worker wakes immediately. Test:
+  `cancel_test.py::test_cancel_wakes_dialog_blocked_worker`.
 - **TW-CANCEL-008** `raise_on_cancel` MUST be fixed for the life of the operation.
 - **TW-CANCEL-009** Cancellation is cooperative and cannot interrupt blocking code. taskwire MUST
   NOT revoke Celery tasks, send signals or kill threads.
 - **TW-CANCEL-010** An operation in `waiting_input` because it holds an **uncollected result** MUST
-  refuse a cancel with `409`: its work is over and there is nothing left to interrupt. The affordance
-  on such an entry is dismiss (TW-RES-010), never cancel.
+  refuse a cancel with `409`: its work has ended. Such an entry is released by dismiss
+  (TW-RES-010).
 - **TW-CANCEL-011** A terminal write MUST withdraw the operation's open dialogs
   (`store.withdraw_dialogs`, TW-STORE-004) in the same step, so a dialog can never outlive the
   operation that asked it.
@@ -982,8 +937,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   carrying, with `operation.data` as shorthand for the free-form bag.
 - **TW-DEL-005** `Client` MUST be derivable from **either** a live muxws peer **or** an HTTP request,
   with `session` populated the same way on both. It MUST NOT carry both, and MUST refuse to be
-  constructed with both: either names one caller, and both name none - `effective_delivery` would
-  read a socket's override map on behalf of an HTTP read. Carrying **neither** is legal and ordinary:
+  constructed with both: with both, `effective_delivery` would read a socket's override map on
+  behalf of an HTTP read. Carrying **neither** is legal and ordinary:
   a caller reaching `taskwire.rest` directly has a namespace and nothing else. Test:
   `delivery_test.py::test_a_client_comes_from_a_peer_or_a_request_never_both`.
 - **TW-DEL-006** The `watch` message MUST declare the **whole** override map, not a delta:
@@ -992,7 +947,7 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   last-writer-wins **per connection**.
 - **TW-DEL-007** The `watch` handler MUST NOT read the store, in either direction. A `true` or
   `false` for a token that does not exist MUST be accepted and inert. Test:
-  `watch_test.py::test_watch_performs_no_store_reads` (counting store client).
+  `contrib/muxws_test.py::test_watch_performs_no_store_reads` (counting store client).
 - **TW-DEL-008** The `watch` handler MUST reject a declaration above `settings.max_overrides`
   (default **64**, configurable) rather than truncating it, leaving the previous map in force and
   answering `status: 1` (TW-DEL-022).
@@ -1004,44 +959,38 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   `connection` is the opaque connection id of the socket it was applied to. A rejected declaration
   MUST still carry the connection id, since the socket is unchanged. A client MAY send
   `{"kind": "watch", "overrides": {}}` purely to obtain that id. Test:
-  `watch_test.py::test_watch_reply_shape_for_all_three_statuses`.
+  `contrib/muxws_test.py::test_watch_reply_shape_for_all_three_statuses`.
 - **TW-DEL-023** **An operation's override MUST be deleted from every connection's map when that
-  operation reaches a terminal state**, at the last hop that fans the terminal envelope out. This is
-  behaviour, not tidiness: without it a long-lived socket's map grows monotonically toward
-  `max_overrides` and eventually rejects a declaration the user meant. The client MUST prune its own
-  copy on the same event, since that copy exists only to be re-sent. Under TW-EVT-* that hop is the
-  delivery filter, which prunes the map of each socket it delivers the terminal envelope to
-  (TW-EVT-004). Test:
-  `watch_test.py::test_override_is_gone_after_the_operation_ends`.
+  operation reaches a terminal state**, at the last hop that fans the terminal envelope out: without
+  it a long-lived socket's map grows towards `max_overrides` and then rejects a valid declaration.
+  The client MUST prune its own copy on the same event. Under TW-EVT-* that hop is the delivery
+  filter, which prunes the map of each socket it delivers the terminal envelope to (TW-EVT-004).
+  Test: `contrib/muxws_test.py::test_a_terminal_envelope_prunes_its_override_everywhere`.
 - **TW-DEL-010** **Only non-terminal `progress` MAY be suppressed, by either half.** `dialog.open`,
   `dialog.close`, `cancel` and any `progress` carrying a terminal state MUST be delivered to every
   socket of the namespace whatever the predicate and the overrides say. `push_filter` MUST NOT be
-  consulted for any other kind. Test: `delivery_test.py::test_suppressed_operation_kind_by_kind` —
-  enumerated kind by kind, and the whole enumeration run twice (predicate-suppressed and
-  override-suppressed) with the two runs indistinguishable at the socket.
+  consulted for any other kind. Test:
+  `contrib/muxws_test.py::test_only_non_terminal_progress_can_be_suppressed`, kind by kind.
 - **TW-DEL-011** The decision MUST be applied at the last hop only. The channel, the publish, the
   subscribe, the store and the reader MUST be unchanged by it.
 - **TW-DEL-012** Neither half MAY raise the ceiling: an override asserting `true` MAY only revive an
   envelope on a channel the socket was already entitled to read.
 - **TW-DEL-013** A suppressed operation MUST still appear in the register in full, with its state,
   questions, result and `progress_delivery: false`. The predicate governs delivery, never existence.
-  Test: `delivery_test.py::test_three_suppressed_operations_stay_in_register`.
+  Test: `contrib/muxws_test.py::test_a_suppressed_operation_stays_in_the_register_in_full`.
 - **TW-DEL-014** `OperationSummary.progress_delivery` MUST be computed by the server at read time as
   the effective answer with both halves combined.
 - **TW-DEL-015** The register handler MUST resolve `X-Taskwire-Connection` only among the peers of
   the caller's own namespace. An absent, unknown, dead or other-process connection id MUST fall back
-  to reporting `push_filter`'s answer alone. Test:
-  `delivery_test.py::test_progress_delivery_fallbacks` (three cases: no header, closed socket,
-  foreign id).
+  to reporting `push_filter`'s answer alone.
 - **TW-DEL-016** The connection id MUST be server-issued, handed back only in the `watch` reply, over
   a socket the caller already established. It MUST NOT be stable across a reconnect and MUST decide
   exactly two things and nothing else: the `progress_delivery` display flag, and which socket a
   private operation's progress is written to (TW-PRIV-003). It reaches one store field,
-  `origin_connection`, which is inert data recorded at start and never used for authorization.
+  `origin_connection`, which is inert data recorded at start and never used for authorisation.
 - **TW-DEL-017** Two sockets of one namespace MAY hold opposite overrides for one token; nothing
   arbitrates between them and each read reports its own answer. Test:
-  `delivery_test.py::test_two_sockets_opposite_overrides` — an implementation keying the map by
-  account passes every single-socket test and fails this one.
+  `contrib/muxws_test.py::test_an_override_suppresses_only_this_socket`.
 - **TW-DEL-018** With no transport attached, `mute()` / `unmute()` / `clearOverride()` MUST be
   no-ops, MUST NOT raise, and MUST NOT be banked against a socket attached later.
 - **TW-DEL-019** There MUST be no default-off delivery flag and no `?mode=` parameter on any REST
@@ -1075,15 +1024,12 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-CELERY-009** `result_kind` MUST be written once, by the `queued` write in the web process; the
   worker's `operation()` MUST NOT overwrite it and passes one only when there was no `queued` write.
   There is no exception.
-- **TW-CELERY-010** **The blocked-worker problem is deliberately unsolved, and the docs MUST say so
-  in those words rather than presenting mitigations as a solution.** With dialog timeouts removed
-  (TW-DLG-005) an unanswered question holds its worker until Celery's own execution timeout kills the
-  task. What the docs MUST state: the hazard itself; routing interactive tasks to their own queue and
-  worker pool, with the `task_routes` snippet shown; never asking inside a transaction; that
-  high-volume interactive flows want a workflow engine, which taskwire deliberately does not
-  implement; and that the author intends to research whether an asyncio loop inside a Celery worker
-  is viable before committing to an answer. A future rule may close this; none of the current ones
-  claims to.
+- **TW-CELERY-010** taskwire does not solve the blocked-worker problem, and the docs MUST NOT present
+  mitigations as a solution. Dialogs have no timeout (TW-DLG-005), so an unanswered question holds
+  its worker until Celery's own execution timeout ends the task. The docs MUST state: the hazard
+  itself; routing interactive tasks to their own queue and worker pool, with the `task_routes`
+  snippet shown; never asking inside a transaction; and that high-volume interactive flows need a
+  workflow engine, which taskwire does not implement.
 - **TW-CELERY-011** The command token MUST travel as a **header**, never a query parameter:
   `X-Taskwire-Token`, or the `Idempotency-Key` of the call (TW-CALL-001). The connection id — when
   the client has one — travels as `X-Taskwire-Connection` beside it. The token and the namespace
@@ -1094,8 +1040,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-SEC-001** `key = f"{session_resolver(request)}:{token}"`, always. There MUST be no code path
   that reaches the store without a namespace.
 - **TW-SEC-002** Unknown and foreign tokens MUST both return **404, never 403**.
-- **TW-SEC-003** The namespace MUST be the only authorization scope. Token, tab id and connection id
-  MUST NOT be authorization scopes — in particular, **privacy (§2.21) MUST NOT be pressed into
+- **TW-SEC-003** The namespace MUST be the only authorisation scope. Token, tab id and connection id
+  MUST NOT be authorisation scopes — in particular, **privacy (§2.21) MUST NOT be pressed into
   service as one**: a private operation is unlisted, not unreachable, and any caller of the namespace
   holding its token may read it.
 - **TW-SEC-004** A `watch` naming another namespace's token MUST silence nothing, reveal nothing and
@@ -1108,9 +1054,9 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   server switches control flow on `answer.button`.
 - **TW-SEC-008** `migrate_namespace` MUST be called only by an application that has just established
   the destination identity itself. taskwire MUST NOT expose it over REST, MUST NOT derive either
-  argument, and MUST NOT be able to be induced to call it by anything on the wire — a migration is a
-  bulk re-keying and the only thing standing between it and a takeover is that the application, not a
-  request, chooses both namespaces.
+  argument, and MUST NOT be able to be induced to call it by anything on the wire: a migration is a
+  bulk re-keying, and a request that chose either namespace could take over another namespace's
+  operations.
 
 ---
 
@@ -1119,10 +1065,9 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-PRIV-001** **An operation that declares no `result_kind` at start is private to the connection
   that started it, from start to finish.** `origin_connection` is fixed at the opening write from
   `Client.connection` and is never rewritten; an operation cannot become shared later and a shared
-  one cannot become private. Rationale: an operation with no content is plumbing — "load the next
-  page of this table" — that would otherwise make every tab of the namespace flicker; an operation
-  that *should* interest other tabs declares a result, even when that result is only a dialog saying
-  it finished.
+  one cannot become private. An operation with no result (for example, loading the next page of a
+  table) is of no interest to other tabs, and shared, it would appear in every tab of the namespace;
+  an operation that concerns other tabs declares a result, if only a dialog saying it finished.
 - **TW-PRIV-002** A private operation MUST NOT appear in `GET {prefix}`, for any caller
   including its own, and MUST NOT be in the namespace index — except while TW-PRIV-004 lists it,
   which is answered from `tw:{ns}:asking` (TW-KEY-005) and never by writing it into the index.
@@ -1134,8 +1079,8 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   to the connection whose id equals `origin_connection`, terminal states included. With
   `origin_connection` null — a caller that never obtained a connection id, which is every caller in a
   deployment with no socket — no socket receives it and the originating client learns from its own
-  per-token poll. That is a latency degradation, never a functional one, and it is the same
-  degradation the whole design already accepts for a dropped push. Under TW-EVT-* the last hop is the
+  per-token poll, with the latency of a dropped push and no loss of function. Under TW-EVT-* the last
+  hop is the
   topic: the progress is published to the connection topic of `origin_connection`, which only that
   socket is admitted to (TW-EVT-001, TW-EVT-003).
 - **TW-PRIV-004** **Privacy MUST NOT narrow the dialog family.** A `dialog.open`, `dialog.close` or
@@ -1143,14 +1088,15 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   operation does, and such an operation MUST appear in the register for as long as it holds an open
   dialog — listed by `tw:{ns}:asking` (TW-KEY-005, TW-STORE-006), so that a tab which was not there
   when the question was asked still finds it in the one document it polls. It leaves the register
-  again when its last dialog closes, and its `result_kind` never changes (TW-PROG-006). The reason is
-  TW-INV-005's, unchanged: a question nobody can see is a worker nobody can free, and ten of those is
-  a wedged pool arrived at through a scoping rule.
+  again when its last dialog closes, and its `result_kind` never changes (TW-PROG-006). A question
+  that no tab can see holds a worker that no tab can free (TW-INV-005).
 - **TW-PRIV-005** A private operation MUST leave the register the moment it is terminal
   (TW-REG-007), and MUST NOT be countable in the aggregate at any point except while TW-PRIV-004 has
   it listed. Its tombstone is reachable by token exactly as a shared operation's is (TW-RET-004,
-  TW-PRIV-002): privacy governs listing and fan-out, never reach. Test: `delivery_test.py::test_private_operation_is_invisible_to_a_second_socket`
-  and `..._becomes_visible_while_it_asks`.
+  TW-PRIV-002): privacy governs listing and fan-out, never reach. Tests:
+  `register_test.py::test_private_operations_are_not_in_the_register_or_the_aggregate`,
+  `dialogs_test.py::test_list_operations_includes_a_private_operation_only_while_it_asks`,
+  `contrib/muxws_test.py::test_a_private_operations_progress_reaches_only_its_own_connection`.
 
 ### 2.22 Language symmetry (`TW-SYM-*`)
 
@@ -1158,15 +1104,14 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   every feature of taskwire**, with no transport, no REST endpoint, no second process and no second
   language present. Both languages MUST therefore ship the whole operating half — the store port with
   `MemoryStore` (TW-STORE-011), the `Reporter` with its nesting and throttling, `operation()`,
-  `ask()`, cancellation and collectable results — and not merely the reading half. A back-end-only
-  service and a browser-only application are the same first-class deployment seen from two sides.
-  Test: `local_only.spec.ts` / `local_only_test.py` — one file per language driving an operation from
-  `queued` through a dialog to a collected result with `LocalTransport` and nothing else configured.
+  `ask()`, cancellation and collectable results — and not merely the reading half. Test:
+  `reporter.spec.ts::drives an operation end to end on MemoryStore and LocalTransport, with nothing
+  else wired`.
 - **TW-SYM-002** The two implementations MUST agree on §3's documents and §4's state machines: they
   are one protocol with two implementations, never two protocols. The store conformance suite
-  (TW-STORE-012) MUST therefore be run by both, and any sequence corpus MUST be replayed by both.
-- **TW-SYM-003** **The asymmetries MUST be exactly these, and each MUST be a fact about the host
-  platform rather than a decision about the language:**
+  (TW-STORE-012) MUST therefore be run by both, and the fixtures in `conformance/` MUST be read by
+  both (TW-PKG-002).
+- **TW-SYM-003** **The asymmetries MUST be exactly these, each following from the host platform:**
 
   | Python only | TypeScript only |
   |---|---|
@@ -1175,18 +1120,17 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   | the FastAPI / ASGI adapters (TW-REST-001) | `tw.register`, `tw.aggregate`, `tw.selected`, `tw.operations` |
   | `MuxwsTransport`'s and `ViewsetEventsTransport`'s server side (`TW-WS-*`, `TW-EVT-*`) | the tab-hint rules (`TW-TAB-*`) |
   | the ambient reporter proxy (`TW-AMB-*`, see TW-SYM-004) | `tw.busy` and the call sources (TW-TS-022..TW-TS-025) |
-  | tracked viewset calls (`TW-CALL-*`) | — |
+  | the fastapi-viewsets call-tracking adapter, `TaskwireMiddleware` (TW-CALL-101..103, TW-CALL-105) | — |
 
-  Anything not in this table MUST exist in both. A capability MUST NOT be added to one language alone
-  because it was convenient there.
+  Tracked calls (TW-CALL-001..010) exist in both; TW-CALL-104 binds the ASGI and WSGI adapters in
+  Python and `trackFetch` in TypeScript. Anything not in this table MUST exist in both.
 - **TW-SYM-004** **The ambient reporter MUST NOT be ported to TypeScript, and TypeScript callers MUST
   pass the reporter explicitly.** `TW-AMB-*` rests on `contextvars`; Node's `AsyncLocalStorage` is the
-  near-equivalent but **browsers have none at all**, and TW-SYM-001 makes a browser-only application
-  first-class. A proxy that silently worked under Node and silently no-opped in a browser would be
-  worse than its absence: TW-AMB-002 already makes an unbound proxy a silent no-op, so the failure
-  would be a progress bar that never moves, with no error anywhere. Explicit passing is also already
-  the rule for concurrent siblings in both languages (TW-NEST-014). Test:
-  `packaging.spec.ts::no ambient progress proxy is exported`.
+  near-equivalent but browsers have none, and TW-SYM-001 makes a browser-only application
+  first-class. An unbound proxy is a silent no-op (TW-AMB-002), so a proxy that worked under Node
+  would leave the progress unreported in a browser, with no error. Explicit passing is also the rule
+  for concurrent siblings in both languages (TW-NEST-014). Test:
+  `reporter.spec.ts::exports no ambient progress proxy`.
 
 ### 2.23 Tracked calls (`TW-CALL-*`)
 
@@ -1264,7 +1208,7 @@ bind the adapters.
   writes `queued` (TW-CALL-003) and `failed` only for work that was not handed over (TW-CALL-005); an
   executing call hands its operation over (TW-CALL-007).
 - **TW-CALL-101** **`taskwire.contrib.viewsets.TaskwireMiddleware` binds TW-CALL-003..005 and
-  TW-CALL-008..010 to fastapi-viewsets ≥ 0.12.0, and imports nothing of the executor behind it.**
+  TW-CALL-008..010 to fastapi-viewsets ≥ 0.13.0, and imports nothing of the executor behind it.**
   Its `__call__`, in the command middleware chain, receives the call with `ActionDispatchError` as a
   dispatch error and `ActionOutcomeUnknownError` and `ActionInterruptedError` as pending ones: the
   caller stopped waiting, or the executor ended an execution that started, and in both cases the
@@ -1408,10 +1352,10 @@ own by passing its own string, and taskwire never validates the set.
 | `inputs` | `Input[]` | no | values collected alongside the choice |
 | `state` | enum (§4.2) | yes | `open` \| `answered` \| `cancelled` |
 | `created_at` | RFC 3339 Z | yes | |
+| `reply` | `DialogReply` | no | the arbitrated reply, once `answered` |
 
 `Button`: `id` (string, required), `label` (`Text`), `style` (string; `primary`/`danger`/`default`
-recommended, frontend-interpreted). There is no `default` flag: a default button existed only to
-answer a timeout, and there are no timeouts (TW-DLG-005).
+recommended, frontend-interpreted). There is no `default` flag (TW-DLG-005).
 `Input`: `name` (string, required), `type` (`string`\|`number`\|`boolean`\|`date`), `required`
 (boolean, default false), `label` (`Text`).
 
@@ -1466,10 +1410,8 @@ Python `DialogAnswer` (the return of `ask()`): `button: str`, `values: dict`. Th
 | `data` | object | yes | counts `total`, `queued`, `running`, `waiting_input` |
 | `updated_at` | RFC 3339 Z | yes | |
 
-**There is no `percent`, and this is a shape, not a `Progress`.** The two dropped counts (`done`,
-`failed`) and the dropped `indeterminate` count went with the percentage: a terminal entry is not in
-the register to be counted (TW-REG-007), and indeterminacy only ever mattered to a mean that no
-longer exists.
+There is no `percent` (TW-REG-011); `Aggregate` is not a `Progress`. There are no `done` and
+`failed` counts: a terminal entry is not in the register (TW-REG-007).
 
 ### 3.9 `Envelope`
 
@@ -1562,9 +1504,9 @@ from taskwire import (
     call_token, Call, receive_call, execute_call, hand_off, end_call, configure_executor,
 )
 
-def configure(*, store: TaskwireStore, transport: TaskwireTransport,
-              session_resolver: Callable[[Any], str],
-              push_filter: Callable[[Client, OperationRef], bool] = lambda c, o: True,
+def configure(*, store: TaskwireStore | None = None, transport: TaskwireTransport | None = None,
+              session_resolver: Callable[[Any], str | None] | None = None,
+              push_filter: Callable[[Client, OperationRef], bool] | None = None,   # None -> always True
               result_released: Callable[[Snapshot], None] | None = None) -> None: ...
 
 def new_token() -> str: ...                        # UUIDv4, nothing more
@@ -1576,13 +1518,18 @@ def operation(token: str | None, *, session: str | None = None,
               title: Text | None = None, icon: str | None = None,
               data: dict | None = None,            # written with the opening state; classifies pushes
               result_kind: str | None = None,      # None -> private; fixed for the operation's life
-              raise_on_cancel: bool | None = None  # None -> settings / action configuration
-              ) -> "OperationScope": ...           # async AND sync context manager
+              raise_on_cancel: bool | None = None, # None -> settings / action configuration
+              connection: str | None = None,       # origin_connection (TW-PRIV-001)
+              store: TaskwireStore | None = None,  # None -> the configured store
+              clock: Callable[[], float] | None = None,   # None -> time.monotonic
+              ) -> "OperationScope": ...           # async and sync context manager
 
-async def mark_queued(token: str, *, session: str, title: Text | None = None,
+async def mark_queued(token: str, *, session: str | None, title: Text | None = None,
                       icon: str | None = None, data: dict | None = None,
-                      result_kind: str | None = None, connection: str | None = None) -> None: ...
-async def mark_failed(token: str, *, session: str, error: BaseException | Error) -> None: ...
+                      result_kind: str | None = None, connection: str | None = None,
+                      store: TaskwireStore | None = None) -> None: ...
+async def mark_failed(token: str, *, session: str | None, error: BaseException | Error,
+                      store: TaskwireStore | None = None) -> None: ...
 
 def configure_executor(*, store: TaskwireStore | None = None,
                        transport: TaskwireTransport | None = None) -> None: ...   # TW-CALL-009
@@ -1635,9 +1582,11 @@ class Reporter:
     @property
     def cancelled(self) -> bool: ...              # last known, refreshed on every commit
     async def was_aborted(self) -> bool: ...      # forces a store read
-    async def ask(self, dialog_id: str, *, params: dict | None = None,
-                  buttons: list[str] | list[Button],
-                  inputs: list[Input] | None = None) -> DialogAnswer: ...   # no timeout, no default
+    async def ask(self, dialog_id: str, *, buttons: list[str] | list[Button],
+                  inputs: list[Input] | None = None, params: dict | None = None,
+                  title: Text | None = None,     # written to Progress.title as the dialog opens
+                  text: Text | None = None,      # written to Progress.label as the dialog opens
+                  ) -> DialogAnswer: ...         # no timeout, no default
 
 class Result:
     def __init__(self, kind: str, *, params: dict | None = None, label: Text | None = None,
@@ -1692,14 +1641,14 @@ class TaskwireTransport(ABC):
 ```python
 @dataclass(frozen=True)
 class Client:
-    session: str                 # the resolved namespace - present on both paths, always
-    connection: str | None       # opaque, server-issued, names one live socket; None without one
-    peer: object | None          # the muxws Peer, when the caller is one
-    request: object | None       # the framework request, when the caller is one
+    session: str                        # the resolved namespace, on both paths
+    connection: str | None = None       # opaque, server-issued, names one live socket
+    peer: object | None = None          # the muxws Peer, when the caller is one
+    request: object | None = None       # the framework request, when the caller is one
 ```
 
 - **TW-API-004** A `push_filter` reading only `peer` or only `request` answers differently depending
-  on how it was reached; the docs MUST say so in those words. The documented predicate keys on
+  on how it was reached; the docs MUST state this. The documented predicate keys on
   `session` and the operation.
 
 ### 5.4 Reader lifecycle
@@ -1794,18 +1743,15 @@ class Operation<T> implements PromiseLike<T> {
 }
 ```
 
-**Closing stops the watching, not the view.** A handle closes on the terminal state: its poller is
-released and `answer`, `cancel`, `collect` and `dismiss` become quiet no-ops, because an operation
-that has ended has nothing left to answer, cancel or release. `show`, `hide` and the override map
-MUST keep working on a closed handle - they reach no server, and the row `progressUi.failureLinger`
-holds after a failure is a closed handle, so a `hide()` that reached nothing would leave it with no
-way off the screen but its own timer.
+A handle closes on the terminal state: its poller is released and `answer`, `cancel`, `collect` and
+`dismiss` become quiet no-ops. `show`, `hide` and the override map MUST keep working on a closed
+handle: they reach no server, and the row `progressUi.failureLinger` keeps after a failure is a
+closed handle, which `hide()` can remove before its timer expires.
 
 ### 5.5a TypeScript — the operating half (TW-SYM-001)
 
-Everything above reads an operation somebody else is running. This half *is* the operation, and it
-is what makes a browser-only or Node-only program a first-class deployment with no server, no wire
-and no Python anywhere.
+§5.5 reads an operation another party runs; this half runs the operation, so a browser-only or
+Node-only program needs no server, no wire and no Python.
 
 ```ts
 import {
@@ -1815,13 +1761,17 @@ import {
 
 function operation<T>(
   opts: {
-    ns: string;                                 // already-resolved namespace (TW-AMB-007)
-    store: TaskwireStore;
+    ns: string | null;                          // already-resolved namespace (TW-AMB-007); null opts out
+    store: TaskwireStore | null;                // null opts out; envelopes go out via store.publish()
     token?: string | null;                      // null yields an inert reporter (TW-AMB-010)
-    transport?: TaskwireTransport;              // defaults to NullTransport
-    title?: Text;
-    data?: Record<string, unknown>;
-    resultKind?: string;                        // absent = a private operation (TW-PRIV-001)
+    title?: Text | null;
+    icon?: string | null;
+    data?: Record<string, unknown> | null;
+    resultKind?: string | null;                 // absent = a private operation (TW-PRIV-001)
+    connection?: string | null;                 // origin_connection (TW-PRIV-003)
+    raiseOnCancel?: boolean;
+    clock?: () => number;                       // seconds, monotonic
+    settings?: Partial<ReporterSettings>;       // per-operation overrides of §8.1
   },
   body: (reporter: Reporter) => Promise<T>,
 ): Promise<T>;
@@ -1850,19 +1800,18 @@ interface Reporter {
   does. It MUST be the recommended form, and MUST NOT be the only one: `operationScope()` holds the
   same operation open for the length of an `await using` block.
 
-  **The two forms are not equivalent, and the difference MUST be documented wherever the block form
-  is.** `Symbol.asyncDispose` is handed no arguments: the disposal runs whether the block returned or
-  threw and cannot ask which, so the block form ends `done` unless the caller named the error with
-  `failed(error)` first. A callback the library calls is a callback the library can watch fail; a
-  block it does not call is not. Tests:
+  The two forms are not equivalent, and the difference MUST be documented wherever the block form
+  is. `Symbol.asyncDispose` is handed no arguments: the disposal runs whether the block returned or
+  threw and cannot tell which, so the block form ends `done` unless the caller named the error with
+  `failed(error)` first. Tests:
   `reporter.spec.ts::writes exactly one terminal state and re-throws in every failure case` and
   `reporter.spec.ts::the await using form writes the same terminal state, and \`done\` when nobody
   said otherwise`.
 - **TW-TS-015** The TypeScript `Reporter` MUST implement TW-THR-001..006 and TW-NEST-001..014 with
   the same numbers and the same guarantees as Python's, against an injected clock. Throttling MUST
-  check the clock inline in `set()` (TW-THR-002); a `setInterval` flush MUST NOT be relied on, for
-  the same reason Python may not rely on a background task — a tight loop that never yields would
-  otherwise commit nothing. Test: `reporter.spec.ts::tight loop without await still commits`.
+  check the clock inline in `set()` (TW-THR-002); a `setInterval` flush MUST NOT be relied on: a
+  tight loop that never yields would commit nothing. Test:
+  `reporter.spec.ts::commits throughout a tight loop that awaits nothing of its own`.
 - **TW-TS-016** `operation()` MUST take an already-resolved `ns` string (TW-AMB-007) and MUST NOT
   accept a user, a request, a session object or a resolver. In a browser with no server there is
   still exactly one namespace; the application names it.
@@ -1870,9 +1819,7 @@ interface Reporter {
   or an `ask` free function bound to implicit context (TW-SYM-004).
 
 - **TW-TS-011** The module-level factory MUST be exported as **`new_token`**, not `newToken`, keeping
-  the Python name verbatim exactly as `route_rest` and `use_taskwire` do. There MUST be no
-  camelCase alias — two spellings of one export is how half a codebase imports the one that gets
-  deprecated.
+  the Python name verbatim exactly as `use_taskwire` does. There MUST be no camelCase alias.
 - **TW-TS-012** `tw.selected` MUST implement TW-REG-013's FIFO default and MUST advance on its own
   when the selected operation leaves the register. `select()` exists so an application can override
   the policy; there MUST be no aggregate percentage for it to fall back to.
@@ -1880,8 +1827,8 @@ interface Reporter {
   behind a `ref` — collecting is telling the server the result is taken, and what the application
   does with the pointer is the application's (TW-RES-007).
 - **TW-TS-018** Every composable MUST take the optional `TaskwireOptions` — `{ basePath?,
-  axiosInstance? }` — that `use_taskwire` is keyed by. A page with two API clients has two taskwire
-  clients, and a composable that could not name one would reach only the default.
+  axiosInstance? }` — that `use_taskwire` is keyed by, so that on a page with two API clients a
+  composable can name the taskwire client it uses.
 
 ```ts
 // taskwire/vue
@@ -1906,8 +1853,8 @@ function use_register(options?: TaskwireOptions):
 - **TW-TS-003** `use_taskwire()` MUST install an axios interceptor stamping `X-Taskwire-Token`
   while a token is ambiently bound, AND `fn` MUST receive the token as its argument; the docs MUST
   show `run(token => ...)` as the always-correct form (the ambient binding covers only the
-  synchronous portion of `fn`). Test: `client.spec.ts::callback that awaits before requesting sends
-  no header` — the hazard must fail loudly in a test.
+  synchronous portion of `fn`). Test:
+  `client.spec.ts::callback that awaits before requesting sends no header`.
 - **TW-TS-004** `track()` MUST distinguish "not written yet" from "gone": it keeps looking through
   initial absence until either the operation appears or `fn`'s promise settles, at which point an
   operation with no document is dropped silently. A disappearance *after* the operation has been
@@ -1928,27 +1875,23 @@ function use_register(options?: TaskwireOptions):
   client owns — the register's and each token's — and a poller created while a healthy transport is
   attached MUST be born suspended.
 
-  What is suspended is the **ladder**, not the first read. Every loop the client owns MUST issue one
-  read when it starts, attached or not: a transport carries what *changes*, so it can say nothing
-  about the state a namespace or a token was already in — an operation parked on an open question
-  emits nothing between its `dialog.open` and its terminal envelope, and a client that never read
-  would show neither (TW-CORE-002, TW-TS-009). The exception is a token this page minted (`run()`,
+  What is suspended is the ladder, not the first read. Every loop the client owns MUST issue one
+  read when it starts, attached or not: a transport carries changes, not the state a namespace or a
+  token was already in, and an operation parked on an open question emits nothing between its
+  `dialog.open` and its terminal envelope (TW-CORE-002, TW-TS-009). The exception is a token this
+  page minted (`run()`,
   `trackCall()`, `tw.busy`): its operation starts with this page's request, so the server publishes
   every state it reaches to the namespace (TW-THR-008), and a healthy transport owes it no read. A
   resync (`onResync`) reads every token once, minted or not: it recovers what was pushed while the
   socket was down. Tests: `client.spec.ts`, `register.spec.ts`.
 
-  > The socket carries the client's calls as well as the server's pushes (TW-CORE-007), which makes
-  > the two mechanisms alternatives rather than layers: a client polling beside its own socket
-  > issues a request per tab per tick that answers a question the socket already answered, and no
-  > deployment can demonstrate that it is on the socket at all.
+  > The socket carries the client's calls as well as the server's pushes (TW-CORE-007), so polling
+  > beside a healthy socket would repeat what the socket already delivered.
   >
-  > **The recovery guarantee is explicit.** Loss is reported, not inferred: `ClientTransport.onHealth`
-  > reports `false` on close and on a peer that is already down, and the ladder resumes on its base
-  > rung — 400 ms, not the ceiling — so the worst case after a socket dies is one base interval. A
-  > transport that does not implement `onHealth` counts as healthy for as long as it is attached, so
-  > `detachTransport()` is the only way back to the ladder for it — one call, and a transport
-  > written without the signal keeps working.
+  > Loss is reported, not inferred: `ClientTransport.onHealth` reports `false` on close and on a peer
+  > that is already down, and the ladder resumes on its base rung (400 ms), so the worst case after a
+  > socket dies is one base interval. A transport that does not implement `onHealth` counts as
+  > healthy for as long as it is attached; `detachTransport()` returns the client to the ladder.
 - **TW-TS-008** The handoff MUST be reactive collections of `Operation` handles, not a
   `show(operation)` callback. Change subscriptions exist for non-reactive consumers and are not the
   documented default.
@@ -2019,7 +1962,7 @@ function use_register(options?: TaskwireOptions):
   `attachViewsetEvents`, `detachViewsetEvents` and `ViewsetEventsTransport` (TW-EVT-005); it MUST NOT
   import `taskwire/muxws`. Besides it, only `taskwire/muxws` and the module holding `MuxwsCalls`,
   which both import, import `@dynamicforms/fastapi-viewsets`. Tests:
-  `busy.spec.ts::viewsetCallSource`, `fastapi-viewsets.spec.ts`.
+  `busy.spec.ts::viewsetCallSource`, `viewset-events.spec.ts`.
 
 ### 5.6 Shipped deliverables
 
@@ -2027,10 +1970,8 @@ function use_register(options?: TaskwireOptions):
   stream (`pyproject.toml` and `package.json` carrying identical `X.Y.Z`).
 - **TW-PKG-002** `conformance/` MUST hold language-neutral JSON fixtures read **in place** by both
   `pytest` and `vitest`. There MUST be no copy step.
-- **TW-PKG-003** `docs/guide/managing-several-operations.md`,
-  `docs/guide/the-operations-register.md`, a runnable `examples/several-operations/`, and
-  `TaskwireFooter` in `taskwire/vuetify` are deliverables, not optional
-  documentation.
+- **TW-PKG-003** `docs/guide/several-operations.md`, a runnable demo of several operations in
+  `demo/`, and `TaskwireFooter` in `taskwire/vuetify` are deliverables.
 - **TW-PKG-004** `TaskwireFooter` MUST implement the domination rule (TW-REG-012), the FIFO
   selection whose percentage it shows (TW-REG-013), the `needs_attention`-first / `created_at`-ascending
   sort (TW-REG-005), a result row rendered by `result.kind` and degrading past `expires_at` or on
@@ -2114,7 +2055,7 @@ Each of these is violable from more than one place; each names the failure it pr
   running bar over a blocked operation, and a `set(state=)` that parks an operation nothing will
   release.
 - **TW-INV-007** Every store access is keyed by `f"{ns}:{token}"` from `session_resolver` and nothing
-  else. *Prevents:* a second read path that forgets an authorization check, and two keyspaces for one
+  else. *Prevents:* a second read path that forgets an authorisation check, and two keyspaces for one
   login.
 - **TW-INV-008** The instance `id`, never `dialog_id`, is the key/path/store identifier. *Prevents:*
   two concurrent operations answering each other's question.
@@ -2130,8 +2071,7 @@ Each of these is violable from more than one place; each names the failure it pr
 - **TW-INV-012** `notify()` never raises and never blocks past `push_timeout`. *Prevents:* a
   degradation in the accelerator becoming a stall in the operation, and pushes stalling for every
   session in the process.
-- **TW-INV-013** No read writes. *Prevents:* the reintroduction of the `:seen` key and any
-  liveness-derived listing filter.
+- **TW-INV-013** No read writes. *Prevents:* a read that changes a TTL or a listing.
 - **TW-INV-014** Terminal states are final in the store. *Prevents:* a cleanup `set()` flipping a
   cancelled operation back to `running`, leaving it live in every tab's footer for a week.
 - **TW-INV-015** Connection lifetime and operation lifetime are strictly decoupled; the only
@@ -2177,12 +2117,9 @@ Each of these is violable from more than one place; each names the failure it pr
 | `raise_on_cancel` | bool | `True` | – | global default; overridden per action and per call |
 | REST prefix | path | `/taskwire` | – | mount point of the handlers |
 
-**Absent, and not by oversight:** `terminal_ttl` and `dialog_timeout`. There is no terminal linger
-in the register — a terminal entry is out of it in the step that ends it (TW-REG-007) — and
-`tombstone_ttl` is not that linger under another name: it times how long one document answers by
-token, and nothing it times is listed or counted. A dialog has no deadline at all (TW-DLG-005).
-`durable_ttl` survives under the name `result_ttl`, because the only thing it still times is an
-uncollected result.
+`tombstone_ttl` times how long a terminal document answers by token; nothing it times is listed or
+counted (TW-REG-007). There is no terminal linger in the register and no dialog deadline
+(TW-DLG-005).
 
 Configured callables (not settings, not ports): `session_resolver` (required; the only namespace
 producer), `push_filter` (optional, default `lambda client, operation: True`) and `result_released`
@@ -2207,21 +2144,3 @@ producer), `push_filter` (optional, default `lambda client, operation: True`) an
 | `dialogAdoptDelay` | ms | 2000 | > 0, never 0 | how long a non-originating tab waits before presenting a still-open dialog |
 | `unreachableAfter` | attempts | 5 | ≥ 1 | unanswered attempts (`retry` events) after which a call is unreachable in `tw.busy` (TW-TS-024) |
 | `run(fn, { progressUi: false })` | – | – | – | per-call opt-out of the visible collection only |
-
----
-
-## 9. Deliberately unsolved
-
-One thing in this specification is a known hole rather than a settled rule, and it is recorded here
-so that nobody mistakes the surrounding mitigations for an answer.
-
-- **A worker blocked on a dialog.** `ask()` has no timeout (TW-DLG-005), so an unanswered question
-  holds its Celery worker until Celery's own execution timeout kills the task. Routing interactive
-  tasks to their own pool, never asking inside a transaction, and letting any tab of the namespace
-  answer (TW-TAB-003) all reduce how often this bites; none of them closes it. The intended next step
-  is research rather than a rule: whether an asyncio loop inside a Celery worker is viable, and
-  therefore whether a blocked `ask()` can stop occupying a slot at all. Until that is answered, the
-  hazard is documented (TW-CELERY-010) and unmitigated.
-
-There are no open extraction gaps. Every question this document was extracted with has been answered
-by the decisions now stated as rules.
