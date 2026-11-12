@@ -77,6 +77,7 @@ export class ViewsetEventsTransport extends SocketClientTransport {
     return this.healthy;
   }
 
+  /** Call `listener` when the client should re-read what it displays; returns the unsubscribe. */
   onResync(listener: () => void): () => void {
     this.resyncListeners.add(listener);
     return () => {

@@ -1,4 +1,4 @@
-/** The package's own source, read by the specs that make assertions about the code itself. */
+/** Readers of the package's own source, for specs that assert on the code. */
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -30,8 +30,7 @@ function walk(directory: string): string[] {
 
 /**
  * Every module of the package that is not a test, keyed by its path relative to `vue/`
- * (`client/taskwire.ts`). A `.d.ts` compiles to nothing and is left out. `stripComments` removes
- * comments, so that a rule's own explanation does not trip the assertion that enforces it.
+ * (`client/taskwire.ts`). `.d.ts` files are left out. `stripComments` removes comments.
  */
 export function sourceFiles(options: { stripComments?: boolean } = {}): Map<string, string> {
   const files = walk(SRC_ROOT)

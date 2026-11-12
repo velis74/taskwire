@@ -7,12 +7,8 @@ import { new_token, operation } from './operation-scope';
 import { DEFAULT_SETTINGS, type Reporter } from './reporter';
 
 /**
- * Collectable results, the TypeScript half (M7, TW-RES-*, TW-STORE-016).
- *
- * The rule the feature turns on is TW-RES-005: **a parked result holds a record, never a worker.**
- * The task has finished; only the record waits. An implementation that read "waiting_input until
- * collected" as an `ask()` would pin a worker overnight on a download nobody clicked - and it would
- * pass every test that only looked at the document.
+ * Collectable results (TW-RES-*, TW-STORE-016). A parked result holds a record, never a worker
+ * (TW-RES-005).
  */
 
 const NS = 'acct-42';
@@ -25,8 +21,7 @@ function options(store: MemoryStore, token: string, resultKind: string | null = 
 
 describe('collectable results', () => {
   it('parks without blocking the caller (TW-RES-005)', async () => {
-    // Asserted against the clock, not the document: a document check alone passes against an
-    // implementation that waited for collection.
+    // Asserted against the clock: the body returns without waiting for collection.
     const store = new MemoryStore();
     const token = new_token();
 
@@ -54,7 +49,7 @@ describe('collectable results', () => {
   });
 
   it('resolves the caller before the result is collected (TW-RES-006)', async () => {
-    // The awaiting caller's promise resolves when the WORK finishes, not when somebody collects.
+    // The awaiting caller's promise resolves when the work finishes, not on collection.
     const store = new MemoryStore();
     const token = new_token();
     const value = await operation(options(store, token), async (reporter: Reporter) => {
@@ -79,19 +74,16 @@ describe('collectable results', () => {
   });
 
   it('refuses a result on a private operation (TW-RES-001, TW-PRIV-001)', async () => {
-    // Private from start to finish, and there is no promotion path. An operation that should
-    // interest other tabs declares a result at start.
+    // Without a `resultKind` the operation is private for its whole life (TW-PRIV-001).
     const store = new MemoryStore();
-    // `null`, not `undefined`: passing `undefined` for a defaulted parameter uses the default,
-    // which would have left this operation shared and the assertion asserting nothing.
+    // `null`: an `undefined` argument takes the parameter's default.
     await operation(options(store, new_token(), null), async (reporter: Reporter) => {
       await expect(reporter.setResult({ kind: 'acme.report' })).rejects.toThrow(/no resultKind/);
     });
   });
 
   it('releases exactly once under concurrency (TW-STORE-016)', async () => {
-    // Every release fires the application's hook, and one deleting its own artefact there would
-    // otherwise delete it twice.
+    // Of twelve concurrent releases exactly one returns the result.
     const store = new MemoryStore();
     const token = new_token();
     await operation(options(store, token), async (reporter: Reporter) => {
@@ -105,7 +97,7 @@ describe('collectable results', () => {
   });
 
   it('refuses to release an operation that is still running (TW-REST-008)', async () => {
-    // Releasing is not cancelling, and a blocked worker is not a collectable result.
+    // A release is not a cancel.
     const store = new MemoryStore();
     const token = new_token();
     await operation(options(store, token), async (reporter: Reporter) => {
@@ -127,9 +119,8 @@ describe('collectable results', () => {
     expect(after?.progress.state).toBe('done');
     expect(after?.progress.result).toBeNull();
 
-    // The release is what ends the operation (TW-RES-010), and writing the ended document is what
-    // takes it out of the register (TW-REG-007) and puts it on `tombstoneTtl` (TW-RET-004): the row
-    // is gone and the outcome is still readable by token.
+    // The release ends the operation (TW-RES-010): out of the register (TW-REG-007), still readable
+    // by token for `tombstoneTtl` (TW-RET-004).
     await store.commit(key(token), after!.progress, DEFAULT_SETTINGS.tombstoneTtl);
     expect(await store.listOperations(NS)).toEqual([]);
     expect((await store.snapshot(key(token)))?.progress.state).toBe('done');

@@ -41,19 +41,19 @@ describe('the vue composables (§5.5)', () => {
 
     await vi.advanceTimersByTimeAsync(600);
 
-    // The very same handles the client holds - one token is one handle everywhere (TW-TS-005).
+    // The same handles the client holds (TW-TS-005).
     expect(register.entries.value.map((entry) => entry.token)).toEqual([first, second]);
     expect(register.entries.value[0]).toBe(tw.register[0]);
     expect(visible.value).toEqual([]);
 
-    // `show()` is the door into the visible collection, and it is the only thing that moved.
+    // `show()` enters the visible collection.
     const previous = visible.value;
     register.show(register.entries.value[1]);
     expect(visible.value.map((entry) => entry.token)).toEqual([second]);
     expect(visible.value).not.toBe(previous);
     expect(visible.value[0]).toBe(tw.operations[0]);
 
-    // A fresh array on every change, or a template bound to it would never re-read the handles.
+    // A fresh array on every change.
     const held = register.entries.value;
     server.operations = [summaryWire(first, { created_at: '2026-01-01T00:00:01.000Z', percent: 80 })];
     await vi.advanceTimersByTimeAsync(1200);
@@ -80,7 +80,7 @@ describe('the vue composables (§5.5)', () => {
     expect(register.selected.value?.token).toBe(first);
     expect(register.selected.value?.progress?.percent).toBe(10);
 
-    // It advances on its own when that one leaves the register (TW-TS-012).
+    // It advances when that one leaves the register (TW-TS-012).
     server.operations = [summaryWire(second, { created_at: '2026-01-01T00:00:02.000Z', percent: 90 })];
     await vi.advanceTimersByTimeAsync(1200);
     expect(register.selected.value?.token).toBe(second);
@@ -92,7 +92,7 @@ describe('the vue composables (§5.5)', () => {
     await expect(register.dismiss(entry)).resolves.toBeUndefined();
     expect(() => register.mute(entry)).not.toThrow();
 
-    // And the whole binding goes away with its scope, leaving the client polling for nobody else.
+    // The binding stops updating when its scope stops.
     const held = register.entries.value;
     scope.stop();
     server.operations = [];

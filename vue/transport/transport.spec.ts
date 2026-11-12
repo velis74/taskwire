@@ -5,11 +5,11 @@ import { type Envelope, nowIso, serializeProgress, WIRE_VERSION, type WireObject
 import { DEFAULT_PUSH_TIMEOUT, type DroppedPushReason, LocalTransport, NullTransport } from './transport';
 
 const NS = 'acct-42';
-/** One already-resolved namespace string (TW-AMB-007). Never a user, a request or an identity. */
+/** One already-resolved namespace string (TW-AMB-007). */
 const OTHER_NS = 'acct-99';
 const TOKEN = '11111111-2222-4333-8444-555555555555';
 
-/** A hundredth of the sleep a hung subscriber takes, so a correct implementation costs milliseconds. */
+/** A hundredth of the sleep a hung subscriber takes. */
 const TEST_PUSH_TIMEOUT = 0.02;
 const SLOW_SUBSCRIBER_SLEEP = 2000;
 
@@ -49,8 +49,7 @@ describe('NullTransport', () => {
 
 describe('LocalTransport', () => {
   it('delivers to every subscriber of the namespace, in registration order (TW-TR-008)', async () => {
-    // In-process delivery is a first-class deployment, not a test double (TW-SYM-001): an
-    // application that never leaves its own process uses every feature of taskwire through it.
+    // In-process delivery (TW-SYM-001).
     const transport = new LocalTransport();
     const seen: string[] = [];
 
@@ -81,16 +80,13 @@ describe('LocalTransport', () => {
     await transport.notify(NS, progressEnvelope());
     expect(seen).toEqual([`first:${TOKEN}`, `second:${TOKEN}`]);
 
-    // A namespace nobody subscribed to is not an error, and the stranger never heard a thing.
+    // A namespace without subscribers is not an error, and other namespaces receive nothing.
     await expect(transport.notify('acct-nobody', progressEnvelope())).resolves.toBeUndefined();
     expect(seen).not.toContain('stranger');
   });
 
   it('hands each subscriber a document no other party holds a reference to (TW-TR-009)', async () => {
-    // In-process delivery is the only path where a live reference could leak where a wire transport
-    // would have serialized and therefore copied. A subscriber that mutated what it received would
-    // otherwise be writing into the publisher's own document - which is the store's document - and
-    // TW-CORE-002 would hold on one transport and not on another.
+    // A subscriber mutating what it received does not reach the publisher's document.
     const transport = new LocalTransport();
     const published = progressEnvelope();
 
@@ -118,29 +114,26 @@ describe('LocalTransport', () => {
     expect(seen.body.state).toBe('running');
     expect(seen.body.data).toEqual({ rows: 1 });
 
-    // The publisher's own envelope - the one a store holds and a later read returns - is untouched.
+    // The publisher's own envelope is untouched.
     expect(published.token).toBe(TOKEN);
     expect(published.rev).toBe(7);
     expect(published.body.percent).toBe(10);
     expect(published.body.data).toEqual({ rows: 1 });
 
-    // And no two parties share an object at all, at any depth: identity is what the rule is about,
-    // so equality alone would pass an implementation that copied one level and aliased the bag.
+    // No two parties share an object at any depth (identity, not equality).
     expect(seen).not.toBe(published);
     expect(seen.body).not.toBe(published.body);
     expect(seen.body.data).not.toBe(published.body.data);
 
-    // A later delivery is unaffected by the earlier vandalism, which is the "what a later read
-    // returns" half of TW-TR-009.
+    // A later delivery is unaffected by the earlier mutation (TW-TR-009).
     witnessed.length = 0;
     await transport.notify(NS, published);
     expect(witnessed[0].body.data).toEqual({ rows: 1 });
   });
 
   it('drops a throwing subscriber without starving the others (TW-TR-010)', async () => {
-    // It does not propagate to notify()'s caller - the state was written before any of this ran
-    // (TW-CORE-001) - and it does not stop the remaining subscribers. One dead browser tab may not
-    // silence every other tab of the namespace.
+    // It does not propagate to notify()'s caller (TW-CORE-001) and does not stop the remaining
+    // subscribers.
     const dropped: DroppedPushReason[] = [];
     const transport = new LocalTransport({ onDroppedPush: (_session, reason) => dropped.push(reason) });
     const seen: string[] = [];
@@ -169,13 +162,8 @@ describe('LocalTransport', () => {
   });
 
   it('drops a subscriber that outlasts pushTimeout, in bounded time (TW-TR-010, TW-TR-003)', async () => {
-    // The half of TW-TR-010 with no visible symptom: a subscriber that raises fails loudly the first
-    // time, while one that merely hangs - a tab whose socket went away without an RST - stalls
-    // notify(), and through it the reporter, for as long as it likes. TW-INV-012 is exactly this: a
-    // degradation in the accelerator must not become a stall in the operation.
-    //
-    // The timeout is injected rather than waited out, so an implementation that lost its bound fails
-    // the elapsed-time assertion instead of hanging the suite.
+    // A hung subscriber is dropped after `pushTimeout` (TW-TR-010, TW-INV-012). The timeout is
+    // injected, so a missing bound fails the elapsed-time assertion.
     const dropped: DroppedPushReason[] = [];
     const transport = new LocalTransport({
       pushTimeout: TEST_PUSH_TIMEOUT,
@@ -203,9 +191,8 @@ describe('LocalTransport', () => {
   });
 
   it('quotes §8.1 push_timeout and reports the port hint as true (TW-TR-001)', async () => {
-    // Two seconds, the same number as the Python settings (TW-SYM-002). And `isOnline` answers the
-    // port's default rather than "is anyone subscribed": TW-TR-001 spends a clause saying the hint
-    // is never load-bearing, and a hint that answered accurately would be branched on.
+    // Two seconds, as in the Python settings (TW-SYM-002). `isOnline` answers the port's default,
+    // not whether anyone is subscribed (TW-TR-001).
     expect(DEFAULT_PUSH_TIMEOUT).toBe(2);
     const transport = new LocalTransport();
     await expect(transport.isOnline(NS)).resolves.toBe(true);
@@ -214,8 +201,7 @@ describe('LocalTransport', () => {
   });
 
   it('lets a subscriber unsubscribe from inside its own delivery (TW-TR-008)', async () => {
-    // The registration list is snapshotted per notify: a subscriber that removes itself - or another
-    // - while being called must not shift the iteration out from under the ones still to run.
+    // A subscriber that unsubscribes itself or another during delivery does not skip one still to run.
     const transport = new LocalTransport();
     const seen: string[] = [];
     let unsubscribeSelf = (): void => undefined;

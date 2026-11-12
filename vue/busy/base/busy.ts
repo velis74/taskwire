@@ -9,8 +9,6 @@
  *
  * taskwire renders nothing from it. `taskwire/vue`'s `useBusy()` makes it reactive and
  * `taskwire/vuetify`'s `useBusyDialog()` presents it through the modal kit; both are opt-in.
- *
- * Its one runtime import is `isUuid` from `call-tracking/`; `client/taskwire.ts` depends on it.
  */
 
 import { isUuid } from '../../call-tracking/call-tracking';
@@ -44,7 +42,7 @@ export type CallEvent =
 export interface CallSource {
   /** Calls `listener` with every event from now on; returns the function that stops it. */
   subscribe(listener: (event: CallEvent) => void): () => void;
-  /** Sends every repeat that is waiting for its delay now. `Taskwire.retryNow()` calls it. */
+  /** Sends every repeat that is waiting for its delay now. */
   retryNow?(): void;
 }
 

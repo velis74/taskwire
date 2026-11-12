@@ -13,15 +13,10 @@ import {
 } from './tab-hints';
 
 /**
- * The tab hints (M7b, TW-TAB-*).
- *
- * `two tabs, injected clock` is named in the specification and is the one that matters: a question
- * belongs to the namespace, every tab can see it, and taken naively that means five tabs throwing
- * the same modal at once. The rule that prevents it is small enough to state in one line and easy
- * enough to get subtly wrong that it needs all four of its cases asserted.
+ * The tab hints (TW-TAB-*). `two tabs, injected clock` asserts the four cases of the adoption rule.
  */
 
-/** An injected clock. No test here sleeps; the delay is the thing under test, not a thing to wait for. */
+/** An injected clock; no test here sleeps. */
 class FakeTimers implements Timers {
   private t = 0;
 
@@ -78,8 +73,7 @@ describe('two tabs, injected clock (TW-TAB-003)', () => {
   }
 
   it('A presents in the same tick and B does not', () => {
-    // A started the operation, so it is the tab the user is looking at. There is nobody for it to
-    // defer to.
+    // A started the operation and presents at once.
     const open = { value: true };
     const { a, b, presentedByA, presentedByB } = twoTabs(open);
 
@@ -103,8 +97,7 @@ describe('two tabs, injected clock (TW-TAB-003)', () => {
   });
 
   it('B never presents when A answers first', () => {
-    // The common case, and the reason the timer re-checks instead of trusting what it saw. Five
-    // tabs would otherwise all throw a modal for a question that was answered two seconds ago.
+    // The timer re-checks whether the question is still open.
     const open = { value: true };
     const { timers, a, b, presentedByA, presentedByB } = twoTabs(open);
 
@@ -120,8 +113,7 @@ describe('two tabs, injected clock (TW-TAB-003)', () => {
   });
 
   it('B adopts the question when A is closed', () => {
-    // The other half of the same rule. A tab that "owns" a question is a tab whose closing loses it,
-    // so the question has to survive its starting tab going away.
+    // The question survives its starting tab going away.
     const open = { value: true };
     const { timers, b, presentedByB } = twoTabs(open);
 
@@ -134,8 +126,7 @@ describe('two tabs, injected clock (TW-TAB-003)', () => {
 
 describe('the adopt rules', () => {
   it('starts the same timer for a dialog that was already there (TW-TAB-004)', () => {
-    // "Arrives" includes "was already there". A tab opened while a question was outstanding must
-    // adopt it too, or the page knows about a question and says nothing.
+    // A tab opened while a question was outstanding adopts it too (TW-TAB-004).
     const timers = new FakeTimers();
     const presented: string[] = [];
     const adoption = new DialogAdoption({
@@ -146,7 +137,7 @@ describe('the adopt rules', () => {
       present: (id) => presented.push(id),
     });
 
-    // Seen for the first time in a REGISTER READ, not in a push. Same path, same timer.
+    // Seen first in a register read, not in a push: same timer.
     adoption.seen({ id: 'already-open', state: 'open' });
     timers.advance(2000);
     expect(presented).toEqual(['already-open']);
@@ -189,8 +180,6 @@ describe('the adopt rules', () => {
   });
 
   it('bounds the delay and refuses zero (TW-TAB-005)', () => {
-    // Zero makes every tab ask every question at once - the exact behaviour the rule prevents, and
-    // it would do so silently, looking like a setting that had no effect.
     expect(clampAdoptDelay(0)).toBe(MIN_ADOPT_DELAY_MS);
     expect(clampAdoptDelay(-5)).toBe(MIN_ADOPT_DELAY_MS);
     expect(clampAdoptDelay(Number.NaN)).toBe(MIN_ADOPT_DELAY_MS);
@@ -216,7 +205,6 @@ describe('the visible collection (TW-TAB-002, TW-REG-021)', () => {
   });
 
   it('never reveals a fast operation at all', () => {
-    // A bar that flashes up and vanishes reads as a glitch rather than as feedback.
     const timers = new FakeTimers();
     const revealed: string[] = [];
     const visibility = new VisibilityDelay({ progressUi: { delay: 250, failureLinger: 8000 }, timers });
@@ -241,9 +229,7 @@ describe('the visible collection (TW-TAB-002, TW-REG-021)', () => {
   });
 
   it('lingers a failure and nothing else (TW-REG-015)', () => {
-    // Purely client-side: the server never emits a failed aggregate state, because a terminal entry
-    // with nothing to collect has already left the register. This is the client holding on to a row
-    // it watched depart, not recomputing anything.
+    // Client-side only (TW-REG-015).
     const visibility = new VisibilityDelay({ progressUi: { delay: 250, failureLinger: 8000 } });
     expect(visibility.lingerFor('failed')).toBe(8000);
     expect(visibility.lingerFor('cancelled')).toBe(8000);
@@ -254,14 +240,10 @@ describe('the visible collection (TW-TAB-002, TW-REG-021)', () => {
 
 describe('the tab id (TW-TAB-001, TW-PROG-007)', () => {
   it('is in memory only and is never sent anywhere', () => {
-    // A restored session would come back claiming to be a tab that no longer exists, and a server
-    // that learned tab ids would grow a per-tab index nobody could bound (TW-KEY-002).
     expect(typeof TAB_ID).toBe('string');
     expect(TAB_ID.length).toBeGreaterThan(4);
 
-    // Comments are stripped first. Every one of these modules NAMES the header it refuses to send,
-    // in order to explain the rule - a scan that counted prose would be a test failing for being
-    // right about the wrong thing.
+    // Comments are stripped first: the scan covers code only.
     const sources = [
       'tab-hints/base/tab-hints.ts',
       'client/taskwire.ts',

@@ -1,32 +1,27 @@
 /**
- * The polling ladder of TW-REST-010 / TW-REST-011 / TW-REST-014, as a pure function.
+ * The polling ladder of TW-REST-010 / TW-REST-011 / TW-REST-014, as pure functions.
  *
- * Everything about cadence lives here, and nothing here touches a timer, a clock, a socket or
- * `axios`. `nextDelay(state, draw)` takes the whole of what the ladder is allowed to know - is
- * anything active, is a dialog open, did any `rev` change, what did the ladder say last time, what
- * did the server advise - and returns a number of milliseconds. The scheduler in
- * `client/token-poller.ts` is a thin `setTimeout` loop around it, so the entire cadence is testable
- * without advancing a clock.
+ * Nothing here touches a timer, a clock, a socket or `axios`. `nextDelay(state, draw)` takes what
+ * the ladder knows - is anything active, is a dialog open, did any `rev` change, the previous ladder
+ * interval, the server's advice - and returns milliseconds.
  *
- * **The ladder can never be talked into polling faster** (TW-REST-014). This is the rule the module
- * exists for. `poll_after_ms` is a *floor* and only ever a floor: the client takes
- * `max(pollAfterMs, its own ladder)`, and then floors the jittered result at `pollAfterMs` **and**
- * at the base interval a second time, so the downward half of the jitter cannot undercut either.
- * Without that last clamp a server that computed `poll_after_ms: 0` - or one whose computation went
- * wrong in any other direction - turns every client watching it into a request flood against the
- * server that emitted the number. A client MAY poll later than advised and MUST NOT poll sooner.
+ * **The ladder never polls faster than advised** (TW-REST-014). `poll_after_ms` is a floor: the
+ * client takes `max(pollAfterMs, its own ladder)`, jitters it, and floors the result again at
+ * `pollAfterMs` and at the base interval, so the downward half of the jitter undercuts neither. A
+ * `poll_after_ms` of `0` or less therefore still yields at least the base interval.
  *
- * **`previousDelay` is the previous *ladder* interval, not the previous emitted delay.** Feeding the
- * jittered emission back in would compound the jitter: a run of unlucky draws would walk the ladder
- * up 20 % faster than ×1.5, and a run of lucky ones would stall it below the ceiling forever. The
- * ladder is deterministic; the jitter is applied once, at the end, to the number the caller sleeps
- * for. `PollLadder` below carries the un-jittered value for callers who would otherwise get this
- * wrong.
+ * **`previousDelay` is the previous ladder interval, not the previous emitted delay.** Feeding the
+ * jittered emission back in compounds the jitter. The ladder is deterministic; the jitter is applied
+ * once, to the number the caller sleeps for. `PollLadder` carries the un-jittered value.
  *
- * **Nothing outside this file may derive a duration from these numbers** (TW-THR-007). The frontend
- * must never assume any update frequency: no animation length, no stall heuristic and no timeout may
- * be computed from the poll interval, because the interval is a function of server load and of how
- * many tabs happen to be open, and none of those are facts about the operation.
+ * **No duration may be derived from these numbers outside this file** (TW-THR-007): no animation
+ * length, stall heuristic or timeout. The interval depends on server load and on the number of open
+ * tabs, not on the operation.
+ *
+ * While a push transport is attached and healthy the loops that use the ladder are suspended; on its
+ * loss they resume on the base rung (`PollLadder.resume()`). Every loop performs its first read even
+ * while suspended, because a transport delivers only changes; a token this page minted is the
+ * exception (TW-TS-007).
  */
 
 import { ACTIVE_STATES, openDialogs, type Register, type Snapshot } from '../wire/wire';
@@ -52,9 +47,8 @@ export const DEFAULT_POLL_SETTINGS: PollSettings = {
 };
 
 /**
- * Everything the ladder is allowed to know. Deliberately not a `Snapshot` or a `Register`: the same
- * function serves the register poll and the single-token poll (TW-REST-011), and it must not be able
- * to tell which one it is answering.
+ * Everything the ladder knows. Not a `Snapshot` or a `Register`: the same function serves the
+ * register poll and the single-token poll (TW-REST-011).
  */
 export interface PollLadderState {
   /** Any watched entry in `queued` or `running`. Unknown counts as `true`: see `snapshotLadderState`. */
@@ -73,17 +67,11 @@ export interface PollLadderState {
 export type Draw = () => number;
 
 /**
- * The ladder itself, with no jitter and no server advice: pure §8.2.
+ * The ladder itself, with no jitter and no server advice (§8.2).
  *
- * The order of the four branches is the rule's own order and matters. A dialog open outranks
- * everything - a human is deciding, and hammering the server changes nothing about how fast they
- * decide. Idle is the heartbeat, at the ceiling, and there is no branch that returns nothing: a
- * client that stopped asking because nothing was active would never learn that something started.
- *
- * Whether the scheduler sleeps this number or none at all is not the ladder's decision. A push
- * transport that is attached and healthy suspends the loop entirely, and losing it resumes from the
- * base rung (TW-TS-007) - which is why `PollLadder.reset()` exists and why the state this function
- * takes has no way to express "stopped".
+ * The branches are evaluated in the rule's order: an open dialog answers the ceiling, idle answers
+ * the ceiling (the heartbeat), a moved `rev` or a first poll answers the base interval, otherwise the
+ * previous interval climbs by the backoff factor up to the ceiling. No branch stops polling.
  */
 export function ladderInterval(state: PollLadderState, settings: PollSettings = DEFAULT_POLL_SETTINGS): number {
   const { baseIntervalMs, backoffFactor, ceilingMs } = settings;
@@ -91,8 +79,7 @@ export function ladderInterval(state: PollLadderState, settings: PollSettings = 
   if (!state.anyActive) return ceilingMs;
   if (state.revChanged) return baseIntervalMs;
   if (state.previousDelay === null || state.previousDelay === undefined) return baseIntervalMs;
-  // `Math.max(previous, base)` keeps a caller that fed back a too-small number - a jittered emission,
-  // say - from restarting the climb below the base interval.
+  // A `previousDelay` below the base interval climbs from the base interval.
   return Math.min(Math.max(state.previousDelay, baseIntervalMs) * backoffFactor, ceilingMs);
 }
 
@@ -102,12 +89,9 @@ export function jitterMultiplier(draw: Draw = Math.random, settings: PollSetting
 }
 
 /**
- * Milliseconds until the next poll. The only function a scheduler needs.
- *
- * The body is TW-REST-014 written out: raise the ladder to the server's floor, jitter it, then floor
- * it again at both the server's number and the client's own base interval. The second flooring is
- * not redundant - it is the one that survives a `pollAfterMs` of `0`, a negative one, and the 0.8
- * end of the jitter.
+ * Milliseconds until the next poll (TW-REST-014): the ladder raised to the server's floor, jittered,
+ * then floored at both the server's number and the base interval. The result is never below the base
+ * interval, whatever `pollAfterMs` and the jitter draw.
  */
 export function nextDelay(
   state: PollLadderState,
@@ -117,18 +101,16 @@ export function nextDelay(
   const advised = typeof state.pollAfterMs === 'number' && Number.isFinite(state.pollAfterMs) ? state.pollAfterMs : 0;
   const floor = Math.max(advised, settings.baseIntervalMs);
   const jittered = Math.max(ladderInterval(state, settings), advised) * jitterMultiplier(draw, settings);
-  // Rounded because no timer honours a fractional millisecond, and rounding a value that is already
-  // at or above an integer floor cannot drop it below one.
+  // Timers take whole milliseconds; rounding cannot drop the value below the integer floor.
   return Math.max(Math.round(jittered), floor);
 }
 
 /**
  * The ladder state for one operation's `GET {prefix}/{token}` (TW-REST-011).
  *
- * `snapshot === null` is the token that has no document *yet* - the dispatcher has not written it, or
- * it is gone. `anyActive` stays `true` there on purpose: the client is waiting for something it has
- * every reason to expect, and dropping to the 5 s heartbeat would make a bar that should appear in
- * half a second take five. The backoff still applies, because an absence is not a change.
+ * `snapshot === null` is a token with no document yet, or one that is gone. It counts as active, so
+ * the poll stays on the ladder rather than the ceiling; the backoff still applies, because an absence
+ * is not a change.
  */
 export function snapshotLadderState(
   snapshot: Snapshot | null,
@@ -179,10 +161,8 @@ export function registerLadderState(
 }
 
 /**
- * The one piece of state a scheduler needs: the previous **ladder** interval.
- *
- * Carried here rather than by the caller because the caller only ever sees the jittered number, and
- * feeding that back in is the mistake this class exists to make impossible.
+ * Holds the previous un-jittered ladder interval between calls, so the caller never feeds a jittered
+ * delay back into the ladder.
  */
 export class PollLadder {
   private previous: number | null = null;
@@ -208,20 +188,14 @@ export class PollLadder {
     return nextDelay(full, this.draw, this.settings);
   }
 
-  /** Back to the base interval - what a loop resuming from a suspension does (TW-TS-007). */
+  /** Forget the previous rung, so the next climb starts from the base interval. */
   reset(): void {
     this.previous = null;
   }
 
   /**
-   * The base rung itself, jittered, with the climb set to start from it: what a loop schedules the
-   * moment it is handed back its ladder (TW-TS-007).
-   *
-   * The interval rules describe a loop that has been reading, and two of their branches outrank
-   * everything else - an open question and an idle namespace both answer the ceiling. Both are
-   * routinely true of a client that has just lost its socket, so a resumption asked of those rules
-   * would put the recovery five seconds away rather than one base interval, which is the whole of
-   * what makes losing a socket survivable.
+   * The base interval, jittered and never below it, with the climb set to start from it (TW-TS-007).
+   * Unlike `next()`, it ignores an open dialog and idleness, both of which answer the ceiling.
    */
   resume(): number {
     const { baseIntervalMs } = this.settings;

@@ -15,12 +15,8 @@ export interface DialogAdapterOptions {
   client?: Taskwire;
   translate?: Translate;
   /**
-   * `dialogId` -> a component name registered with the modal kit.
-   *
-   * The frontend maps `dialogId` to a component exactly as it maps a `Result.kind` (TW-RES-002), so
-   * an application adds a question type without a protocol change. Anything unmapped falls back to
-   * a plain message dialog carrying the declared buttons, which is a worse dialog but never a
-   * missing one - and a missing one holds a worker.
+   * `dialogId` -> a component name registered with the modal kit, as `Result.kind` is mapped
+   * (TW-RES-002). An unmapped `dialogId` is presented as a message dialog with the declared buttons.
    */
   components?: Record<string, string>;
   timers?: Timers;
@@ -34,16 +30,15 @@ export interface DialogAdapterOptions {
  * useTaskwireDialogs({ components: { 'acme.overwrite': 'AcmeOverwriteDialog' } });
  * ```
  *
- * Mount it once, high up. Mounting it twice would present each question twice - the adoption rule
- * de-duplicates per instance, not across them.
+ * Mount it once: the adoption rule de-duplicates per instance, so a second instance presents each
+ * question again.
  */
 export function useTaskwireDialogs(options: DialogAdapterOptions = {}): { stop: () => void } {
   const translate = options.translate ?? defaultTranslate;
   const components = options.components ?? {};
 
   const present = (operation: Operation<unknown>, dialog: DialogRequest): Promise<string> => {
-    // A DialogRequest carries no title or text of its own (section 3.4) - the wording lives on
-    // the operation's progress document, which is the one document a token has.
+    // A DialogRequest carries no title or text (§3.4); the wording is on the progress document.
     const title = translate(operation.title, dialog.dialogId);
     const componentName = components[dialog.dialogId];
     if (componentName !== undefined) return modal.custom(title, componentName, { dialog, operation });

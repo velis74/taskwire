@@ -28,21 +28,19 @@ describe('key addressing', () => {
   });
 
   it('splits on the last colon so a namespace may contain one', () => {
-    // A token is a UUID and contains no colon; `tenant:42` is a perfectly ordinary namespace, and
-    // splitting on the first would mis-attribute every one of that tenant's operations.
+    // A namespace may contain colons; the token is after the last one.
     expect(splitKey(key('tenant:42', 'a1b2'))).toEqual(['tenant:42', 'a1b2']);
     expect(splitKey('ns:tok')).toEqual(['ns', 'tok']);
   });
 
   it('a key with no colon has an empty namespace', () => {
-    // Matching Python's `rpartition`. There is no code path that produces one, and the two languages
-    // agree about the degenerate case rather than one of them throwing.
+    // As Python's `rpartition`.
     expect(splitKey('bare')).toEqual(['', 'bare']);
   });
 });
 
 describe('conformance suite against MemoryStore (TW-STORE-012)', () => {
-  // One vitest test per exported check, named after it, so a failure names the rule that broke.
+  // One vitest test per exported check, named after it.
   CHECKS.forEach((check) => {
     it(check.name, async () => {
       await check(makeStore);
@@ -60,9 +58,7 @@ describe('conformance suite against MemoryStore (TW-STORE-012)', () => {
   });
 
   it('runConformance names the rule a broken store breaks', async () => {
-    // The suite is only worth exporting if it fails. This store refreshes the TTL on every read -
-    // the exact shape of the `:seen` key TW-KEY-002 forbids - and must be caught by the check whose
-    // name says so, not by some later check confused by the damage.
+    // A store that refreshes the TTL on read fails `readsHaveNoSideEffects` (TW-KEY-002).
     class LeakyStore extends MemoryStore {
       async snapshot(k: string) {
         const result = await super.snapshot(k);
@@ -87,8 +83,7 @@ describe('MemoryStore writes', () => {
     );
 
     const snapshot = await store.snapshot(k);
-    // There is no promotion rule: an operation is private or shared from start to finish, and a
-    // later commit claiming otherwise is corrected rather than honoured.
+    // A later commit's `resultKind` is replaced by the opening one (TW-PROG-006).
     expect(snapshot?.progress.resultKind).toBeNull();
     expect(snapshot?.progress.originSession).toBe('ns');
     expect(snapshot?.progress.originConnection).toBe('conn-1');
@@ -120,8 +115,7 @@ describe('MemoryStore writes', () => {
     await store.commit(k, running({ state: 'running', error: null, label: { text: 'tidying up' } }), 60);
 
     const snapshot = await store.snapshot(k);
-    // The state is what the register and every footer key off; an error erased by a cleanup write
-    // would leave a `failed` operation with nothing to show for it.
+    // A post-terminal commit keeps the state and the error (TW-STORE-010).
     expect(snapshot?.progress.state).toBe('failed');
     expect(snapshot?.progress.error?.code).toBe('taskwire.dispatch_failed');
     expect(snapshot?.progress.label?.text).toBe('tidying up');
@@ -144,8 +138,7 @@ describe('MemoryStore writes', () => {
     let now = 1_000_000;
     const store = new MemoryStore({ clock: () => now });
     const k = key('ns', 'tok');
-    // Milliseconds on the injected clock's own scale: a faked clock must fake `rev` too, or an
-    // expiry test could not observe the seeding rule at all.
+    // Milliseconds on the injected clock's scale.
     expect((await store.commit(k, running(), 60)).rev).toBe(1_000_000_000);
 
     // A second commit inside the same millisecond still moves, because `previous + 1` is the floor.
@@ -159,16 +152,9 @@ describe('MemoryStore writes', () => {
     let now = 1_000_000;
     const store = new MemoryStore({ clock: () => now });
     const k = key('ns', 'tok');
-    // Three commits inside one millisecond push `rev` above the clock, which is the only way the
-    // `previous + 1` term of `max(nowMs, previous + 1)` can be observed at all. Then the document
-    // expires and is written again while the clock has barely moved: a store that seeded from the
-    // clock alone would hand out a `rev` the client has already seen, and every envelope from then
-    // on is dropped by client dedup with the bar frozen and nothing logged.
-    //
-    // MemoryStore-specific rather than a conformance check on purpose: a store whose `rev` lives in
-    // a key that expires with the document (TW-KEY-001) genuinely cannot remember it, and `nowMs`
-    // is the term that covers that store. Demanding this of every store would be demanding memory
-    // that TW-STORE-009 does not let it keep.
+    // Three commits within 1 ms push `rev` above the clock; after expiry the re-created document's
+    // `rev` exceeds the last one (`previous + 1`). Not a conformance check: a store whose `rev`
+    // expires with the document (TW-KEY-001) cannot remember it.
     await store.commit(k, running(), 0.001);
     await store.commit(k, running(), 0.001);
     const third = (await store.commit(k, running(), 0.001)).rev;
@@ -188,12 +174,10 @@ describe('MemoryStore writes', () => {
 
     expect(cancelled).toBeGreaterThan(first.rev);
     expect(await store.isCancelled(k)).toBe(true);
-    // Setting the flag does not by itself change `state` - only `operation()` writes `cancelled`
-    // (TW-CANCEL-002, TW-CANCEL-006).
+    // Setting the flag does not change `state` (TW-CANCEL-002, TW-CANCEL-006).
     expect((await store.snapshot(k))?.progress.state).toBe('running');
 
-    // TW-STORE-014: the write that follows a cancel reports the flag itself, so the reporter needs
-    // no second read to know (`Reporter.cancelled`).
+    // TW-STORE-014: the write that follows a cancel reports the flag.
     expect((await store.commit(k, running({ label: { text: 'still going' } }), 60)).cancelled).toBe(true);
     expect(await store.isCancelled(k)).toBe(true);
   });
@@ -212,9 +196,7 @@ describe('MemoryStore writes', () => {
     await store.commit(k, running(), 10);
 
     now += 50;
-    // A cancel arrives from a footer that has not polled since the document died. Zero means "gone",
-    // which is what the caller needs to hear; setting a flag on a document nobody can read would be
-    // a write no read could ever undo.
+    // A cancel on a missing document resolves `0` and writes nothing.
     expect(await store.requestCancel(k)).toBe(0);
     expect(await store.isCancelled(k)).toBe(false);
     expect(await store.snapshot(k)).toBeNull();
@@ -238,8 +220,7 @@ describe('MemoryStore writes', () => {
     expect(await store.migrate('anon', 'account')).toBe(1);
     expect((await store.listOperations('account')).map((s) => s.token)).toEqual(['tok']);
     expect(await store.listOperations('anon')).toEqual([]);
-    // TW-AMB-012: the client's next register read under the new namespace is the recovery. A bulk
-    // re-keying is not a state change any client is waiting to hear about.
+    // TW-AMB-012: a migration publishes nothing.
     expect(published).toEqual([]);
   });
 
@@ -258,11 +239,8 @@ describe('MemoryStore writes', () => {
 });
 
 /**
- * The one white-box corner of this file, and the reason it exists: TW-KEY-002 forbids leftover
- * bookkeeping, and a leftover index member is invisible through the port. `listOperations` skips a
- * token whose document has expired whether or not the index still names it, so the conformance suite
- * - which is black-box by construction, since it judges stores it has never seen - cannot tell a
- * store that prunes from one that leaks. This file owns the implementation and can look.
+ * White-box: expired index members are pruned (TW-KEY-002). The black-box conformance suite cannot
+ * observe this, since `listOperations` skips expired tokens either way.
  */
 interface Internals {
   entries: Map<string, unknown>;
@@ -293,8 +271,7 @@ describe('MemoryStore bookkeeping (TW-KEY-002, TW-KEY-003)', () => {
 
     now += 50;
     expect((await store.listOperations('ns')).map((s) => s.token)).toEqual(['live']);
-    // Pruned, not merely skipped: skipping alone leaves a namespace's index growing without bound
-    // for as long as the application keeps starting operations under it.
+    // Pruned from the index, not merely skipped.
     expect(Array.from(internals(store).index.get('ns')?.keys() ?? [])).toEqual(['live']);
   });
 
@@ -320,11 +297,9 @@ describe('MemoryStore bookkeeping (TW-KEY-002, TW-KEY-003)', () => {
 });
 
 describe('the asking set (TW-KEY-005)', () => {
-  // The asking set is the second term of TW-STORE-006's union. It is seeded directly here so the
-  // listing rule is asserted on its own, without a dialog write in front of it; the black-box
-  // version goes through `putDialog` and is
-  // `test_list_operations_includes_a_private_operation_only_while_it_asks` in the exported
-  // conformance suite.
+  // The asking set, the second term of TW-STORE-006's union, seeded directly. The black-box version
+  // through `putDialog` is `test_list_operations_includes_a_private_operation_only_while_it_asks` in
+  // `taskwire/conformance.py`.
   const ask = (store: MemoryStore, ns: string, token: string) => {
     const asking = internals(store).asking.get(ns) ?? new Set<string>();
     asking.add(token);
@@ -339,8 +314,7 @@ describe('the asking set (TW-KEY-005)', () => {
     ask(store, 'ns', 'hidden');
     expect((await store.listOperations('ns')).map((s) => s.token)).toEqual(['hidden']);
 
-    // Membership is a fact about a token's dialogs and never makes a private operation shared: the
-    // moment its last question closes it leaves the register, and `resultKind` is what it always was.
+    // Once its last dialog closes, a private operation leaves the listing; `resultKind` is unchanged.
     internals(store).asking.get('ns')?.delete('hidden');
     expect(await store.listOperations('ns')).toEqual([]);
     expect((await store.snapshot(key('ns', 'hidden')))?.progress.resultKind).toBeNull();
@@ -390,9 +364,8 @@ describe('MemoryStore publish (TW-STORE-008)', () => {
   });
 
   it('waits for the hook before it resolves', async () => {
-    // TW-CORE-004 has the publish drive the reader, and a reporter that carried on before the push
-    // had left would reorder envelopes against the very writes they announce. Timed rather than
-    // microtask-based deliberately: a fire-and-forget `publish` still wins a microtask race.
+    // TW-CORE-004: `publish` resolves after the hook. The hook resolves on a timer, since a
+    // fire-and-forget `publish` would still pass a microtask-based check.
     let delivered = false;
     const store = new MemoryStore({
       dispatch: () =>
@@ -421,8 +394,7 @@ describe('MemoryStore publish (TW-STORE-008)', () => {
   });
 
   it('swallows a hook that returns a rejected promise', async () => {
-    // The half that is easy to miss: a synchronous `try` around a call that returns a promise
-    // catches nothing, and a push that rejected would take the operation down with it (TW-INV-012).
+    // TW-INV-012: a rejected promise from the hook is swallowed too.
     const store = new MemoryStore({ dispatch: async () => Promise.reject(new Error('offline')) });
     await expect(store.publish('ns', envelope)).resolves.toBeUndefined();
   });
@@ -442,10 +414,7 @@ describe('a key that is not there', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
 
-    // A store with no such operation answers rather than throwing: each of these on a key that is
-    // not there is a lost race with expiry, not a programming error. What the methods do when the
-    // operation IS there is asserted in the dialog section below, in results.spec.ts and in the
-    // exported conformance suite.
+    // On a missing key each method answers rather than throwing.
     expect(await store.releaseResult(k)).toBeNull();
     expect(await store.putDialog(k, dialog, 60)).toBe(0);
     expect(await store.resolveDialog(k, 'd1', reply)).toBe('not_found');
@@ -453,8 +422,7 @@ describe('a key that is not there', () => {
   });
 
   it('DialogVanished is a distinguishable fault (TW-DLG-008)', () => {
-    // Never an answer nobody gave: a caller cannot tell a synthesised "cancel" from a user who
-    // pressed cancel, so the absence of the document has to arrive as an error.
+    // A missing document rejects with `DialogVanished` (TW-DLG-008).
     const error = new DialogVanished();
     expect(error).toBeInstanceOf(Error);
     expect(error.name).toBe('DialogVanished');

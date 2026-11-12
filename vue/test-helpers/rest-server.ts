@@ -6,8 +6,7 @@ import { REGISTER_PATH } from '../calls/calls';
 import { DEFAULT_BASE_PATH } from '../client/types';
 import type { WireObject } from '../wire/wire';
 
-// The register is the collection, so it lives at the collection URL and carries no extra
-// segment. Derived from the constant rather than spelled out, so a move cannot pass here.
+// The register URL, derived from `REGISTER_PATH`.
 const REGISTER_URL = REGISTER_PATH === '' ? DEFAULT_BASE_PATH : `${DEFAULT_BASE_PATH}/${REGISTER_PATH}`;
 
 function progressWire(over: WireObject = {}): WireObject {
@@ -24,6 +23,7 @@ function progressWire(over: WireObject = {}): WireObject {
   };
 }
 
+/** A wire `Snapshot` of `token`; `over` and `progress` override fields. */
 export function snapshotWire(token: string, over: WireObject = {}, progress: WireObject = {}): WireObject {
   return {
     v: 1,
@@ -38,6 +38,7 @@ export function snapshotWire(token: string, over: WireObject = {}, progress: Wir
   };
 }
 
+/** A wire `OperationSummary` of `token`. */
 export function summaryWire(token: string, progress: WireObject = {}): WireObject {
   return {
     token,

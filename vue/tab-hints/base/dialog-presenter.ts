@@ -15,7 +15,7 @@ export type PresentDialog = (operation: Operation<unknown>, dialog: DialogReques
 export interface DialogPresenterOptions {
   /** The register the questions are read from. */
   client: Pick<Taskwire, 'register' | 'onRegisterChange'>;
-  /** The UI half: the only part a Vuetify, React or plain adapter supplies. */
+  /** The UI half, supplied by the adapter. */
   present: PresentDialog;
   /** Defaults to `taskwireConfig().dialogAdoptDelay`. */
   dialogAdoptDelay?: number;
@@ -29,8 +29,7 @@ export interface DialogPresenterOptions {
  * Runs `DialogAdoption` twice - immediate for operations whose `startedHere` holds, deferred by
  * `dialogAdoptDelay` for the rest (TW-TAB-003) - over every register change, so a dialog first seen
  * in a register read starts the same timer as one that arrived on a push (TW-TAB-004). A dialog
- * already on screen is not presented again on a re-poll. `useTaskwireDialogs` is this class with the
- * modal kit as `present`.
+ * already on screen is not presented again on a re-poll.
  *
  * One instance per tab: two instances present each question twice, because the adoption rule
  * de-duplicates per instance.
@@ -99,14 +98,13 @@ export class DialogPresenter {
     } catch {
       chosen = null;
     }
-    // A result that names no declared button is not an answer. The question stays open, so another
-    // tab may still adopt it, and no button is acted on that nobody chose (TW-DLG-007).
+    // A result that names no declared button is not an answer; the question stays open (TW-DLG-007).
     if (!dialog.buttons.some((button) => button.id === chosen)) {
       this.presenting.delete(id);
       return;
     }
 
-    // Resolves quietly on 409 / 404 / 410 (TW-DLG-011); only a 422 rejects.
+    // Resolves on 409 / 404 / 410 (TW-DLG-011); a 422 rejects.
     await operation.answer(chosen as string);
   }
 }

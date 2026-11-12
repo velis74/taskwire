@@ -2,9 +2,7 @@
  * The push delay (TW-THR-008): what a writer publishes while an operation is younger than
  * `pushDelay`. The twin of `taskwire/publish.py` (TW-SYM-002).
  *
- * An operation that ends inside the delay is answered by its own call, and a client shows nothing for
- * it (`progressUi.delay`), so its envelopes would be traffic nobody reads. The store is written as
- * always (TW-CORE-001); only the publish waits.
+ * The store is written as always (TW-CORE-001); only the publish is held back.
  */
 
 import type { TaskwireStore } from '../store/store';
@@ -18,7 +16,7 @@ import {
   type WireObject,
 } from '../wire/wire';
 
-/** Published inside the delay too, as a `snapshot`: a question nobody sees is a worker nobody frees. */
+/** Kinds published inside the delay too, as a `snapshot` (TW-THR-008). */
 const FORCED: ReadonlySet<string> = new Set(['dialog.open', 'cancel']);
 
 type PublishingStore = Pick<TaskwireStore, 'snapshot' | 'publish'>;

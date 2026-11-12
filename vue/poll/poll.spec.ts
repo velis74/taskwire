@@ -17,13 +17,13 @@ import {
 
 const { baseIntervalMs: BASE, ceilingMs: CEILING, backoffFactor: FACTOR } = DEFAULT_POLL_SETTINGS;
 
-/** The middle of the jitter window: multiplier exactly 1, so the ladder is readable in the assertion. */
+/** The middle of the jitter window: multiplier exactly 1. */
 const centre = (): number => 0.5;
 
-/** The unluckiest possible draw: multiplier 0.8, the one that must never undercut a floor. */
+/** The lowest draw: multiplier 0.8. */
 const low = (): number => 0;
 
-/** The luckiest: multiplier just under 1.2. */
+/** The highest draw: multiplier just under 1.2. */
 const high = (): number => 1 - Number.EPSILON;
 
 function progressOf(state: ProgressState): Progress {
@@ -102,7 +102,7 @@ describe('the ladder while something is running (TW-REST-010)', () => {
 
     const walked = Array.from({ length: 12 }, () => ladder.next(running));
     expect(walked.slice(0, 8)).toEqual([400, 600, 900, 1350, 2025, 3038, 4556, 5000]);
-    // The ceiling is a ceiling: it never grows past it, however long nothing changes.
+    // The interval stays at the ceiling.
     expect(walked.slice(8)).toEqual([5000, 5000, 5000, 5000]);
     expect(FACTOR).toBe(1.5);
     expect(CEILING).toBe(5000);
@@ -115,13 +115,12 @@ describe('the ladder while something is running (TW-REST-010)', () => {
     expect(ladder.ladder).toBe(CEILING);
 
     expect(ladder.next({ ...running, revChanged: true })).toBe(BASE);
-    // And it climbs again from the base, not from where it was before the change.
+    // The climb restarts from the base interval.
     expect(ladder.next(running)).toBe(BASE * FACTOR);
   });
 
   it('climbs on the un-jittered ladder, so unlucky draws cannot compound', () => {
-    // Two ladders differing only in their draw take the same *ladder* steps; only what they sleep for
-    // differs. Feeding the jittered emission back in would make the unlucky one climb 20 % faster.
+    // Two ladders differing only in their draw take the same ladder steps.
     const unlucky = new PollLadder(DEFAULT_POLL_SETTINGS, low);
     const lucky = new PollLadder(DEFAULT_POLL_SETTINGS, high);
     const running = { anyActive: true, anyDialogOpen: false, revChanged: false };
@@ -140,7 +139,7 @@ describe('the ceiling cadences (TW-REST-010)', () => {
     expect(asking.anyDialogOpen).toBe(true);
     expect(ladderInterval(asking)).toBe(CEILING);
 
-    // A dialog outranks even an active entry: a person is deciding, and polling harder does not help.
+    // An open dialog outranks an active entry.
     const askingWhileRunning = snapshotLadderState(snapshotOf('running', { dialogs: [openDialog()] }), null, null);
     expect(ladderInterval(askingWhileRunning)).toBe(CEILING);
   });
@@ -190,7 +189,7 @@ describe('poll_after_ms may only slow the ladder (TW-REST-014)', () => {
           expect(delay).toBeGreaterThanOrEqual(pollAfterMs);
           expect(delay).toBeGreaterThanOrEqual(BASE);
         });
-        // Above the ladder it genuinely slows the client; below it, it changes nothing at all.
+        // Above the ladder the floor slows the client; below it, it has no effect.
         expect(nextDelay({ ...base, pollAfterMs }, centre)).toBe(Math.max(ladder, pollAfterMs, BASE));
       });
     });
@@ -214,7 +213,7 @@ describe('jitter', () => {
     expect(jitterMultiplier(centre)).toBeCloseTo(1, 10);
     expect(jitterMultiplier(high)).toBeCloseTo(1.2, 10);
 
-    // At the ceiling both halves of the window are visible, because neither floor is in the way.
+    // At the ceiling neither floor clips the jitter window.
     const idle = state({ anyActive: false });
     expect(nextDelay(idle, low)).toBe(4000);
     expect(nextDelay(idle, high)).toBe(6000);
@@ -224,7 +223,7 @@ describe('jitter', () => {
     const restoredAt = 1_700_000_000_000;
     const draws = Array.from({ length: 50 }, (_, index) => (index + 0.5) / 50);
     const instants = new Set(draws.map((draw) => restoredAt + nextDelay(state({ anyActive: false }), () => draw)));
-    // 50 tabs, 50 different moments: nothing synchronises them back into one thundering herd.
+    // 50 draws give 50 distinct instants.
     expect(instants.size).toBe(50);
   });
 
@@ -275,8 +274,7 @@ describe('one ladder for both endpoints (TW-REST-011)', () => {
   });
 
   it('keeps looking at the base interval while a token has no document yet (TW-TS-004)', () => {
-    // An absent document is not an idle client: something is expected, so the heartbeat cadence would
-    // make a bar that should appear in half a second take five.
+    // An absent document counts as active, not idle.
     const absent = snapshotLadderState(null, null, null);
     expect(absent.anyActive).toBe(true);
     expect(absent.revChanged).toBe(false);
@@ -290,9 +288,7 @@ describe('nothing derives a duration from the poll interval (TW-THR-007)', () =>
       .filter(([, text]) => /from '(?:\.\.?\/)+poll\/poll'/.test(text))
       .map(([name]) => name)
       .sort();
-    // The frontend must never assume any update frequency. Two consumers, and both are schedulers:
-    // the single-token poll and the register poll, which share this one ladder rather than
-    // forking it (TW-REST-011). Neither the package entry point nor anything else may import it.
+    // Only the single-token poll and the register poll import the ladder (TW-REST-011).
     expect(importers).toEqual(['client/token-poller.ts', 'register/base/register.ts']);
   });
 
@@ -314,9 +310,8 @@ describe('nothing derives a duration from the poll interval (TW-THR-007)', () =>
 
   it('keeps the §8.3 UI policy numbers independent of the cadence', () => {
     const scheduler = readSource('client/config.ts');
-    // `progressUi.delay`, `failureLinger` and `dialogAdoptDelay` are plain literals from §8.3. The
-    // block is asserted to contain nothing but numbers: an update frequency is a fact about server
-    // load and open tabs, and no UI duration may be a function of it.
+    // `progressUi.delay`, `failureLinger` and `dialogAdoptDelay` are plain literals from §8.3, with no
+    // reference to the cadence.
     const block = /const DEFAULT_UI_CONFIG: TaskwireUiConfig = \{[^}]*\}[^;]*;/.exec(scheduler)?.[0] ?? '';
     expect(block).toMatch(/delay: 250/);
     expect(block).toMatch(/failureLinger: 8000/);

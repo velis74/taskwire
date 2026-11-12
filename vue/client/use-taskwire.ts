@@ -14,9 +14,9 @@ let currentTaskwire: Taskwire | null = null;
 /**
  * The client, under its Python name (TW-TS-011).
  *
- * Memoised per `(axios instance, basePath)` pair: a composable called from twenty components must not
- * install twenty request interceptors on one axios instance. Called with no arguments it returns the
- * client already in use, creating a default one only if there is none.
+ * Memoised per `(axios instance, basePath)` pair, so one axios instance gets one request interceptor.
+ * Called with no arguments it returns the client already in use, creating a default one only if
+ * there is none.
  */
 export function use_taskwire(basePath?: string, axiosInstance?: AxiosInstance): Taskwire;
 export function use_taskwire(options?: TaskwireOptions): Taskwire;

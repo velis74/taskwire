@@ -9,27 +9,26 @@ import type { Aggregate, Result } from '../../wire/wire';
 export interface RegisterBinding {
   /** The namespace's register plus this tab's private operations (TW-REG-001, TW-PRIV-002). */
   entries: Ref<Operation<unknown>[]>;
-  /** No percentage on it, ever, and `null` at rest so the widget hides (TW-REG-011, TW-REG-017). */
+  /** The aggregate, with no percentage; `null` at rest (TW-REG-011, TW-REG-017). */
   aggregate: Ref<Aggregate | null>;
-  /** The one operation whose own percentage a footer may draw (TW-REG-013). */
+  /** The operation whose own percentage a footer draws (TW-REG-013). */
   selected: Ref<Operation<unknown> | null>;
-  /** Put a row into this tab's visible collection (§4.3); invisible to every other tab. */
+  /** Put a row into this tab's visible collection (§4.3); local to this tab. */
   show(operation: Operation<unknown>): void;
   /** Take the result and release the record, once (TW-RES-010). */
   collect(operation: Operation<unknown>): Promise<Result>;
-  /** The same release, with the value thrown away, and idempotent (TW-REST-008). */
+  /** Release the record without taking the result; idempotent (TW-REST-008). */
   dismiss(operation: Operation<unknown>): Promise<void>;
   /** Record `false` for this token in this client's override map (TW-DEL-006). */
   mute(operation: Operation<unknown>): void;
 }
 
 /**
- * The whole register surface a widget needs: the entries, the aggregate and the selection.
+ * The register surface of a widget: the entries, the aggregate and the selection.
  *
- * Subscribing is what starts the register poll, so a page that never mounts a register widget never
- * asks for `{prefix}`. The selection is FIFO and advances by itself when the selected operation
- * leaves (TW-TS-012); `client.select(token)` pins another and `select(null)` returns to the default.
- * There is no aggregate percentage to fall back to and never will be (TW-REG-011).
+ * Calling it starts the register poll. The selection is FIFO and advances when the selected
+ * operation leaves (TW-TS-012); `client.select(token)` pins another and `select(null)` returns to
+ * the default. The aggregate has no percentage (TW-REG-011).
  */
 export function use_register(options?: TaskwireOptions): RegisterBinding {
   const client = clientFor(options);

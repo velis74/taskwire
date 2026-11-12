@@ -1,53 +1,34 @@
 /**
  * The wire documents of specification §3, in TypeScript (TW-TS-000, TW-SYM-002).
  *
- * This module is the foundation the rest of the package sits on and it has no dependencies at all -
- * not axios, not vue, nothing (TW-CORE-006). It is the exact counterpart of `taskwire/models.py`,
- * and the two must agree document for document: they are one protocol with two implementations,
- * never two protocols (TW-SYM-002).
+ * No dependencies (TW-CORE-006). Counterpart of `taskwire/models.py`, document for document
+ * (TW-SYM-002).
  *
- * Four conventions run through the whole file:
+ * - The wire is snake_case, the API camelCase (TW-TS-000): `parseX` reads snake_case and returns
+ *   camelCase, `serializeX` does the reverse.
+ * - Absent and null are the same to a parser (TW-CORE-010). Every reader tests the value
+ *   (`isAbsent(raw.x)`), never the presence of the key; deleting explicit nulls from a document does
+ *   not change the parse.
+ * - Free-form bags are never renamed: `Progress.data`, `Result.params`, `Result.value`,
+ *   `Text.params`, `DialogRequest.params`, `DialogReply.values`, `Aggregate.data` and
+ *   `Envelope.body` (`OPAQUE_KEYS`).
+ * - `Aggregate` carries no percentage (TW-REG-009, TW-REG-011); `percent?: never` makes the field
+ *   unassignable. A footer bar draws the selected operation's own percentage (TW-REG-013).
  *
- * **The wire is snake_case, the API is camelCase** (TW-TS-000). `dialog_id` on the wire is
- * `dialogId` here, and the conversion happens in both directions - `parseX` reads snake_case and
- * hands back camelCase, `serializeX` does the reverse. Nothing in between the two speaks wire.
- *
- * **Absent and null are the same thing to a parser** (TW-CORE-010). Every reader below tests the
- * *value* (`isAbsent(raw.type)`), never the presence of the key. `'type' in raw ? ... : 'string'`
- * and Python's `raw.get("type", "string")` are the same bug written twice: both fire only on a
- * missing key, so an explicit `"type": null` sails past the default and lands a `null` in a field
- * whose type does not admit one. Deleting every explicit null from a document MUST NOT change what
- * a parser makes of it, and `wire.spec.ts` asserts exactly that over the whole golden corpus.
- *
- * **Free-form bags are not ours to rename.** `Progress.data`, `Result.params`, `Result.value`,
- * `Text.params`, `DialogRequest.params`, `DialogReply.values`, `Aggregate.data` and `Envelope.body`
- * are application data. An application that stored `{row_count: 5}` must read back `row_count`, not
- * `rowCount`; a caller that puts `waiting_input` into an aggregate's counts must find it there
- * again. The key-renaming pass therefore stops dead at `OPAQUE_KEYS` and copies the value through.
- *
- * **`Aggregate` is its own shape, not a `Progress` with a hole in it** (TW-REG-009, TW-REG-011).
- * It carries no percentage, and `percent?: never` on the interface is there to make the field
- * unwritable rather than merely absent: there is no unit in which two operations' self-reported
- * percentages are commensurable, so there is no honest number to publish. A footer that wants a bar
- * draws one selected operation's own percentage (TW-REG-013).
- *
- * Timestamps are RFC 3339 UTC strings with a `Z` suffix and stay strings (TW-CORE-010). Parsing one
- * into a `Date` would make the parse lossy in the one direction nobody checks - a `Date` serialized
- * by a different code path is a different string - and no consumer of this module needs one.
+ * Timestamps are RFC 3339 UTC strings with a `Z` suffix and stay strings (TW-CORE-010).
  */
 
-/** TW-CORE-011: bumped only on a breaking wire change, never on an implementation change. Package
- *  semver tracks the implementation and says nothing about this number. */
+/** TW-CORE-011: bumped only on a breaking wire change; independent of the package version. */
 export const WIRE_VERSION = 2;
 
-/** A JSON object as it travels: values are `unknown` because free-form bags are genuinely free. */
+/** A JSON object as it travels. */
 export type WireObject = Record<string, unknown>;
 
 // ---------------------------------------------------------------------------------------------
 // Closed vocabularies
 // ---------------------------------------------------------------------------------------------
 
-/** TW-PROG-001 / §4.1. There is no `received`: an operation begins at `queued`. */
+/** TW-PROG-001 / §4.1. An operation begins at `queued`. */
 export type ProgressState = 'queued' | 'running' | 'waiting_input' | 'done' | 'failed' | 'cancelled';
 
 /** Every `ProgressState` at runtime, in §4.1's order. */
@@ -66,7 +47,7 @@ export const TERMINAL_STATES: ReadonlySet<ProgressState> = new Set<ProgressState
 /** The two states that make a register "active" for the polling cadence and the FIFO selection. */
 export const ACTIVE_STATES: ReadonlySet<ProgressState> = new Set<ProgressState>(['queued', 'running']);
 
-/** §4.2. There is no `expired`: a dialog has no deadline to expire against (TW-DLG-005). */
+/** §4.2. A dialog has no deadline, so no expired state (TW-DLG-005). */
 export type DialogState = 'open' | 'answered' | 'cancelled';
 
 /** Every `DialogState` at runtime, in §4.2's order. */
@@ -76,9 +57,9 @@ export const DIALOG_STATES: readonly DialogState[] = ['open', 'answered', 'cance
  * TW-CORE-007: the vocabulary is closed at six kinds. A seventh is a breaking change that bumps
  * `WIRE_VERSION`, and `command` MUST NOT be added.
  *
- * `snapshot` is not a seventh kind (TW-CORE-008) - it is the pushed kinds bundled into one document,
- * spelled here only because it arrives on the same path. `dialog.reply` and `watch` originate with
- * the client and MUST NOT be pushed to one (TW-CORE-009).
+ * `snapshot` is not a seventh kind (TW-CORE-008): it bundles the pushed kinds into one document and
+ * arrives on the same path. `dialog.reply` and `watch` originate with the client and are never pushed
+ * to one (TW-CORE-009).
  */
 export type EnvelopeKind =
   'progress' | 'dialog.open' | 'dialog.close' | 'dialog.reply' | 'cancel' | 'watch' | 'snapshot';
@@ -116,9 +97,8 @@ export const INPUT_TYPES: readonly InputType[] = ['string', 'number', 'boolean',
 /**
  * §3.1. TW-TXT-001: every human-facing string is one of these. Any subset of the three is valid.
  *
- * A frontend that has `key` in its catalogue uses it and ignores `text`; one that does not falls
- * back to `text`. TW-TXT-003: this dual form does not apply to `icon` or `dialogId`, which are
- * opaque tokens rather than prose.
+ * A frontend that has `key` in its catalogue uses it and ignores `text`; otherwise it shows `text`.
+ * TW-TXT-003: `icon` and `dialogId` are opaque tokens, not `Text`.
  */
 export interface Text {
   key?: string | null;
@@ -176,10 +156,8 @@ export function exceptionName(name: string): string {
 }
 
 /**
- * §3.2's `Error`. Named `TaskwireError` because `Error` is the global exception type, and a wire
- * document that shadowed it would make `throw new Error(...)` unwritable in every module that
- * imported this one. It is a document, not a throwable: it carries no stack trace, deliberately,
- * because it reaches a browser (TW-PROG-005).
+ * §3.2's `Error`, named `TaskwireError` so it does not shadow the global `Error`. A document, not a
+ * throwable; it carries no stack trace (TW-PROG-005).
  *
  * The codes taskwire writes are the constants above, each with `message.key` equal to the code. Every
  * other `code` is written as given: a code the application passes (`Reporter.fail()`, `failWith()`)
@@ -192,10 +170,8 @@ export interface TaskwireError {
 }
 
 /**
- * §3.3. A pointer to an artefact the **application** owns.
- *
- * TW-RES-007: taskwire never creates, serves, refreshes, proxies, validates or deletes what is
- * behind `href`, and has no opinion about who may fetch it. It stores a pointer, never a file.
+ * §3.3. A pointer to an artefact the application owns. taskwire never creates, serves, refreshes,
+ * proxies, validates or deletes what is behind `href` (TW-RES-007).
  */
 export interface ResultRef {
   href: string;
@@ -207,23 +183,20 @@ export interface ResultRef {
 /**
  * §3.3. `kind` names the component that collects this and MUST equal the operation's declared
  * `resultKind`. The shipped kinds are `taskwire.download`, `taskwire.panel` and `taskwire.dialog`;
- * an application declares its own by passing its own string and taskwire never validates the set.
+ * any other string is accepted unvalidated.
  */
 export interface Result {
   kind: string;
   /** Free-form: interpolated by the collecting component. Its keys are the application's. */
   params?: WireObject | null;
   label?: Text | null;
-  /** Any JSON at all - an inline summary the collecting component renders. Never key-renamed. */
+  /** Any JSON: an inline summary the collecting component renders. Never key-renamed. */
   value?: unknown;
   ref?: ResultRef | null;
 }
 
 /**
- * §3.4. A choice on a dialog.
- *
- * There is no `default` flag: a default button existed only to answer a timeout, and there are no
- * timeouts (TW-DLG-005).
+ * §3.4. A choice on a dialog. No default button (TW-DLG-005).
  */
 export interface Button {
   id: string;
@@ -233,8 +206,7 @@ export interface Button {
 }
 
 /**
- * §3.4's `Input`. Named `InputField` because `Input` is a DOM global, and a shape that shadowed it
- * would be a trap in exactly the package that runs in a browser.
+ * §3.4's `Input`, named `InputField` so it does not shadow the DOM `Input`.
  */
 export interface InputField {
   name: string;
@@ -251,10 +223,7 @@ export interface DialogReply {
 }
 
 /**
- * §3.5. What `ask()` resolves with. Structurally a `DialogReply`, and deliberately a separate name:
- * one is a document that travelled, the other is a return value.
- *
- * There is no `timedOut` flag, because there is no second way for `ask()` to return (TW-DLG-007).
+ * §3.5. What `ask()` resolves with; structurally a `DialogReply` (TW-DLG-007).
  */
 export interface DialogAnswer {
   button: string;
@@ -262,11 +231,9 @@ export interface DialogAnswer {
 }
 
 /**
- * §3.4. One asking. `id` is *this asking*; `dialogId` is *which question* (TW-DLG-001).
- *
- * `id` is the only one of the two ever used as a key, a path segment or a store argument. Keying by
- * `dialogId` would let two concurrent operations rendering the same component answer each other's
- * question (TW-DLG-002, TW-INV-008).
+ * §3.4. One asking. `id` identifies this asking; `dialogId` the question, i.e. the frontend
+ * component (TW-DLG-001). Only `id` is used as a key, path segment or store argument (TW-DLG-002,
+ * TW-INV-008).
  */
 export interface DialogRequest {
   id: string;
@@ -283,10 +250,8 @@ export interface DialogRequest {
 /**
  * §3.2. The one document per operation.
  *
- * `resultKind`, `originSession` and `originConnection` are fixed at the opening write and never
- * rewritten (TW-PROG-006): an operation is private or shared from start to finish, and there is no
- * promotion rule. `state` is never written by a caller - it is derived from lifecycle events and
- * from nothing else (TW-PROG-012), which is why there is no `set(state=)` anywhere in the API.
+ * `resultKind`, `originSession` and `originConnection` are fixed at the opening write (TW-PROG-006).
+ * `state` is derived from lifecycle events and never written by a caller (TW-PROG-012).
  */
 export interface Progress {
   state: ProgressState;
@@ -300,10 +265,10 @@ export interface Progress {
   data: WireObject;
   error?: TaskwireError | null;
   result?: Result | null;
-  /** `null` = a private operation (TW-PRIV-001). Declaring a kind at start is the whole of sharing. */
+  /** `null` = a private operation; a kind makes it shared (TW-PRIV-001). */
   resultKind: string | null;
   originSession: string;
-  /** The connection that started it - the private scope (TW-PRIV-003). */
+  /** The connection that started it: the private scope (TW-PRIV-003). */
   originConnection: string | null;
   createdAt: string;
   updatedAt: string;
@@ -340,14 +305,10 @@ export interface OperationSummary {
 /**
  * §3.8a. Counts and a dominated state.
  *
- * **There is no `percent` here and no rule may reintroduce one** (TW-REG-011). `percent?: never` is
- * how that is enforced rather than merely documented: the field cannot be assigned a number, so the
- * shape cannot grow one back by way of a helpful pull request. The absent-from-the-wire form is the
- * point - not `percent: null`, which reads as an invitation to fill in.
+ * No percentage (TW-REG-011): `percent?: never` makes the field unassignable.
  *
- * The server never emits a `done` or `failed` state here (TW-REG-015): a terminal entry with nothing
- * to collect has already left the register, so no count and no domination can see one. The type
- * stays `ProgressState` to match Python's, which keeps the two parsers unable to disagree.
+ * The server never emits `done` or `failed` here (TW-REG-015): a terminal entry has left the
+ * register. The type is `ProgressState`, as in Python.
  */
 export interface Aggregate {
   /** `queued` | `running` | `waiting_input`, by domination (TW-REG-012). */
@@ -356,10 +317,10 @@ export interface Aggregate {
   title: Text;
   /** Names the selected entry (TW-REG-013). */
   label?: Text | null;
-  /** Counts `total`, `queued`, `running`, `waiting_input` - snake_case keys, never renamed. */
+  /** Counts `total`, `queued`, `running`, `waiting_input`: snake_case keys, never renamed. */
   data: Record<string, number>;
   updatedAt: string;
-  /** TW-REG-011: not "optional", *impossible*. See the note above. */
+  /** TW-REG-011: never present. */
   percent?: never;
 }
 
@@ -378,11 +339,9 @@ export interface Register {
  * §3.9. One pushed document, server to client. An envelope never travels client to server
  * (TW-CORE-009).
  *
- * `body` stays **raw wire** - snake_case, unconverted, exactly as Python keeps it a plain dict. Its
- * shape follows `kind` (`progress` → a `Progress`, `dialog.open` → a `DialogRequest`, `snapshot` → a
- * `Snapshot`, `cancel` → `{}`), so a consumer hands it to the matching `parseX`:
- * `parseProgress(envelope.body)`. Converting it here would mean guessing the shape from the kind in
- * the one place that has no business guessing.
+ * `body` stays raw wire: snake_case, unconverted, as in Python. Its shape follows `kind` (`progress`
+ * → a `Progress`, `dialog.open` → a `DialogRequest`, `snapshot` → a `Snapshot`, `cancel` → `{}`);
+ * a consumer parses it with the matching `parseX`, e.g. `parseProgress(envelope.body)`.
  *
  * `rev` gates the progress document only: a client applies `dialog.open` and `dialog.close` by
  * dialog id regardless of `rev`, and treats `cancel` as idempotent (TW-REV-006).
@@ -400,17 +359,16 @@ export interface Envelope {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * TW-CORE-010, in one place. Absent and null are the same thing, so every optional field below is
- * read through this and never through `in` or `Object.hasOwn`.
+ * TW-CORE-010: absent and null are the same; every optional field is read through this, never
+ * through `in` or `Object.hasOwn`.
  */
 function isAbsent(value: unknown): value is null | undefined {
   return value === null || value === undefined;
 }
 
 /**
- * A JSON object, as opposed to an array, a `Date`, a `Map` or a class instance. The prototype check
- * matters: `typeof x === 'object'` alone would let the key converter walk into a `Date` and hand
- * back `{}`.
+ * A JSON object, as opposed to an array, a `Date`, a `Map` or a class instance (checked by
+ * prototype).
  */
 function isPlainObject(value: unknown): value is WireObject {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -428,12 +386,12 @@ function fail(message: string): never {
   throw new TypeError(`taskwire wire: ${message}`);
 }
 
-/** RFC 3339 UTC with a `Z` suffix (TW-CORE-010). The only timestamp format in the system. */
+/** The current time, RFC 3339 UTC with a `Z` suffix (TW-CORE-010). */
 export function nowIso(): string {
   return new Date().toISOString();
 }
 
-/** Normalise a `Date` or an already-formatted string to the one timestamp format. */
+/** Normalise a `Date` or an already-formatted string to the timestamp format; `null` when absent. */
 export function toIso(value: Date | string | null | undefined): string | null {
   if (isAbsent(value)) return null;
   return typeof value === 'string' ? value : value.toISOString();
@@ -444,12 +402,7 @@ export function toIso(value: Date | string | null | undefined): string | null {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Keys whose *values* are application data and are copied through verbatim, at any depth.
- *
- * This is what keeps the converter honest. `{"data": {"row_count": 5}}` must come back with
- * `row_count`, because that key was never ours - the application chose it and the application reads
- * it. The same goes for an aggregate's `waiting_input` count, a dialog's `params` and an envelope's
- * `body`, which is a whole wire document in its own right and gets parsed by its own `parseX`.
+ * Keys whose values are application data, copied through verbatim at any depth.
  */
 export const OPAQUE_KEYS: ReadonlySet<string> = new Set(['data', 'params', 'value', 'values', 'body']);
 
@@ -458,7 +411,7 @@ function convertKeys(value: unknown, rename: (key: string) => string): unknown {
   if (!isPlainObject(value)) return value;
   const out: WireObject = {};
   Object.entries(value).forEach(([key, item]) => {
-    // The opaque key itself is spelled the same in both conventions; only its contents are spared.
+    // The opaque key itself is the same in both conventions; only its contents are spared.
     out[rename(key)] = OPAQUE_KEYS.has(key) ? item : convertKeys(item, rename);
   });
   return out;
@@ -467,21 +420,20 @@ function convertKeys(value: unknown, rename: (key: string) => string): unknown {
 /**
  * snake_case → camelCase, deeply, sparing the free-form bags named by `OPAQUE_KEYS`.
  *
- * Arrays are walked, everything that is not a plain object is passed through by reference -
- * including the contents of an opaque key, which is shared rather than cloned exactly as Python's
- * `raw.get("data")` shares its dict.
+ * Arrays are walked; everything that is not a plain object, and the contents of an opaque key, is
+ * passed through by reference.
  */
 export function toCamel(value: unknown): unknown {
   return convertKeys(value, (key) => key.replace(/_+([a-z0-9])/g, (_match, char: string) => char.toUpperCase()));
 }
 
-/** camelCase → snake_case, deeply, sparing the same bags. The exact inverse for wire field names. */
+/** camelCase → snake_case, deeply, sparing the same bags; the inverse of `toCamel` for wire field names. */
 export function toSnake(value: unknown): unknown {
   return convertKeys(value, (key) => key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`));
 }
 
 // ---------------------------------------------------------------------------------------------
-// Field readers - every one of them tests the value, never the key (TW-CORE-010)
+// Field readers: each tests the value, never the key (TW-CORE-010)
 // ---------------------------------------------------------------------------------------------
 
 function readObject(value: unknown, where: string): WireObject {
@@ -492,7 +444,7 @@ function optionalObject(value: unknown, where: string): WireObject | null {
   return isAbsent(value) ? null : readObject(value, where);
 }
 
-/** A free-form bag: absent, null and `{}` are one thing, and the contents are never inspected. */
+/** A free-form bag: absent and null read as `{}`; the contents are not inspected. */
 function readBag(value: unknown, where: string): WireObject {
   return isAbsent(value) ? {} : readObject(value, where);
 }
@@ -516,9 +468,8 @@ function optionalNumber(value: unknown, where: string): number | null {
 }
 
 /**
- * TW-REV-004: `rev` must stay inside `Number.MAX_SAFE_INTEGER` so JavaScript can compare it. The
- * check is here rather than at the call site because every integer on this wire is a `rev`, a byte
- * count or a millisecond count, and none of them may quietly lose their last digits.
+ * An integer within `Number.MAX_SAFE_INTEGER`, else a `TypeError` (TW-REV-004). Applies to every
+ * integer on the wire: `rev`, byte counts and millisecond counts.
  */
 function requiredInteger(value: unknown, where: string): number {
   const number = requiredNumber(value, where);
@@ -530,10 +481,7 @@ function optionalInteger(value: unknown, where: string): number | null {
 }
 
 /**
- * The trap this exists for: `raw.progressDelivery ?? true` is right and `'progress_delivery' in raw`
- * is wrong, and so is Python's `raw.get("progress_delivery", True)` - a default that fires only on a
- * missing key turns an explicit `null` into `false` while an omitted key stays `true`. Two documents
- * that TW-CORE-010 declares identical would then disagree about whether a bar is drawn.
+ * A boolean with `fallback` for an absent or null value (TW-CORE-010).
  */
 function readBoolean(value: unknown, fallback: boolean): boolean {
   return isAbsent(value) ? fallback : Boolean(value);
@@ -561,9 +509,8 @@ function readMember<T extends string>(value: unknown, allowed: readonly T[], whe
 // Text
 // ---------------------------------------------------------------------------------------------
 
+/** Parse a `Text`; an absent one reads as empty. */
 export function parseText(raw: unknown): Text {
-  // An absent `Text` is an empty one rather than an error: any subset of the three fields is valid,
-  // and the empty subset is a subset.
   const wire = isAbsent(raw) ? {} : readObject(raw, 'text');
   return {
     key: optionalString(wire.key, 'text.key'),
@@ -576,10 +523,10 @@ function optionalText(raw: unknown, where: string): Text | null {
   return isAbsent(raw) ? null : parseText(readObject(raw, where));
 }
 
+/** Serialise a `Text`, omitting absent fields and an empty `params`. */
 export function serializeText(text: Text): unknown {
   const out: WireObject = {};
   if (!isAbsent(text.key)) out.key = text.key;
-  // An empty bag is omitted, not written: `{"params": {}}` says nothing that absence does not.
   if (!isAbsent(text.params) && Object.keys(text.params).length > 0) out.params = text.params;
   if (!isAbsent(text.text)) out.text = text.text;
   return out;
@@ -589,6 +536,7 @@ export function serializeText(text: Text): unknown {
 // TaskwireError
 // ---------------------------------------------------------------------------------------------
 
+/** Parse a `TaskwireError`; `retryable` defaults to `false`. */
 export function parseTaskwireError(raw: unknown): TaskwireError {
   const wire = readObject(raw, 'error');
   return {
@@ -602,6 +550,7 @@ function optionalTaskwireError(raw: unknown, where: string): TaskwireError | nul
   return isAbsent(raw) ? null : parseTaskwireError(readObject(raw, where));
 }
 
+/** Serialise a `TaskwireError`. */
 export function serializeTaskwireError(error: TaskwireError): unknown {
   return { code: error.code, message: serializeText(error.message), retryable: error.retryable };
 }
@@ -610,6 +559,7 @@ export function serializeTaskwireError(error: TaskwireError): unknown {
 // Result / ResultRef
 // ---------------------------------------------------------------------------------------------
 
+/** Parse a `ResultRef` from wire snake_case. */
 export function parseResultRef(raw: unknown): ResultRef {
   const wire = readObject(raw, 'result.ref');
   return {
@@ -620,6 +570,7 @@ export function parseResultRef(raw: unknown): ResultRef {
   };
 }
 
+/** Serialise a `ResultRef` to wire snake_case, omitting absent fields. */
 export function serializeResultRef(ref: ResultRef): unknown {
   const out: WireObject = { href: ref.href };
   if (!isAbsent(ref.mime)) out.mime = ref.mime;
@@ -628,12 +579,11 @@ export function serializeResultRef(ref: ResultRef): unknown {
   return out;
 }
 
+/** Parse a `Result`; `params` and `value` keep their keys. */
 export function parseResult(raw: unknown): Result {
   const wire = readObject(raw, 'result');
   return {
     kind: requiredString(wire.kind, 'result.kind'),
-    // `params` and `value` are read straight off the wire object: whatever the application put in
-    // there comes back with the keys the application chose.
     params: optionalObject(wire.params, 'result.params'),
     label: optionalText(wire.label, 'result.label'),
     value: isAbsent(wire.value) ? null : wire.value,
@@ -645,6 +595,7 @@ function optionalResult(raw: unknown, where: string): Result | null {
   return isAbsent(raw) ? null : parseResult(readObject(raw, where));
 }
 
+/** Serialise a `Result`, omitting absent fields. */
 export function serializeResult(result: Result): unknown {
   const out: WireObject = { kind: result.kind };
   if (!isAbsent(result.params)) out.params = result.params;
@@ -658,6 +609,7 @@ export function serializeResult(result: Result): unknown {
 // Button / InputField
 // ---------------------------------------------------------------------------------------------
 
+/** Parse a `Button`. */
 export function parseButton(raw: unknown): Button {
   const wire = readObject(raw, 'button');
   return {
@@ -667,6 +619,7 @@ export function parseButton(raw: unknown): Button {
   };
 }
 
+/** Serialise a `Button`, omitting absent fields. */
 export function serializeButton(button: Button): unknown {
   const out: WireObject = { id: button.id };
   if (!isAbsent(button.label)) out.label = serializeText(button.label);
@@ -674,21 +627,20 @@ export function serializeButton(button: Button): unknown {
   return out;
 }
 
+/** Parse an `InputField`; `type` defaults to `string`, `required` to `false`. */
 export function parseInputField(raw: unknown): InputField {
   const wire = readObject(raw, 'input');
   return {
     name: requiredString(wire.name, 'input.name'),
-    // The default is on the *value*, not on the key. `'type' in wire ? wire.type : 'string'` would
-    // let `{"type": null}` through and produce an `InputField` whose type is none of TW-DLG-004's
-    // four - the same bug Python carries a comment about in `Input.from_dict`. The value is not
-    // checked against `INPUT_TYPES`, exactly as Python does not check it: a parser that rejected a
-    // type the other language accepts would break TW-SYM-002.
+    // An absent or null `type` reads as `string`. Not checked against `INPUT_TYPES`, as in Python
+    // (TW-SYM-002).
     type: (optionalString(wire.type, 'input.type') ?? 'string') as InputType,
     required: readBoolean(wire.required, false),
     label: optionalText(wire.label, 'input.label'),
   };
 }
 
+/** Serialise an `InputField`. */
 export function serializeInputField(input: InputField): unknown {
   const out: WireObject = { name: input.name, type: input.type, required: input.required };
   if (!isAbsent(input.label)) out.label = serializeText(input.label);
@@ -699,6 +651,7 @@ export function serializeInputField(input: InputField): unknown {
 // DialogReply / DialogAnswer / DialogRequest
 // ---------------------------------------------------------------------------------------------
 
+/** Parse a `DialogReply`; absent `values` read as `{}`. */
 export function parseDialogReply(raw: unknown): DialogReply {
   const wire = readObject(raw, 'dialog_reply');
   return {
@@ -707,19 +660,22 @@ export function parseDialogReply(raw: unknown): DialogReply {
   };
 }
 
+/** Serialise a `DialogReply`. */
 export function serializeDialogReply(reply: DialogReply): unknown {
   return { button: reply.button, values: reply.values };
 }
 
-/** A `DialogAnswer` is a `DialogReply` that has arrived; the wire form is the same document. */
+/** Parse a `DialogAnswer`; the wire form is a `DialogReply`. */
 export function parseDialogAnswer(raw: unknown): DialogAnswer {
   return parseDialogReply(raw);
 }
 
+/** Serialise a `DialogAnswer` as a `DialogReply`. */
 export function serializeDialogAnswer(answer: DialogAnswer): unknown {
   return serializeDialogReply(answer);
 }
 
+/** Parse a `DialogRequest` from wire snake_case; `state` defaults to `open`. */
 export function parseDialogRequest(raw: unknown): DialogRequest {
   const wire = readObject(raw, 'dialog_request');
   return {
@@ -734,6 +690,7 @@ export function parseDialogRequest(raw: unknown): DialogRequest {
   };
 }
 
+/** Serialise a `DialogRequest` to wire snake_case, omitting empty `inputs` and absent fields. */
 export function serializeDialogRequest(dialog: DialogRequest): unknown {
   const out: WireObject = {
     id: dialog.id,
@@ -752,6 +709,7 @@ export function serializeDialogRequest(dialog: DialogRequest): unknown {
 // Progress
 // ---------------------------------------------------------------------------------------------
 
+/** Parse a `Progress` from wire snake_case. */
 export function parseProgress(raw: unknown): Progress {
   const wire = readObject(raw, 'progress');
   return {
@@ -771,10 +729,11 @@ export function parseProgress(raw: unknown): Progress {
   };
 }
 
+/**
+ * Serialise a `Progress` to wire snake_case. The required fields are written even when null
+ * (`percent: null` is indeterminate, `result_kind: null` private); optional ones are omitted.
+ */
 export function serializeProgress(progress: Progress): unknown {
-  // The required fields are written whether or not they are null: `percent: null` is "indeterminate"
-  // and `result_kind: null` is "private", and both are statements rather than omissions. A reader is
-  // free to strip them anyway - TW-CORE-010 makes that unobservable.
   const out: WireObject = {
     state: progress.state,
     percent: progress.percent ?? null,
@@ -793,11 +752,12 @@ export function serializeProgress(progress: Progress): unknown {
   return out;
 }
 
-/** TW-PRIV-001: declaring a `resultKind` at start is the whole of being shared. */
+/** TW-PRIV-001: whether the operation declared a `resultKind`, i.e. is shared. */
 export function isShared(progress: Progress): boolean {
   return !isAbsent(progress.resultKind);
 }
 
+/** Whether the state is `done`, `failed` or `cancelled`. */
 export function isTerminal(progress: Progress): boolean {
   return TERMINAL_STATES.has(progress.state);
 }
@@ -806,6 +766,7 @@ export function isTerminal(progress: Progress): boolean {
 // Snapshot / OperationSummary / Aggregate / Register
 // ---------------------------------------------------------------------------------------------
 
+/** Parse a `Snapshot` from wire snake_case. */
 export function parseSnapshot(raw: unknown): Snapshot {
   const wire = readObject(raw, 'snapshot');
   return {
@@ -820,9 +781,8 @@ export function parseSnapshot(raw: unknown): Snapshot {
   };
 }
 
+/** Serialise a `Snapshot` to wire snake_case; `v` is always written (TW-CORE-012). */
 export function serializeSnapshot(snapshot: Snapshot): unknown {
-  // `v` is required and first: a client reading REST determines the wire version by the same path as
-  // one reading a push, and no document a client can receive is unversioned (TW-CORE-012).
   return {
     v: snapshot.v,
     token: snapshot.token,
@@ -835,22 +795,21 @@ export function serializeSnapshot(snapshot: Snapshot): unknown {
   };
 }
 
+/** The dialogs still `open`. */
 export function openDialogs(snapshot: Snapshot): DialogRequest[] {
   return snapshot.dialogs.filter((dialog) => dialog.state === 'open');
 }
 
 /**
- * TW-REG-004: `waiting_input`, **derived** rather than read off `progress.state`.
- *
- * TW-PROG-013's two causes are not alike and both are checked here: an open dialog holds a worker,
- * an uncollected result holds nothing at all. Reading the stored `state` instead would make this
- * agree with whatever the last writer happened to put there, which is the bug TW-PROG-010 forbids.
+ * TW-REG-004: `waiting_input`, derived from an open dialog or an uncollected result (TW-PROG-013),
+ * never read off `progress.state` (TW-PROG-010).
  */
 export function needsAttention(snapshot: Snapshot): boolean {
   if (openDialogs(snapshot).length > 0) return true;
   return !isAbsent(snapshot.progress.result) && !isTerminal(snapshot.progress);
 }
 
+/** Parse an `OperationSummary` from wire snake_case; `progress_delivery` defaults to `true`. */
 export function parseOperationSummary(raw: unknown): OperationSummary {
   const wire = readObject(raw, 'operation_summary');
   return {
@@ -864,6 +823,7 @@ export function parseOperationSummary(raw: unknown): OperationSummary {
   };
 }
 
+/** Serialise an `OperationSummary` to wire snake_case. */
 export function serializeOperationSummary(summary: OperationSummary): unknown {
   return {
     token: summary.token,
@@ -878,9 +838,9 @@ export function serializeOperationSummary(summary: OperationSummary): unknown {
 
 const AGGREGATE_TITLE_KEY = 'taskwire.aggregate.title';
 
+/** Parse an `Aggregate`; a `percent` on the wire is ignored (TW-REG-011). */
 export function parseAggregate(raw: unknown): Aggregate {
   const wire = readObject(raw, 'aggregate');
-  // `wire.percent` is not read, and there is no field here that could hold it if it were.
   return {
     state: readMember(wire.state, PROGRESS_STATES, 'aggregate.state'),
     title: optionalText(wire.title, 'aggregate.title') ?? { key: AGGREGATE_TITLE_KEY },
@@ -890,6 +850,7 @@ export function parseAggregate(raw: unknown): Aggregate {
   };
 }
 
+/** Serialise an `Aggregate` to wire snake_case. */
 export function serializeAggregate(aggregate: Aggregate): unknown {
   const out: WireObject = {
     state: aggregate.state,
@@ -901,6 +862,7 @@ export function serializeAggregate(aggregate: Aggregate): unknown {
   return out;
 }
 
+/** Parse a `Register` from wire snake_case. */
 export function parseRegister(raw: unknown): Register {
   const wire = readObject(raw, 'register');
   return {
@@ -912,6 +874,7 @@ export function parseRegister(raw: unknown): Register {
   };
 }
 
+/** Serialise a `Register` to wire snake_case. */
 export function serializeRegister(register: Register): unknown {
   return {
     v: register.v,
@@ -926,6 +889,7 @@ export function serializeRegister(register: Register): unknown {
 // Envelope
 // ---------------------------------------------------------------------------------------------
 
+/** Parse an `Envelope`; `body` stays raw wire. */
 export function parseEnvelope(raw: unknown): Envelope {
   const wire = readObject(raw, 'envelope');
   return {
@@ -933,11 +897,11 @@ export function parseEnvelope(raw: unknown): Envelope {
     token: requiredString(wire.token, 'envelope.token'),
     rev: requiredInteger(wire.rev, 'envelope.rev'),
     kind: readMember(wire.kind, ENVELOPE_KINDS, 'envelope.kind'),
-    // Raw, by design: the body's shape follows the kind and belongs to that kind's own parser.
     body: readBag(wire.body, 'envelope.body'),
   };
 }
 
+/** Serialise an `Envelope`. */
 export function serializeEnvelope(envelope: Envelope): unknown {
   return {
     v: envelope.v,

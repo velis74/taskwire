@@ -10,7 +10,7 @@ export const DEFAULT_BASE_PATH = '/taskwire';
 /** TW-CELERY-011: a header, never a query parameter. */
 export const TOKEN_HEADER = 'X-Taskwire-Token';
 
-/** TW-REST-002: one header serving two purposes - the private scope, and the delivery decision. */
+/** TW-REST-002: decides both the private scope and the delivery of pushes. */
 export const CONNECTION_HEADER = 'X-Taskwire-Connection';
 
 /** What `use_taskwire()` takes, and the pair a client is keyed by. */
@@ -23,7 +23,7 @@ export interface TaskwireOptions {
 
 export interface RunOptions {
   title?: Text;
-  /** Absent = a **private** operation, in nobody's register, reachable only by its token (TW-PRIV-001). */
+  /** Absent = a private operation, in nobody's register, reachable only by its token (TW-PRIV-001). */
   resultKind?: string;
   /** Keep this operation out of this tab's visible collection; it stays awaitable and in `tw.register`. */
   progressUi?: false;
@@ -45,17 +45,15 @@ export interface TrackOptions {
 export type KeyedCall<R> = PromiseLike<R> & { readonly key?: string };
 
 /**
- * The raw single-token surface. `subscribe()` hands back snapshots as they are read and nothing else -
- * no handle, no lifecycle, no promise.
- *
- * §5.5 names `Subscription` as what `subscribe()` returns without declaring its shape; this is it.
+ * What `subscribe()` returns (§5.5): snapshots as they are read, with no handle, lifecycle or
+ * promise.
  */
 export interface Subscription {
   readonly token: string;
   /** The most recent snapshot read, or `null` before the first one. */
   readonly snapshot: Snapshot | null;
   onSnapshot(callback: (snapshot: Snapshot) => void): () => void;
-  /** Transport and parse failures. A `404` is not an error here - it is an absence (TW-TS-004). */
+  /** Transport and parse failures. A `404` is an absence, not an error (TW-TS-004). */
   onError(callback: (error: unknown) => void): () => void;
   /** The token reached a terminal state or its document vanished; no further snapshot will arrive. */
   onClose(callback: () => void): () => void;
@@ -63,31 +61,22 @@ export interface Subscription {
 }
 
 /**
- * A push transport, from the client's side. `MuxwsClientTransport` (`taskwire/muxws`) and
+ * A push transport, from the client's side (§5.5). `MuxwsClientTransport` (`taskwire/muxws`) and
  * `ViewsetEventsTransport` (`taskwire/fastapi-viewsets`) implement it.
  *
- * Attaching one **suspends the polling ladder** for as long as it is attached and healthy
- * (TW-TS-007). The store is still the truth (TW-CORE-002), and `onHealth` is what protects that: a
- * transport that reports itself lost puts every ladder back on its base rung, and one read is the
- * whole of the recovery (TW-CORE-005). What a transport carries is what *changes*, so a held ladder
- * still owes its first read - a socket cannot announce the state a token was already parked in.
- *
- * §5.5 names `ClientTransport` in the client's surface without declaring its shape; this is it.
+ * Attaching one suspends the polling ladders while it is attached and healthy (TW-TS-007). A
+ * transport that reports itself lost puts every ladder back on its base rung, and the next read
+ * restores the state (TW-CORE-002, TW-CORE-005). A transport carries only changes, so a suspended
+ * ladder still performs its first read, except for a token this page minted, whose writes the server
+ * pushes to this page's socket.
  */
 export interface ClientTransport {
-  /**
-   * Every envelope the server pushes, and the way to stop taking them. `attachTransport()` is the
-   * one caller and the returned function is what detaching runs: an envelope that arrives after a
-   * detach reaches nothing, and the ladder that has just resumed is what carries the client.
-   */
+  /** Deliver every pushed envelope to `onEnvelope`; the returned function unsubscribes. */
   subscribe(onEnvelope: (envelope: Envelope) => void): () => void;
   /**
-   * Health as it changes - `false` when pushes stop arriving, `true` again when they resume - and
-   * the whole of what suspends and resumes polling (TW-TS-007).
-   *
-   * Optional, and the smallest signal that makes a loss observable. A transport that cannot tell
-   * counts as healthy for as long as it is attached, so `detachTransport()` - a single call - is
-   * then the only way back to the ladder.
+   * Health as it changes: `false` when pushes stop arriving, `true` when they resume. It suspends and
+   * resumes polling (TW-TS-007). A transport without it counts as healthy while attached, and only
+   * `detachTransport()` resumes polling.
    */
   onHealth?(listener: (healthy: boolean) => void): () => void;
   /**

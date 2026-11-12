@@ -1,29 +1,17 @@
 /**
  * The store port (§5.3) and the in-process implementation.
  *
- * This is the TypeScript half of the operating side (TW-SYM-001): a browser-only or Node-only
- * program uses the same store, the same documents and the same state machine as a Python service,
- * with no transport, no REST endpoint and no second process anywhere. `taskwire/store.py` is the
- * same file in the other language and the two must agree (TW-SYM-002).
+ * A browser-only or Node-only program uses the same store, documents and state machine as a Python
+ * service, in process (TW-SYM-001). Behaviourally identical to `taskwire/store.py` (TW-SYM-002).
  *
- * The store is the truth. Everything else in the library is an accelerator over it, and the two
- * rules that make that hold are worth stating before any code:
+ * - No read writes anything (TW-STORE-009, TW-INV-013): `snapshot()` and `listOperations()` leave
+ *   every key's TTL and content unchanged. Expiry is a stored deadline compared on read.
+ * - `rev` and the document it labels are written together (TW-REV-003). Atomic because no write
+ *   method awaits between read and write (TW-STORE-002); every write is `async` for the port and
+ *   synchronous in its body.
  *
- * **No read writes anything** (TW-STORE-009, TW-INV-013). `snapshot()` and `listOperations()` leave
- * every key's TTL and content byte-identical. This is why expiry is a stored deadline compared on
- * read rather than a background sweeper - a sweeper is a write, and a store that writes on read
- * grows a `:seen` key eventually.
- *
- * **`rev` and the document it labels are written together** (TW-REV-003). `commit` returns the same
- * `rev` a concurrent `snapshot()` reads alongside that same body, so a client can never see a `rev`
- * that belongs to a document it did not receive. Python gets that from a lock; JavaScript gets it
- * from being single-threaded, and the cost of the guarantee is a rule rather than a mutex: **the
- * read-modify-write inside a write method must never be split across an `await`.** Every write below
- * is `async` for the port's sake and synchronous in its body for that reason.
- *
- * There is deliberately no TypeScript `RedisStore` (TW-STORE-011). The store is a port; an
- * implementation that is not written is simply absent, and TW-STORE-012's conformance suite, in
- * `store/conformance.ts`, is what an application writing its own proves it against.
+ * Only `MemoryStore` ships in TypeScript (TW-STORE-011); another store is proven against the
+ * conformance suite in `store/conformance.ts` (TW-STORE-012).
  */
 
 import {
@@ -39,22 +27,16 @@ import {
 } from '../wire/wire';
 
 /**
- * TW-SEC-001 / TW-INV-007: `` `${ns}:${token}` ``, always.
- *
- * There is no code path that reaches the store without a namespace. The namespace is the only
- * authorization scope (TW-SEC-003); the token is an address inside it, never a grant.
+ * TW-SEC-001 / TW-INV-007: `` `${ns}:${token}` ``. The namespace is the only authorisation scope
+ * (TW-SEC-003); the token is an address inside it, never a grant.
  */
 export function key(ns: string, token: string): string {
   return `${ns}:${token}`;
 }
 
 /**
- * Recover `[ns, token]` from a key.
- *
- * Split on the **last** colon: a token is a UUID and contains none, but an application's namespace
- * may well contain one (`tenant:42`), and splitting on the first would silently mis-attribute every
- * one of that tenant's operations. A key with no colon at all yields an empty namespace, exactly as
- * Python's `rpartition` does.
+ * Recover `[ns, token]` from a key. Splits on the last colon, so a namespace may contain colons
+ * (`tenant:42`); a key with no colon yields an empty namespace, as Python's `rpartition` does.
  */
 export function splitKey(k: string): [string, string] {
   const cut = k.lastIndexOf(':');
@@ -63,11 +45,8 @@ export function splitKey(k: string): [string, string] {
 }
 
 /**
- * The only signal any caller may trust about who won a dialog race (TW-STORE-003).
- *
- * A union of the wire strings rather than a TypeScript `enum`, matching how `./wire` spells
- * `ProgressState` and `DialogState`: the values travel as those strings (§6.2 maps them to HTTP
- * statuses), and an `enum` would put a second spelling of each in front of the one that travels.
+ * The outcome of `resolveDialog`: the only signal of who won a dialog race (TW-STORE-003). §6.2 maps
+ * the values to HTTP statuses.
  */
 export type DialogResolution = 'accepted' | 'not_found' | 'already_answered' | 'cancelled';
 
@@ -80,15 +59,9 @@ export const DIALOG_RESOLUTIONS: readonly DialogResolution[] = [
 ];
 
 /**
- * The reserved button a withdrawal pushes onto a dialog's reply channel (TW-CANCEL-007).
- *
- * With dialog timeouts gone (TW-DLG-005), a sentinel on the reply channel is the ONLY thing that can
- * wake a worker blocked in `ask()`. It is a reserved name rather than a second channel or a separate
- * flag so that the waking path and the answering path are the same code - a second path is a second
- * place to forget to wake somebody.
- *
- * `ask()` recognises it and throws `OperationCancelled` whatever `raiseOnCancel` says (TW-DLG-012);
- * it is never returned to an application as an answer.
+ * The reserved button a withdrawal pushes onto a dialog's reply channel; it wakes a worker blocked in
+ * `ask()` (TW-CANCEL-007). `ask()` throws `OperationCancelled` on it whatever `raiseOnCancel` says,
+ * and never returns it (TW-DLG-012).
  */
 export const CANCELLED_BUTTON = '__taskwire_cancelled__';
 
@@ -96,19 +69,14 @@ export const CANCELLED_BUTTON = '__taskwire_cancelled__';
 const CANCELLED_SENTINEL: DialogReply = { button: CANCELLED_BUTTON, values: {} };
 
 /**
- * How long `awaitDialog` waits before re-reading (TW-BP-008).
- *
- * A liveness device inside the store, never a deadline offered to `ask()` - the loop it bounds has
- * no overall deadline at all. A lost wakeup costs this much latency instead of hanging forever.
+ * How long `awaitDialog` waits before re-reading, in ms (TW-BP-008). Not a deadline: a lost wakeup
+ * costs this much latency.
  */
 const AWAIT_POLL_MS = 5;
 
 /**
- * The dialog document no longer exists.
- *
- * A distinguishable fault, never an answer nobody gave (TW-DLG-008). `awaitDialog` rejects with
- * this; it must not resolve with a synthesised reply, because a caller cannot tell a synthesised
- * "cancel" from a user who pressed cancel.
+ * The dialog document no longer exists. `awaitDialog` rejects with it instead of resolving with a
+ * synthesised reply (TW-DLG-008).
  */
 export class DialogVanished extends Error {
   constructor(message = 'taskwire: the dialog document no longer exists') {
@@ -118,11 +86,8 @@ export class DialogVanished extends Error {
 }
 
 /**
- * What one commit reports back: the new `rev`, and the cancel flag that write saw.
- *
- * Both in one return because both are read on every commit and a networked store must not be asked
- * twice for one write's outcome (TW-STORE-014). The flag is the sticky one (TW-CANCEL-001) as it
- * stood when the document was written, which is what `Reporter.cancelled` then answers for free.
+ * What one commit reports back: the new `rev`, and the sticky cancel flag (TW-CANCEL-001) as that
+ * write saw it (TW-STORE-014).
  */
 export interface Commit {
   rev: number;
@@ -130,22 +95,15 @@ export interface Commit {
 }
 
 /**
- * TW-STORE-001: exactly these methods.
- *
- * An interface rather than an abstract class - TypeScript has no ABC, and a store is a port that an
- * application implements over whatever it already runs, not a base class it inherits from.
+ * The store port, TW-STORE-001: exactly these methods.
  *
  * Per-operation methods take an already-namespaced `key`; `listOperations` and `publish` take a bare
- * `ns`. That asymmetry is deliberate and is the shape of the authorization boundary.
- *
- * Every `ttl` is **seconds**, float, matching the Python side and `settings.activeTtl`.
+ * `ns`. Every `ttl` is seconds, float.
  */
 export interface TaskwireStore {
   /**
-   * Write the document and bump `rev` in one indivisible step.
-   *
-   * Resolves with the new `rev` and the cancel flag the same write saw, so a caller that refreshes
-   * `cancelled` after every commit needs no second round trip (TW-STORE-014).
+   * Write the document and bump `rev` in one indivisible step. Resolves with the new `rev` and the
+   * cancel flag the same write saw (TW-STORE-014).
    */
   commit(key: string, progress: Progress, ttl: number): Promise<Commit>;
 
@@ -155,11 +113,7 @@ export interface TaskwireStore {
   /** Refresh the expiry. Resolves `false` when the key is already gone. */
   touch(key: string, ttl: number): Promise<boolean>;
 
-  /**
-   * Every live **shared** operation of `ns`, plus anything of `ns` holding an open dialog.
-   *
-   * Unfiltered, with no parameter by which a caller could ask for less (TW-STORE-006).
-   */
+  /** Every live shared operation of `ns`, plus anything of `ns` holding an open dialog; unfiltered (TW-STORE-006). */
   listOperations(ns: string): Promise<Snapshot[]>;
 
   /** Write a dialog and bump `rev` atomically. */
@@ -171,7 +125,7 @@ export interface TaskwireStore {
   /** Flip every still-open dialog to `cancelled`; resolve with the ids flipped. */
   withdrawDialogs(key: string): Promise<string[]>;
 
-  /** Block until resolved. Takes **no deadline** - the caller has none to give (TW-DLG-005). */
+  /** Block until resolved. Takes no deadline (TW-DLG-005). */
   awaitDialog(key: string, did: string): Promise<DialogReply>;
 
   /** The single arbiter of the three release paths (TW-STORE-016). */
@@ -194,50 +148,35 @@ export interface TaskwireStore {
 }
 
 /**
- * What `publish()` hands an envelope to.
- *
- * Python's `MemoryStore.publish` imports `taskwire.reader` and calls `dispatch` directly. Here it is
- * injected instead, for one reason that is a fact about the host platform: this package runs in a
- * browser, where the whole reader-and-transport half may be absent from the bundle, and a static
- * import would drag it in for every application that only ever runs operations locally. The rule it
- * serves is unchanged - TW-CORE-003 still says a reporter never calls `notify()` itself, and the
- * hook a reader installs here is still the only path from a write to a push.
+ * What `publish()` hands an envelope to: the only path from a write to a push (TW-CORE-003).
+ * Injected, so the store does not import the reader and transports.
  */
 export type PublishHook = (ns: string, envelope: Envelope) => void | Promise<void>;
 
 /** How `MemoryStore` is told the time and where it publishes. Both are optional. */
 export interface MemoryStoreOptions {
-  /**
-   * Seconds since the epoch, as a float. Defaults to `Date.now() / 1000`, matching Python's
-   * `time.time()` so a test drives both languages' stores the same way.
-   */
+  /** Seconds since the epoch, as a float. Defaults to `Date.now() / 1000`, as Python's `time.time()`. */
   clock?: () => number;
-  /** Installed by the reader, or by an application wiring its own transport. */
+  /** The publish hook; without one `publish()` does nothing. */
   dispatch?: PublishHook;
 }
 
 /**
- * Present `waiting_input` while a dialog is open, without ever having written it.
+ * The stored progress with `waiting_input` derived on read while a dialog is open or a result is
+ * parked (TW-DLG-009, TW-PROG-010, TW-PROG-012).
  *
- * TW-DLG-009 says the state is `waiting_input` while a dialog is open and `running` again on
- * resolution. TW-PROG-010 and TW-PROG-012 say it must be **derived** and that no caller may write
- * it. Both hold at once only if the derivation happens on the way out.
- *
- * The copy is not tidiness. The reporter reads a snapshot, mutates the `Progress` it finds and
- * commits it back; handing it the same object with a derived state would persist that state, and an
- * operation would stay `waiting_input` after its last question closed - parked, with nothing left to
- * release it (TW-INV-006).
+ * Returns a copy, so a caller that commits the snapshot back does not persist the derived state
+ * (TW-INV-006).
  */
 function derivedProgress(entry: Entry): Progress {
   if (isTerminal(entry.progress)) return entry.progress;
   const hasOpen = Array.from(entry.dialogs.values()).some((dialog) => dialog.state === 'open');
-  // TW-PROG-013: an open dialog holds a worker; an uncollected result holds nothing at all.
-  // Both derive the same state and neither is written by a caller.
+  // TW-PROG-013: an open dialog and an uncollected result derive the same state.
   if (!hasOpen && entry.progress.result == null) return entry.progress;
   return { ...entry.progress, state: 'waiting_input' };
 }
 
-/** One operation's stored state. Not a wire shape - the store's own bookkeeping. */
+/** One operation's stored state; not a wire shape. */
 interface Entry {
   progress: Progress;
   rev: number;
@@ -245,17 +184,15 @@ interface Entry {
   expiresAt: number;
   dialogs: Map<string, DialogRequest>;
   cancelRequested: boolean;
-  /** One wakeup queue per dialog id: what wakes a worker blocked in `ask()`. Covered by `drop`. */
+  /** One wakeup queue per dialog id, read by `awaitDialog`. */
   replies: Map<string, DialogReply[]>;
 }
 
 /**
- * Single-process store. Ships in core (TW-STORE-011); the conformance suite runs against it.
+ * Single-process store (TW-STORE-011).
  *
- * No lock, unlike the Python twin: a JavaScript store has one thread, so a method whose body
- * contains no `await` is already indivisible against every other method. That is the whole of the
- * atomicity argument and it is also its whole fragility - adding an `await` inside `commit` would
- * silently break TW-STORE-002, with no test failing until two operations interleave.
+ * No lock: atomic because no write method awaits between read and write (TW-STORE-002). An `await`
+ * inside a write body breaks that.
  */
 export class MemoryStore implements TaskwireStore {
   private readonly clock: () => number;
@@ -266,7 +203,7 @@ export class MemoryStore implements TaskwireStore {
 
   /**
    * TW-KEY-003: shared operations only, `ns` → `token` → `createdAt`. A private operation is
-   * addressable but unlisted, and that is the whole of its privacy in the store (TW-PRIV-002).
+   * addressable but unlisted (TW-PRIV-002).
    */
   private readonly index = new Map<string, Map<string, string>>();
 
@@ -284,17 +221,12 @@ export class MemoryStore implements TaskwireStore {
 
   // -------------------------------------------------------------------------------- internals
 
-  /**
-   * The clock in milliseconds, which is what a `rev` is measured in (TW-REV-002).
-   *
-   * Derived from the injected clock rather than from `Date.now()` directly, so that a test which
-   * fakes time gets a `rev` on the faked scale. With the default clock this *is* `Date.now()`.
-   */
+  /** The injected clock in milliseconds, the unit of `rev` (TW-REV-002). */
   private nowMs(): number {
     return Math.round(this.clock() * 1000);
   }
 
-  /** The one timestamp format (RFC 3339 Z), read off the same clock as everything else here. */
+  /** RFC 3339 Z timestamp from the injected clock. */
   private nowIso(): string {
     return new Date(this.nowMs()).toISOString();
   }
@@ -307,11 +239,8 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * Lazy pruning of the two index structures (TW-KEY-003, TW-KEY-005).
-   *
-   * This is not a read side effect on the documents - it drops index members whose document has
-   * already expired, which is exactly what TW-STORE-006 requires of a listing read. The documents
-   * themselves are untouched.
+   * Drop index and asking-set members whose document has expired (TW-KEY-003, TW-KEY-005,
+   * TW-STORE-006). The documents are untouched.
    */
   private prune(ns: string): void {
     const index = this.index.get(ns);
@@ -329,7 +258,6 @@ export class MemoryStore implements TaskwireStore {
   }
 
   private buildSnapshot(k: string, entry: Entry): Snapshot {
-    // (see `derivedProgress` above - the state a reader sees is computed here, never stored)
     const [, token] = splitKey(k);
     return {
       v: WIRE_VERSION,
@@ -348,39 +276,29 @@ export class MemoryStore implements TaskwireStore {
   /**
    * TW-STORE-002: bump rev and write the document in one indivisible step.
    *
-   * Three rules meet here and each is easy to lose:
-   *
-   * TW-STORE-010 freezes `state` once terminal - a later commit may still update `label`, `data` and
-   * `updatedAt`, and the store enforces that rather than trusting the caller, so a cleanup `set()`
-   * cannot flip a cancelled operation back to `running` (TW-INV-014).
-   *
-   * TW-PROG-006 freezes `resultKind`, `originSession` and `originConnection` at the opening write.
-   * There is no promotion rule: an operation is private or shared from start to finish.
-   *
-   * TW-REV-002 seeds a new document's `rev` from `max(nowMs, previous + 1)`. Seeding from zero would
-   * let a key that expired under a live operation resurrect below the client's last-seen value, and
-   * every subsequent envelope would be dropped by client dedup - a bar frozen at 97 % with no error
-   * anywhere. The expired document's `rev` is read back for the same reason: the *client* did not
-   * forget it just because the key did.
+   * - TW-STORE-010: `state`, `error` and `result` are frozen once terminal; display fields still
+   *   update (TW-INV-014).
+   * - TW-PROG-006: `resultKind`, `originSession`, `originConnection` and `createdAt` keep the opening
+   *   write's values.
+   * - TW-REV-002: `rev` is `max(nowMs, previous + 1)`, where `previous` includes an expired
+   *   document's `rev`, so a re-created document never goes below a client's last-seen value.
    */
   async commit(key: string, progress: Progress, ttl: number): Promise<Commit> {
     const [ns, token] = splitKey(key);
     const existing = this.live(key);
     const previousRev = existing?.rev ?? this.entries.get(key)?.rev ?? 0;
 
-    // A copy, so that a caller holding the argument cannot mutate what the store decided to keep.
-    // Shallow by design: `data`, `params` and `value` are the application's own objects and are
-    // shared rather than cloned, exactly as the Python side shares its dicts.
+    // A shallow copy: `data`, `params` and `value` are shared, as in the Python store.
     const written: Progress = { ...progress };
 
     if (existing !== undefined) {
       if (isTerminal(existing.progress)) {
-        // Terminal is final. Display fields may still be corrected; the state may not.
+        // TW-STORE-010: terminal is final.
         written.state = existing.progress.state;
         written.error = existing.progress.error;
         written.result = existing.progress.result;
       }
-      // Write-once fields keep whatever the opening write put there.
+      // TW-PROG-006: write-once fields.
       written.resultKind = existing.progress.resultKind;
       written.originSession = existing.progress.originSession;
       written.originConnection = existing.progress.originConnection;
@@ -401,12 +319,8 @@ export class MemoryStore implements TaskwireStore {
     entry.expiresAt = this.clock() + ttl;
     this.entries.set(key, entry);
 
-    // TW-KEY-003: indexed only if shared. The privacy decision was made at the opening write and is
-    // read back off the stored document, never off this call's argument.
-    //
-    // A terminal document is never in the register (TW-REG-007), and the store enforces that rather
-    // than trusting the caller to follow a write with a de-registration: the two would be two steps,
-    // and a reader between them would see a `failed` row.
+    // TW-KEY-003: indexed only if shared, judged on the stored write-once fields. A terminal write
+    // de-indexes in the same step (TW-REG-007).
     if (isTerminal(written)) {
       this.index.get(ns)?.delete(token);
     } else if (isShared(written)) {
@@ -417,7 +331,7 @@ export class MemoryStore implements TaskwireStore {
     return { rev, cancelled: entry.cancelRequested };
   }
 
-  /** TW-RET-002's half of the keepalive. Refreshing an expiry is a write, and is not a read. */
+  /** Refresh the expiry (TW-RET-002). Resolves `false` when the key is gone. */
   async touch(key: string, ttl: number): Promise<boolean> {
     const entry = this.live(key);
     if (entry === undefined) return false;
@@ -432,9 +346,7 @@ export class MemoryStore implements TaskwireStore {
     entry.cancelRequested = true;
     entry.rev = Math.max(this.nowMs(), entry.rev + 1);
 
-    // TW-CANCEL-007: a worker blocked in `ask()` must wake IMMEDIATELY. With dialog timeouts gone
-    // (TW-DLG-005) a sentinel on the reply channel is the only thing that can wake it - otherwise a
-    // cancelled operation sits on its question until something outside kills it.
+    // TW-CANCEL-007: open dialogs are cancelled and a worker blocked in `ask()` wakes at once.
     for (const [did, dialog] of entry.dialogs) {
       if (dialog.state !== 'open') continue;
       dialog.state = 'cancelled';
@@ -453,27 +365,20 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * TW-STORE-015. Idempotent by construction: a token already under `toNs` is left alone.
+   * TW-STORE-015: re-key every operation of `fromNs` onto `toNs`; resolves with the number moved.
    *
-   * That skip is the whole of the idempotence, and it is also what makes the call unable to clobber
-   * the destination - which matters because the one caller is an application merging an anonymous
-   * session onto a freshly established account (TW-AMB-011, TW-SEC-008).
-   *
-   * Publishes nothing. A migration is a bulk re-keying, not a state change any client is waiting to
-   * hear about; the client's next register read under the new namespace is the recovery
-   * (TW-AMB-012).
+   * Idempotent: a token already under `toNs` is left alone and the source is discarded, so the
+   * destination is never overwritten (TW-AMB-011, TW-SEC-008). Publishes nothing (TW-AMB-012).
    */
   async migrate(fromNs: string, toNs: string): Promise<number> {
     const prefix = `${fromNs}:`;
-    // Pairs rather than keys: the entry travels with its key, so there is no second lookup to guard
-    // against and no branch for a document that cannot be missing.
     const sources = Array.from(this.entries.entries()).filter(([k]) => k.startsWith(prefix));
     let moved = 0;
 
     sources.forEach(([source, entry]) => {
       const [, token] = splitKey(source);
       const destination = key(toNs, token);
-      // The source leaves `fromNs` either way - it is moved or it is discarded, never merged.
+      // The source leaves `fromNs` either way: moved or discarded, never merged.
       this.entries.delete(source);
       const created = this.index.get(fromNs)?.get(token);
       const wasAsking = this.asking.get(fromNs)?.delete(token) ?? false;
@@ -498,43 +403,38 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * TW-CORE-004: drives the reader, in process.
+   * TW-CORE-004: hand the envelope to the publish hook, in process.
    *
-   * TW-STORE-008: MUST NOT reject. A publish is a notification that state already changed; the state
-   * is safely written by the time we get here, so a failure to announce it is a latency problem and
-   * never a correctness one (TW-CORE-002). Both halves of "cannot fail" are covered - a hook that
-   * throws synchronously and one that returns a rejected promise - because `await` inside `try`
-   * catches both and only one of them is obvious.
+   * TW-STORE-008: never rejects. A hook that throws synchronously or rejects is swallowed; the state
+   * is already written (TW-CORE-002).
    */
   async publish(ns: string, envelope: Envelope): Promise<void> {
     if (this.dispatch === undefined) return;
     try {
       await this.dispatch(ns, envelope);
     } catch {
-      // Swallowed, deliberately and without a rethrow of any kind (TW-INV-012).
+      // TW-STORE-008: never rejects (TW-INV-012).
     }
   }
 
   // -------------------------------------------------------------------------------- reads
 
-  /** TW-STORE-009: leaves TTL and content byte-identical. */
+  /** TW-STORE-009: leaves TTL and content unchanged. */
   async snapshot(key: string): Promise<Snapshot | null> {
     const entry = this.live(key);
     if (entry === undefined) return null;
     return this.buildSnapshot(key, entry);
   }
 
+  /** The sticky cancel flag; `false` for a missing key. */
   async isCancelled(key: string): Promise<boolean> {
     const entry = this.live(key);
     return entry !== undefined && entry.cancelRequested;
   }
 
   /**
-   * TW-STORE-006, as a union of two terms rather than "everything the index holds".
-   *
-   * The index holds shared operations only, and a private operation holding an open dialog must be
-   * listed for exactly as long as it asks (TW-PRIV-004). The asking set is the second term, and it is
-   * what carries that operation into the listing.
+   * TW-STORE-006: the union of the shared index and the asking set, so a private operation is
+   * listed for exactly as long as it holds an open dialog (TW-PRIV-004).
    */
   async listOperations(ns: string): Promise<Snapshot[]> {
     this.prune(ns);
@@ -550,8 +450,7 @@ export class MemoryStore implements TaskwireStore {
     tokens.forEach((token) => {
       const k = key(ns, token);
       const entry = this.live(k);
-      // Pruned above, but a document can expire between the prune and here. Silently drop it rather
-      // than returning a hole.
+      // A document may expire between the prune and here; it is skipped.
       if (entry !== undefined) snapshots.push(this.buildSnapshot(k, entry));
     });
     return snapshots;
@@ -560,11 +459,8 @@ export class MemoryStore implements TaskwireStore {
   // -------------------------------------------------------------------------------- dialogs and results
 
   /**
-   * Write a dialog and bump `rev` atomically (TW-STORE-002).
-   *
-   * Adds the token to the asking set, which is the only thing that set is for (TW-KEY-005): it
-   * answers TW-STORE-006's second term, so a private operation is listed for exactly as long as it
-   * holds a question. It is not a subscription, not a watcher list, and never an authorization scope.
+   * Write a dialog and bump `rev` atomically (TW-STORE-002), and add the token to the asking set
+   * (TW-KEY-005). Resolves `0` when the key is gone.
    */
   async putDialog(key: string, dialog: DialogRequest, ttl: number): Promise<number> {
     const entry = this.live(key);
@@ -576,8 +472,7 @@ export class MemoryStore implements TaskwireStore {
     entry.rev = Math.max(this.nowMs(), entry.rev + 1);
     entry.expiresAt = this.clock() + ttl;
 
-    // TW-PRIV-004: privacy never narrows the dialog family. A question nobody can see is a worker
-    // nobody can free (TW-INV-005, TW-INV-022).
+    // TW-PRIV-004: private operations join the asking set too (TW-INV-022).
     const asking = this.asking.get(ns) ?? new Set<string>();
     asking.add(token);
     this.asking.set(ns, asking);
@@ -585,16 +480,11 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * **The single arbiter of first-answer-wins** (TW-STORE-003).
+   * The single arbiter of first-answer-wins (TW-STORE-003).
    *
    * Atomically: verify the dialog is still `open`, record the reply, flip it to `answered`, bump
-   * `rev`, wake any waiter, return ACCEPTED. Otherwise return the reason and change NOTHING.
-   *
-   * Its return value is the ONLY signal any caller may trust about who won. A caller reading the
-   * document instead would be reading it after the race rather than during it, and two tabs
-   * answering at once would both believe they had.
-   *
-   * There is no `await` in this body, and that - not a lock - is what makes it atomic here.
+   * `rev`, wake any waiter, return `accepted`. Otherwise return the reason and change nothing. The
+   * return value is the only signal of who won.
    */
   async resolveDialog(key: string, did: string, reply: DialogReply): Promise<DialogResolution> {
     const entry = this.live(key);
@@ -613,12 +503,8 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * Flip every still-open dialog to `cancelled`, through the same arbiter (TW-STORE-004).
-   *
-   * A dialog a reply reached first is left `answered` - the two paths race and exactly one wins,
-   * which is why they share this code rather than each having their own idea of the state. Called
-   * when an operation goes terminal (TW-CANCEL-011) and when a cancel is observed, so a dialog can
-   * never outlive the operation that asked it.
+   * Flip every still-open dialog to `cancelled` and wake its waiter (TW-STORE-004, TW-CANCEL-011);
+   * resolve with the ids flipped. A dialog a reply reached first stays `answered`.
    */
   async withdrawDialogs(key: string): Promise<string[]> {
     const entry = this.live(key);
@@ -632,8 +518,7 @@ export class MemoryStore implements TaskwireStore {
       this.wake(entry, did, CANCELLED_SENTINEL);
     }
     if (withdrawn.length > 0) {
-      // One bump for the whole withdrawal: it is a single change of the operation's situation, and
-      // `rev` labels the document rather than the dialogs.
+      // One `rev` bump for the whole withdrawal.
       entry.rev = Math.max(this.nowMs(), entry.rev + 1);
       this.releaseAskingIfQuiet(key, entry);
     }
@@ -641,16 +526,9 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * Block until the dialog is resolved. **Takes no deadline** (TW-DLG-005, TW-STORE-005).
-   *
-   * The caller has none to give: `ask()` has no timeout, no default answer and no `DialogTimeout`,
-   * and their absence is the design. What ends this wait is a reply, a withdrawal, or the document
-   * disappearing - and the last of those raises `DialogVanished`, because a vanished question is a
-   * distinguishable fault rather than an answer nobody gave (TW-DLG-008).
-   *
-   * The wait RE-READS the dialog on every wakeup (TW-BP-008), so a lost notification degrades to
-   * poll latency instead of hanging forever. That bound is a liveness device inside the store; it is
-   * never a deadline offered to `ask()`.
+   * Resolve with the reply, or with `CANCELLED_BUTTON` on a withdrawal; reject with
+   * `DialogVanished` when the document is gone (TW-DLG-008). No deadline (TW-DLG-005, TW-STORE-005);
+   * re-reads every `AWAIT_POLL_MS` (TW-BP-008).
    */
   async awaitDialog(key: string, did: string): Promise<DialogReply> {
     for (;;) {
@@ -679,11 +557,8 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * Leave the asking set once no dialog under this token is still `open` (TW-KEY-005).
-   *
-   * Membership is a fact about a token's *dialogs*, so it never makes a private operation shared:
-   * the moment its last question closes it leaves the set and the entry leaves the register, while
-   * `resultKind` stays what it was at start (TW-PROG-006).
+   * Leave the asking set once no dialog under this token is still `open` (TW-KEY-005). A private
+   * operation then leaves the listing; `resultKind` is unchanged (TW-PROG-006).
    */
   private releaseAskingIfQuiet(key: string, entry: Entry): void {
     for (const dialog of entry.dialogs.values()) {
@@ -694,12 +569,9 @@ export class MemoryStore implements TaskwireStore {
   }
 
   /**
-   * **The single arbiter of the three release paths** (TW-STORE-016, TW-RES-010).
-   *
-   * Collection, dismissal and the `resultTtl` backstop all come through here, so a collect racing a
-   * dismiss releases exactly once. That matters more than it looks: each release fires
-   * `resultReleased`, and an application deleting its own artefact in that hook would otherwise
-   * delete it twice.
+   * The single arbiter of the three release paths (TW-STORE-016, TW-RES-010): collection, dismissal
+   * and the `resultTtl` backstop. A race releases once, so `resultReleased` fires once. Resolves with
+   * the result and writes `done`, or `null` when nothing is releasable.
    */
   async releaseResult(key: string): Promise<Result | null> {
     const entry = this.live(key);
@@ -707,8 +579,7 @@ export class MemoryStore implements TaskwireStore {
     const { progress } = entry;
     if (progress.result == null || isTerminal(progress)) return null;
 
-    // A blocked worker is not a collectable result (TW-REST-008). The operation is in
-    // `waiting_input` for the other reason, and releasing here would end a job still running.
+    // An open dialog means the job is still running: nothing to release (TW-REST-008).
     for (const dialog of entry.dialogs.values()) {
       if (dialog.state === 'open') return null;
     }
@@ -717,8 +588,7 @@ export class MemoryStore implements TaskwireStore {
     progress.result = null;
     progress.state = 'done';
     entry.rev = Math.max(this.nowMs(), entry.rev + 1);
-    // The write that ends an operation takes it out of the register, wherever that write happens
-    // (TW-REG-007). This one ends it as surely as a terminal `commit` does.
+    // The ending write de-indexes the operation (TW-REG-007).
     const [ns, token] = splitKey(key);
     this.index.get(ns)?.delete(token);
     return released;

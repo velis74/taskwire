@@ -15,22 +15,21 @@ function statusOf(error: unknown): number | null {
 /**
  * One token, one loop, `GET {prefix}/{token}` on the ladder of `poll.ts` (TW-REST-011).
  *
- * The absence rule is TW-TS-004 and it is the subtle one. A `404` before the operation has ever been
- * seen means *not written yet* - the dispatcher has the request and has not committed the opening
- * document, or a worker has not picked it up - and the client keeps looking. The search ends when the
- * operation appears, or when `fn`'s promise settles and the next look still finds nothing, at which
- * point the handle is dropped **silently**: nothing failed, there was simply never an operation. A
- * `404` *after* the operation has been seen is a disappearance and terminates the handle.
+ * Absence (TW-TS-004): a `404` before the operation has been seen means *not written yet*, and the
+ * loop keeps looking. The search ends when the operation appears, or when `fn`'s promise has settled
+ * and the next read still finds nothing; the handle is then dropped silently. Settling `fn` does not
+ * end the search by itself, because `fn` resolves when the operation starts, not when it ends. A
+ * `404` after the operation has been seen is a disappearance and terminates the handle.
  *
- * That "and the next look" matters: `fn` is the request that *starts* the operation and routinely
- * resolves in 50 ms while the work runs for a minute, so settling `fn` may not end the search on the
- * spot. One more read decides it.
+ * A terminal snapshot is the token's last state (TW-STORE-010, TW-REG-007): the loop stops on it.
  *
- * A terminal snapshot is the last state the token will ever be in - the store freezes it there
- * (TW-STORE-010) and the entry leaves the register in the step that writes it (TW-REG-007) - so the
- * loop stops on it and reads no further, whatever the document does afterwards.
+ * While a transport is attached and healthy the ladder is suspended; on loss it resumes on the base
+ * rung (TW-TS-007). The first read is performed even while suspended, unless this page minted the
+ * token: a transport carries only changes, and a token parked on an open question pushes nothing
+ * until it ends (TW-CANCEL-011, TW-INV-004).
+ *
+ * @internal
  */
-/** @internal */
 export class TokenPoller {
   private readonly ladder = new PollLadder();
 
@@ -41,16 +40,16 @@ export class TokenPoller {
   /** No timer while this holds: a transport is attached and healthy (TW-TS-007). */
   private suspended = false;
 
-  /** Whether this loop wants a timer at all - a handle or a subscription has asked for one. */
+  /** A handle or a subscription has asked for this loop. */
   private wanted = false;
 
-  /** Whether a read is in flight, so suspending and resuming across one cannot double the timer. */
+  /** A read is in flight. */
   private reading = false;
 
-  /** A read this client's own write asked for while one was already on the wire. */
+  /** A read requested by this client's own write while another read was in flight. */
   private owed = false;
 
-  /** Whether a read has ever been asked for on this token. A held ladder still owes the first one. */
+  /** A read has been scheduled on this token. */
   private opened = false;
 
   private seen = false;
@@ -59,8 +58,8 @@ export class TokenPoller {
   private searchOver = false;
 
   /**
-   * This page minted the token (`run()`, `trackCall()`, `tw.busy`): the server pushes what it writes
-   * to this page's socket, so a healthy transport owes it no read (TW-TS-007).
+   * This page minted the token: the server pushes its writes to this page's socket, so a suspended
+   * loop performs no first read for it (TW-TS-007).
    */
   private minted = false;
 
@@ -78,13 +77,8 @@ export class TokenPoller {
   ) {}
 
   /**
-   * Ask for this token, and keep asking unless a transport is carrying it (TW-TS-007).
-   *
-   * The first read is owed either way. A transport pushes what *changes*, so a token that is parked
-   * on an open question pushes nothing at all until it ends (TW-CANCEL-011 withdraws it with no
-   * `dialog.close`), and a handle that had never read would draw neither the question nor the state
-   * it is waiting in (TW-INV-004) - and never meet the `404` that TW-TS-004 decides an absence on.
-   * Held, that read is the only one: `tick()` schedules no rung while suspended.
+   * Start reading this token. While suspended only the first read is performed, and none for a
+   * minted token (TW-TS-007).
    */
   start(): void {
     this.wanted = true;
@@ -121,35 +115,22 @@ export class TokenPoller {
     }, DEFAULT_POLL_SETTINGS.ceilingMs);
   }
 
-  /**
-   * Hold this token's loop while a transport carries it, and let it go again on detach or on loss
-   * (TW-TS-007).
-   *
-   * Resuming starts from the base rung: where the climb had reached when a socket arrived says
-   * nothing about how often the token is changing now, and coming back at the five second ceiling
-   * would make the recovery this exists for take five seconds to begin. The read this loop owes is
-   * not the ladder's and is not suspended with it - a token parked on an open question pushes
-   * nothing until it ends, so a handle that never read would draw neither the question nor the state
-   * it waits in (TW-TS-007, TW-INV-004).
-   */
+  /** Suspend or resume the ladder (TW-TS-007). Resuming starts on the base rung. */
   setSuspended(suspended: boolean): void {
     if (this.suspended === suspended || this.stopped) return;
     this.suspended = suspended;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     if (suspended) {
-      // The read this loop owes may be scheduled rather than taken, and clearing the timer without
-      // reinstating it would leave a token that pushes nothing until it ends - a question already
-      // open - with no document at all (TW-TS-007).
+      // Reinstate the first read if it was only scheduled (TW-TS-007).
       if (this.wanted && !this.opened && !this.minted) this.schedule(null, null);
       return;
     }
-    // A read still in flight schedules the next rung itself; scheduling here as well would leave
-    // two timers running with only the second reachable.
+    // A read in flight schedules the next rung itself.
     if (this.wanted && !this.reading) this.scheduleResume();
   }
 
-  /** The first rung after a suspension: the base one, whatever the ladder's rules would say. */
+  /** Schedule the first read after a suspension on the base rung. */
   private scheduleResume(): void {
     if (this.stopped) return;
     this.opened = true;
@@ -160,26 +141,14 @@ export class TokenPoller {
   }
 
   /**
-   * Read now, and climb again from the base rung: this client has just written to the token.
+   * Read now and restart the ladder from the base rung, after this client wrote to the token (§8.2).
    *
-   * The rung in flight was chosen for the situation *before* the write, and the two situations a
-   * write ends are the two the ladder answers with its ceiling (§8.2). Answering the question a
-   * worker was parked on releases that worker at once and leaves the next read up to five seconds
-   * away, so the bar stands still through everything the job does next and moves only when something
-   * else happens to be read; releasing an uncollected result is the same shape. A write is a change
-   * this client knows about before any read could tell it, which is the one case the interval rules
-   * cannot express.
-   *
-   * Nothing here while a transport carries the token: it delivers the same change sooner, and the
-   * ladder is held for exactly that reason (TW-TS-007). `force` reads regardless: a settled viewset
-   * call is decided by one read of its token, and a call the server did not track pushes nothing
-   * that could decide it (TW-TS-019).
+   * Does nothing while suspended (TW-TS-007), unless `force`: a settled call is decided by one read
+   * of its token (TW-TS-019).
    */
   readNow(force = false): void {
     if (this.stopped || !this.wanted || (this.suspended && !force)) return;
-    // A read on the wire was issued before the write landed, so it will answer with the document as
-    // it stood before it. The request is owed rather than dropped, and `tick()` issues it on the way
-    // out - where it also knows the rung it would otherwise have scheduled is the wrong one.
+    // A read in flight predates the write: `tick()` issues this one when it lands.
     if (this.reading) {
       this.owed = true;
       return;
@@ -196,12 +165,8 @@ export class TokenPoller {
   }
 
   /**
-   * Take the handle a push adopted for this token, if this loop has none of its own.
-   *
-   * One token is one handle and one poller (TW-TS-005), and the two halves have to be the same
-   * pair: a `subscribe()` token whose handle the loop did not hold would never be finished by the
-   * terminal read, never refreshed by the reads that resume on detach, and never released - it
-   * would sit in the client's map for the life of the page.
+   * Take the handle a push adopted for this token, if this loop has none of its own; one token is
+   * one handle and one poller (TW-TS-005).
    */
   adoptHandle(handle: Operation<unknown>): void {
     if (this.handle === null) this.attachHandle(handle);
@@ -222,15 +187,14 @@ export class TokenPoller {
     this.maybeStop();
   }
 
-  /** `fn` settled. Not a reason to stop - a reason to stop *searching* on the next absence. */
+  /** `fn` settled: the next absence ends the search (TW-TS-004). */
   searchIsOver(): void {
     this.searchOver = true;
   }
 
   /**
-   * The one place in the package that produces a delay, and it goes straight into `setTimeout` and
-   * nowhere else (TW-THR-007). `PollLadder` carries the previous **un-jittered** interval, so the
-   * caller never has to - and never gets the chance to feed a jittered number back into the climb.
+   * Schedule the next read after the ladder's next jittered delay, which goes only into `setTimeout`
+   * (TW-THR-007). `PollLadder` keeps the un-jittered interval.
    */
   private schedule(snapshot: Snapshot | null, previousRev: number | null): void {
     this.opened = true;
@@ -243,7 +207,7 @@ export class TokenPoller {
 
   private async tick(): Promise<void> {
     if (this.stopped) return;
-    // Captured before `deliver()` moves it: the ladder is asking whether *this* read changed anything.
+    // Captured before `deliver()` moves it.
     const previousRev = this.lastRev;
     let snapshot: Snapshot | null = null;
     let absent = false;
@@ -251,9 +215,8 @@ export class TokenPoller {
     try {
       snapshot = parseSnapshot(await this.client.calls.snapshot(this.token));
     } catch (error) {
-      // A 404 is unknown, expired, or another namespace's - all three are "no document", never a
-      // transport failure. Everything else is reported and polled through: a client that stopped on a
-      // dropped connection would never notice the connection coming back.
+      // A 404 (unknown, expired or another namespace's token) is an absence. Any other failure is
+      // reported and the loop continues.
       if (statusOf(error) === 404) absent = true;
       else this.emitError(error);
     } finally {
@@ -272,16 +235,13 @@ export class TokenPoller {
       return;
     }
 
-    // The read this one was asked to follow was asked for by a write, and this document was written
-    // before it. Re-issue rather than schedule: the rung this read would choose is one the write has
-    // already made wrong.
+    // A write requested a read while this one was in flight: issue it now.
     if (this.owed) {
       this.owed = false;
       this.readNow(true);
       return;
     }
-    // A read that landed after the ladder was suspended is delivered and not followed up: the
-    // transport is carrying this token now, and the next rung is what resuming produces.
+    // A read that lands while suspended schedules nothing; resuming does.
     if (!this.suspended) this.schedule(snapshot, previousRev);
   }
 
@@ -291,28 +251,18 @@ export class TokenPoller {
     this.lastRev = snapshot.rev;
     this.latest = snapshot;
     this.handle?.applySnapshot(snapshot);
-    // The private half of `tw.register` is exactly what these reads carry (TW-PRIV-002).
+    // Private operations reach `tw.register` only through these reads (TW-PRIV-002).
     this.client.noteSnapshot(snapshot, first);
     [...this.subscriptions].forEach((subscription) => subscription.emit(snapshot));
   }
 
   /**
-   * @internal A push landed on this token's handle: re-state `latest` from it and deliver that.
+   * @internal A push landed on `handle`: rebuild `latest` from the handle's state and deliver it to
+   * the subscriptions and to the client's private snapshots (TW-PRIV-002, TW-TS-007).
    *
-   * Two things read `latest` and neither may be left behind while the ladder is held (TW-TS-007):
-   * `subscribe()`'s snapshots, and `privateSnapshots()` - the only copy of a private operation that
-   * exists anywhere, since no register payload carries one (TW-PRIV-002). So a socket that did not
-   * feed this would drop a private operation out of `tw.register` for as long as it stayed attached.
-   *
-   * The document is rebuilt from the handle rather than from the envelope, because the handle has
-   * already applied the rules: a stale `rev` was dropped there, a settled question refused to reopen
-   * there, and a terminal state withdrew the open dialogs there. Reading the body a second time here
-   * would be a second chance to disagree with all three.
-   *
-   * The handle is the one the envelope landed on, handed in rather than looked up again: a terminal
-   * push is a departure from the register (TW-REG-007), and the departure closes and releases an
-   * adopted handle before this runs - so a second lookup would find nothing exactly when the last
-   * document a subscriber will ever get is the one being carried.
+   * The snapshot is built from the handle, which has already dropped a stale `rev`, kept a settled
+   * question closed and withdrawn dialogs on a terminal state. `handle` is passed in because a
+   * terminal push releases an adopted handle before this runs (TW-REG-007).
    */
   notePush(handle: Operation<unknown>): void {
     if (this.stopped) return;
@@ -325,13 +275,11 @@ export class TokenPoller {
       rev: handle.rev ?? base?.rev ?? 0,
       progress,
       dialogs: [...handle.dialogs],
-      // Neither travels on a push. The cancel flag stands at whatever the last read said - the
-      // request it records changes no state (TW-CANCEL-001) - and an envelope advises no cadence,
-      // which `nextDelay` reads as no floor at all and answers with the base interval (TW-REST-014).
+      // Neither travels on a push: the cancel flag keeps the last read's value (TW-CANCEL-001), and
+      // `0` is no cadence floor (TW-REST-014).
       cancelRequested: base?.cancelRequested ?? false,
       pollAfterMs: base?.pollAfterMs ?? 0,
-      // The document's own stamp is the closest thing a push carries to a server clock, and it is
-      // the one the server wrote it at.
+      // A push carries no server clock; the document's own stamp stands in for it.
       serverTime: progress.updatedAt,
     };
     const first = !this.seen;
@@ -340,8 +288,7 @@ export class TokenPoller {
     this.latest = snapshot;
     this.client.noteSnapshot(snapshot, first);
     [...this.subscriptions].forEach((subscription) => subscription.emit(snapshot));
-    // The same consequence a terminal read has: it is the last document that will ever exist for
-    // this token (TW-REG-007), so the handle settles on it and the loop has nothing left to ask for.
+    // A terminal push ends the loop, as a terminal read does (TW-REG-007).
     if (isTerminal(progress)) this.finish();
   }
 
@@ -378,8 +325,11 @@ export class TokenPoller {
   }
 }
 
-/** The `Subscription` a `subscribe()` call hands back; one poller may carry several. */
-/** @internal */
+/**
+ * The `Subscription` a `subscribe()` call returns; one poller may carry several.
+ *
+ * @internal
+ */
 export class PollSubscription implements Subscription {
   private readonly snapshotListeners = new Set<(snapshot: Snapshot) => void>();
 
