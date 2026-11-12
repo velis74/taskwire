@@ -27,7 +27,7 @@ function cancellable(operation: Operation<unknown>): boolean {
  * <TaskwireOperations @collected="(result, operation) => open(result)" />
  * ```
  *
- * A row shows the operation's title, its label and **its own** percentage (TW-REG-013), and carries
+ * A row shows the operation's title, its label and its own percentage (TW-REG-013), and carries
  * `data-state` with the derived state (TW-PROG-010). Clicking a row selects it (`tw.select`), which
  * is the operation `TaskwireFooter` draws; the selected row carries `aria-current="true"`. Per row:
  *
@@ -50,8 +50,7 @@ export const TaskwireOperations = defineComponent({
     error: (error: unknown, operation: Operation<unknown>) => operation !== undefined,
   },
   setup(props, { emit }) {
-    // The handles keep their state in private fields, which a reactive proxy of the client would
-    // hand out as proxies that cannot read them.
+    // A reactive proxy of the client would return handle proxies that cannot read private fields.
     const client = toRaw(props.client) ?? use_taskwire();
     const translate = props.translate ?? defaultTranslate;
 

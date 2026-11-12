@@ -82,8 +82,7 @@ function entry(options: EntryOptions = {}): Snapshot {
 }
 
 // ---------------------------------------------------------------------------------------------
-// A `RegisterState` with a scripted payload and no axios anywhere: `select()` is client policy, so
-// it is tested against the state machine that owns it rather than against a fake server.
+// A `RegisterState` with a scripted payload and no axios.
 // ---------------------------------------------------------------------------------------------
 
 class StubClient implements RegisterClient {
@@ -91,7 +90,7 @@ class StubClient implements RegisterClient {
 
   private readonly handles = new Map<string, Operation<unknown>>();
 
-  /** The six calls, of which the register loop makes exactly one. */
+  /** The six calls; the register loop makes only `register()`. */
   readonly calls: TaskwireCalls = {
     register: async () => serializeRegister(this.payload),
     snapshot: async () => {
@@ -163,8 +162,7 @@ describe('the aggregate (TW-REG-009..017)', () => {
   });
 
   it('aggregate carries no percent field', () => {
-    // TW-REG-011, named in the specification. Absent from the wire, not `null` on it - and absent
-    // from the recomputation too, which is the half a client could have got wrong on its own.
+    // TW-REG-011: absent from the wire (not `null`) and from the recomputation.
     const parsed = parseAggregate(fixture('aggregate-counts'));
     expect('percent' in parsed).toBe(false);
     expect(Object.keys(parsed).sort()).toEqual(['data', 'label', 'state', 'title', 'updatedAt']);
@@ -175,14 +173,12 @@ describe('the aggregate (TW-REG-009..017)', () => {
     expect(Object.keys(computed as object).sort()).toEqual(['data', 'label', 'state', 'title', 'updatedAt']);
     expect(JSON.stringify(computed)).not.toContain('percent');
 
-    // And the parser cannot be talked into carrying one either.
+    // The parser drops one that the input carries.
     const smuggled = parseAggregate({ ...(fixture('aggregate-counts') as object), percent: 65 });
     expect('percent' in smuggled).toBe(false);
 
-    // No code path in `vue/` derives a figure across operations: there is no unit in which two
-    // self-reported percentages are commensurable, so there is no honest number to publish.
-    // (`Reporter.split(...weights)` is TW-NEST's subdivision of *one* operation's own bar and is a
-    // different thing entirely, which is why the pattern below names the arithmetic, not the word.)
+    // No code in `vue/` derives a figure across operations. The pattern names the arithmetic, not
+    // the word "weights": `Reporter.split(...weights)` subdivides one operation's bar (TW-NEST).
     const offenders = [...sources()].filter(([, text]) =>
       /averag|weighted|percentSum|sumOfPercent|percentOf\(/i.test(text),
     );
@@ -190,8 +186,7 @@ describe('the aggregate (TW-REG-009..017)', () => {
   });
 
   it('waiting_input dominates regardless of counts', () => {
-    // TW-REG-012, named in the specification: one blocked operation among nine running ones is the
-    // whole reason a user needs to look at the widget, so majority would be exactly backwards.
+    // TW-REG-012: domination, not majority.
     const running = Array.from({ length: 9 }, () => entry({ state: 'running' }));
     const blocked = entry({ state: 'running', dialog: true, createdAt: '2026-01-01T00:00:09.000Z' });
     const computed = aggregate([...running, blocked]);
@@ -199,14 +194,14 @@ describe('the aggregate (TW-REG-009..017)', () => {
     expect(computed?.state).toBe('waiting_input');
     expect(computed?.data).toEqual({ total: 10, queued: 0, running: 9, waiting_input: 1 });
 
-    // The same document the Python side publishes for the same shape.
+    // The document the Python side publishes for the same input.
     const published = parseAggregate(fixture('aggregate-waiting-input-dominates'));
     expect(computed?.state).toBe(published.state);
     expect(computed?.data).toEqual(published.data);
 
-    // Reversing the order changes nothing: domination is not a first-past-the-post either.
+    // The input order does not matter.
     expect(aggregate([blocked, ...running])?.state).toBe('waiting_input');
-    // And the domination order itself: running beats queued, waiting_input beats both.
+    // Running dominates queued; waiting_input dominates both.
     expect(
       aggregate([entry({ state: 'queued' }), entry({ state: 'queued' }), entry({ state: 'running' })])?.state,
     ).toBe('running');
@@ -214,27 +209,25 @@ describe('the aggregate (TW-REG-009..017)', () => {
   });
 
   it('selection advances FIFO when the selected operation finishes', () => {
-    // TW-REG-013 / TW-TS-012, named in the specification. A footer's number is one operation's own,
-    // and the one it belongs to changes without the application being asked.
+    // TW-REG-013 / TW-TS-012.
     const first = entry({ createdAt: '2026-01-01T00:00:01.000Z', percent: 10 });
     const second = entry({ createdAt: '2026-01-01T00:00:02.000Z', percent: 20 });
     const third = entry({ createdAt: '2026-01-01T00:00:03.000Z', percent: 30 });
     const register = [third, first, second];
 
     expect(selectFifo(register)?.token).toBe(first.token);
-    // The oldest one finished: TW-REG-007 dropped it in the same step, so it is simply not here.
+    // The oldest one finished and left the register (TW-REG-007).
     expect(selectFifo([third, second])?.token).toBe(second.token);
     expect(selectFifo([third])?.token).toBe(third.token);
     expect(selectFifo([])).toBeNull();
 
-    // The percentage a footer draws is that entry's own, and nothing was derived across the three.
+    // The selected entry's own percentage.
     expect(selectFifo(register)?.progress.percent).toBe(10);
   });
 
   it('selection skips an entry that is blocked or parked on a result', () => {
-    // Candidacy is the derived state (TW-REG-004, TW-PROG-010). An operation holding an open
-    // question keeps `running` on its document - selecting it would draw a frozen bar beside an
-    // aggregate reporting `waiting_input`.
+    // Candidacy is the derived state (TW-REG-004, TW-PROG-010); an operation holding an open
+    // question keeps `running` on its document.
     const blocked = entry({ state: 'running', dialog: true, createdAt: '2026-01-01T00:00:01.000Z' });
     const parked = entry({ state: 'waiting_input', result: A_RESULT, createdAt: '2026-01-01T00:00:02.000Z' });
     const live = entry({ state: 'running', createdAt: '2026-01-01T00:00:03.000Z' });
@@ -247,8 +240,7 @@ describe('the aggregate (TW-REG-009..017)', () => {
   });
 
   it('select() pins and select(null) returns to FIFO', async () => {
-    // TW-TS-012: `select()` exists so an application can override the policy, and there is no
-    // aggregate percentage for it to fall back to.
+    // TW-TS-012.
     const client = new StubClient();
     const first = entry({ createdAt: '2026-01-01T00:00:01.000Z' });
     const second = entry({ createdAt: '2026-01-01T00:00:02.000Z' });
@@ -262,15 +254,14 @@ describe('the aggregate (TW-REG-009..017)', () => {
     state.select(null);
     expect(state.selected?.token).toBe(first.token);
 
-    // A pin on something the register no longer has is not a selection that sticks forever.
+    // A pin on a token the register no longer has falls back to FIFO.
     state.select('token-that-left');
     expect(state.selected?.token).toBe(first.token);
     state.stop();
   });
 
   it('reaches the resting state', async () => {
-    // TW-REG-017, named in the specification. "Reports nothing" is not "reports zero": an all-zero
-    // counts document is a visible empty widget, which is the bug.
+    // TW-REG-017: `null`, not zero counts.
     expect(aggregate([])).toBeNull();
 
     const client = new StubClient();
@@ -281,7 +272,7 @@ describe('the aggregate (TW-REG-009..017)', () => {
     expect(state.selected).toBeNull();
     state.stop();
 
-    // The server says the same thing on the same input, and says it as `null` rather than zeroes.
+    // The server's register is `null` on the same input.
     expect(parseRegister(fixture('register-empty-null-aggregate')).aggregate).toBeNull();
   });
 
@@ -305,9 +296,7 @@ describe('the aggregate (TW-REG-009..017)', () => {
   });
 
   it('no done or failed aggregate state is ever observed', () => {
-    // TW-REG-015: a terminal entry with nothing to collect has already left the register, so no
-    // count and no domination can see one. A copy that reached the client anyway is reported as a
-    // live state rather than as a fourth one the widget has no rendering for.
+    // TW-REG-015: a terminal entry in a local copy is reported as `running`.
     const observed: (string | null)[] = [];
     (['done', 'failed', 'cancelled'] as ProgressState[]).forEach((state) => {
       const computed = aggregate([entry({ state }), entry({ state: 'running' })]);
@@ -323,23 +312,21 @@ describe('the aggregate (TW-REG-009..017)', () => {
   });
 
   it('the client recomputation and the server agree on the same input', () => {
-    // TW-REG-016: the same published rules on both sides, and no arbitration between the figures.
+    // TW-REG-016: the same rules on both sides.
     const published = parseRegister(fixture('register-v2-with-aggregate'));
     const computed = aggregate(published.operations.map((summary) => summary.snapshot));
 
     expect(computed?.state).toBe(published.aggregate?.state);
     expect(computed?.data).toEqual(published.aggregate?.data);
     expect(computed?.label).toEqual(published.aggregate?.label);
-    // The one key TW-REG-014 fixes. The parsed form carries the absent halves of `Text` as explicit
-    // nulls, which is `wire.ts`'s business and not a disagreement about the aggregate.
+    // Only the key is compared: the parsed `Text` carries its absent halves as explicit nulls.
     expect(computed?.title.key).toBe(published.aggregate?.title.key);
-    // `updatedAt` is when each side computed, and is the only field that may differ.
+    // `updatedAt` is the only field that may differ.
     expect(Object.keys(computed as object).sort()).toEqual(Object.keys(published.aggregate as object).sort());
   });
 
   it('there is no weights helper', () => {
-    // TW-REG-013: one argument, no overload taking weights, and nothing anywhere that would need a
-    // second one. The set to compute over is the caller's display decision and that is all.
+    // TW-REG-013: one argument, no weights.
     expect(aggregate).toHaveLength(1);
     expect(selectFifo).toHaveLength(1);
 

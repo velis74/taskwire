@@ -1,10 +1,8 @@
 /**
  * The store conformance suite (TW-STORE-012).
  *
- * `runConformance` takes a factory for the store under test and runs every check against it. It is a
- * published subpath, `taskwire/conformance`, exactly as `taskwire.conformance` is importable on the
- * Python side: a store is an application's to write, and this is the only thing that says whether
- * what it wrote is one.
+ * `runConformance` takes a factory for the store under test and runs every check against it.
+ * Published as the subpath `taskwire/conformance`, as `taskwire.conformance` is on the Python side.
  *
  * ```ts
  * import { runConformance } from 'taskwire/conformance';
@@ -12,15 +10,9 @@
  * await runConformance((options) => new MyStore(options));
  * ```
  *
- * Every shipped store passes it unchanged. A store is judged by the same standard whichever language
- * it is written in (TW-SYM-002): this file is the mirror of `taskwire/conformance.py`, check for
- * check, and neither copy may be weakened alone. If a rule here cannot be satisfied by a real
- * backend, the rule is wrong and the specification changes, not the suite.
+ * Every shipped store passes it. Mirror of `taskwire/conformance.py`, check for check (TW-SYM-002).
  *
- * It is **plain code, not a vitest file**. The test runner must not collect it - which is why it
- * asserts through `ok()` rather than through `expect()`, and why nothing here is named `describe`,
- * `it` or `test`. `store.spec.ts` is the file that drives these checks against `MemoryStore`, one
- * vitest test each.
+ * Plain code, not a vitest file: it asserts through `ok()` and defines no `describe`, `it` or `test`.
  */
 
 import {
@@ -39,16 +31,12 @@ import {
 import { key as makeKey, type TaskwireStore } from './store';
 
 /**
- * How the suite makes a store.
- *
- * The one required capability beyond the port itself: an implementation must accept an injected
- * `clock` so that expiry can be tested without sleeping. A store that cannot be told the time cannot
- * be proven to expire, and TW-STORE-009 makes an injected clock the *only* way to prove it - there
- * is no sweeper to observe and no key to inspect.
+ * How the suite makes a store. Beyond the port, the store must accept an injected `clock` (seconds),
+ * through which expiry is tested (TW-STORE-009).
  */
 export type StoreFactory = (options?: { clock?: () => number }) => TaskwireStore;
 
-/** One check. Named, so a failure names the rule that broke. */
+/** One check; its function name appears in a failure message. */
 export type ConformanceCheck = (makeStore: StoreFactory) => Promise<void>;
 
 const NS = 'conformance-ns';
@@ -58,7 +46,7 @@ const OTHER_NS = 'conformance-other';
 // Assertions
 // -----------------------------------------------------------------------------------------------
 
-/** Thrown by every failing check. Carries the rule in its message, never a runner's formatting. */
+/** Thrown by every failing check; the message names the rule. */
 export class ConformanceFailure extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -70,7 +58,7 @@ function ok(condition: unknown, message: string): asserts condition {
   if (!condition) throw new ConformanceFailure(message);
 }
 
-/** Structural equality over wire-shaped values. Enough for documents, counts and token sets. */
+/** Structural equality over wire-shaped values, by JSON encoding. */
 function same(actual: unknown, expected: unknown): boolean {
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
@@ -95,9 +83,8 @@ interface ProgressOverrides {
 }
 
 /**
- * A `Progress` the way a reporter would open one: shared, running, with this namespace as its
- * origin. Unlike Python's dataclass there are no field defaults to lean on, so the whole document is
- * written out here once and overridden per check.
+ * A `Progress` as a reporter opens one: shared, running, with `NS` as its origin; `overrides`
+ * replace single fields.
  */
 function sampleProgress(overrides: ProgressOverrides = {}): Progress {
   const stamp = new Date().toISOString();
@@ -134,12 +121,8 @@ export async function commitBumpsRevMonotonically(makeStore: StoreFactory): Prom
 
 /**
  * TW-REV-003 (`test_concurrent_commits_rev_and_body_agree`): the `rev` returned is the `rev` a
- * concurrent `snapshot()` reads with that body.
- *
- * A monotonicity assertion alone does not give this. The failure it catches is a store that bumps a
- * counter and writes the document as two steps - in JavaScript, one that awaits anything between the
- * two - because the highest `rev` then belongs to one committer's number and another committer's
- * payload, and a client that deduped on `rev` would hold a body it will never be corrected about.
+ * concurrent `snapshot()` reads with that body. Fails for a store that bumps `rev` and writes the
+ * document as two steps.
  */
 export async function concurrentCommitsRevAndBodyAgree(makeStore: StoreFactory): Promise<void> {
   const store = makeStore();
@@ -184,11 +167,7 @@ export async function ttlExpiryRemovesKeyAndTouchPreventsIt(makeStore: StoreFact
 
 /**
  * TW-REV-002 (`test_commit_after_expiry_exceeds_previous_max`): seeded from `max(nowMs, previous+1)`,
- * never from zero.
- *
- * The bug this prevents is subtle and permanent: a key that expires under a live operation and is
- * written again would restart its `rev` below the client's last-seen value, and every envelope from
- * then on is dropped by client dedup. The bar freezes and nothing is logged.
+ * never from zero, so a re-created key never goes below a client's last-seen `rev`.
  */
 export async function commitAfterExpiryExceedsPreviousMax(makeStore: StoreFactory): Promise<void> {
   let now = 1_000_000;
@@ -205,11 +184,7 @@ export async function commitAfterExpiryExceedsPreviousMax(makeStore: StoreFactor
 
 /**
  * TW-STORE-014 (`test_commit_reports_the_cancel_flag`): one write answers with the new `rev` and the
- * sticky flag that write saw.
- *
- * It is what `Reporter.cancelled` answers between forced reads (TW-CANCEL-004), so a store that
- * always reported `false` would leave a cancelled operation reporting progress until something asked
- * again - and asking again is a second round trip on every commit.
+ * sticky flag that write saw; `Reporter.cancelled` reports it (TW-CANCEL-004).
  */
 export async function commitReportsTheCancelFlag(makeStore: StoreFactory): Promise<void> {
   const store = makeStore();
@@ -225,12 +200,8 @@ export async function commitReportsTheCancelFlag(makeStore: StoreFactory): Promi
 }
 
 /**
- * TW-STORE-010 (`test_commit_after_terminal_keeps_state`): terminal is final, and the **store**
- * enforces it, not the caller.
- *
- * Display fields may still be corrected; the state may not. A cleanup `set()` that could flip a
- * cancelled operation back to `running` would leave it live in every tab's footer indefinitely
- * (TW-INV-014).
+ * TW-STORE-010 (`test_commit_after_terminal_keeps_state`): the store keeps a terminal state; display
+ * fields may still be corrected (TW-INV-014).
  */
 export async function commitAfterTerminalKeepsState(makeStore: StoreFactory): Promise<void> {
   const store = makeStore();
@@ -248,8 +219,8 @@ export async function commitAfterTerminalKeepsState(makeStore: StoreFactory): Pr
 }
 
 /**
- * TW-STORE-009 / TW-INV-013 (`test_reads_have_no_side_effects`). This is the check that catches a
- * reintroduced `:seen` key.
+ * TW-STORE-009 / TW-INV-013 (`test_reads_have_no_side_effects`): reads change neither TTL, `rev`
+ * nor content.
  */
 export async function readsHaveNoSideEffects(makeStore: StoreFactory): Promise<void> {
   let now = 1_000_000;
@@ -274,7 +245,7 @@ export async function readsHaveNoSideEffects(makeStore: StoreFactory): Promise<v
   equal(await store.snapshot(k), null, 'the original deadline must still be the deadline');
 }
 
-/** TW-STORE-006 (`test_list_operations_is_namespace_scoped`): one namespace, and silently no holes. */
+/** TW-STORE-006 (`test_list_operations_is_namespace_scoped`): one namespace, expired members dropped. */
 export async function listOperationsIsNamespaceScoped(makeStore: StoreFactory): Promise<void> {
   let now = 1_000_000;
   const store = makeStore({ clock: () => now });
@@ -292,11 +263,7 @@ export async function listOperationsIsNamespaceScoped(makeStore: StoreFactory): 
 
 /**
  * TW-PRIV-002 (`test_list_operations_omits_private_operations`): unlisted for *every* caller
- * including its own starter - but still readable.
- *
- * Privacy is not authorization (TW-SEC-003). The operation is absent from the register and present
- * at its own address, and those two facts are not in tension: the client that minted the token is
- * the only party that has it.
+ * including its own starter, but readable at its own address (TW-SEC-003).
  */
 export async function listOperationsOmitsPrivateOperations(makeStore: StoreFactory): Promise<void> {
   const store = makeStore();
@@ -328,16 +295,10 @@ export async function dropIsIdempotentAndLeavesSiblings(makeStore: StoreFactory)
 }
 
 /**
- * TW-STORE-008 (`test_publish_never_raises`).
+ * TW-STORE-008 (`test_publish_never_raises`): `publish` never rejects (TW-INV-012).
  *
- * A publish announces a change that is *already durable*. Letting it reject would turn an
- * accelerator's bad day into the operation's, which is the whole of TW-INV-012.
- *
- * Where Python installs an exploding transport through its module-level configuration, this hands
- * the store an envelope that is hostile all by itself: `body` is circular, so any implementation
- * that encodes the envelope on the way out - `JSON.stringify`, `structuredClone`, `postMessage` -
- * throws inside `publish` and must swallow it. That keeps the check portable to a store this suite
- * knows nothing about, which is the point of exporting the suite at all.
+ * The envelope's `body` is circular, so an implementation that encodes the envelope throws inside
+ * `publish` and must swallow it.
  */
 export async function publishNeverRaises(makeStore: StoreFactory): Promise<void> {
   const store = makeStore();
@@ -353,11 +314,8 @@ export async function publishNeverRaises(makeStore: StoreFactory): Promise<void>
 }
 
 /**
- * TW-STORE-015 (`test_migrate_is_idempotent_and_preserves_rev`), named in the specification.
- *
- * The skip on a token already present under the destination is what makes a second call a no-op
- * **and** what makes the call unable to clobber the destination - which matters, because the one
- * caller is an application merging an anonymous session onto an account it has just established.
+ * TW-STORE-015 (`test_migrate_is_idempotent_and_preserves_rev`): a token already under the
+ * destination is skipped, so a second call is a no-op and the destination is never overwritten.
  */
 export async function migrateIsIdempotentAndPreservesRev(makeStore: StoreFactory): Promise<void> {
   let now = 1_000_000;
@@ -379,9 +337,7 @@ export async function migrateIsIdempotentAndPreservesRev(makeStore: StoreFactory
   equal(tokensOf(await store.listOperations(account)), ['clash', 'moving'], 'both tokens are listed at the target');
   equal(tokensOf(await store.listOperations(anon)), [], 'and the source namespace is empty');
 
-  // A move, not a copy - asserted at the address rather than through the listing, because a store
-  // that unindexed the source without deleting it would pass a listing assertion and leave the
-  // operation readable at a key the application has just stopped believing in (TW-SEC-008).
+  // A move, not a copy: the source address reads nothing (TW-SEC-008).
   equal(await store.snapshot(makeKey(anon, 'moving')), null, 'the source document is gone, not copied');
   equal(await store.snapshot(makeKey(anon, 'clash')), null, 'the discarded source is gone too');
 
@@ -397,11 +353,7 @@ export async function migrateIsIdempotentAndPreservesRev(makeStore: StoreFactory
 
 /**
  * TW-REG-007 / TW-RET-004 (`test_terminal_commit_leaves_the_register_and_stays_readable`): the
- * commit that makes a document terminal is the one that de-indexes it, and the document survives it.
- *
- * Both halves are the store's, and a store that implements one without the other is broken in a way
- * no other check sees: de-indexing alone loses the reason an operation ended, and keeping the
- * document alone puts a `failed` row in every listing the register draws.
+ * commit that makes a document terminal de-indexes it, and the document stays readable.
  */
 export async function terminalCommitLeavesTheRegisterAndStaysReadable(makeStore: StoreFactory): Promise<void> {
   const store = makeStore();
@@ -462,7 +414,7 @@ export async function errorSurvivesARoundTrip(makeStore: StoreFactory): Promise<
   );
 }
 
-/** Every check, in a stable order. Import and run them all, or pick one to debug against. */
+/** Every check, in a stable order. */
 export const CHECKS: readonly ConformanceCheck[] = [
   commitBumpsRevMonotonically,
   concurrentCommitsRevAndBodyAgree,
@@ -485,9 +437,8 @@ export const CHECKS: readonly ConformanceCheck[] = [
 /**
  * Run the whole suite against `makeStore`, which must accept an optional `clock`.
  *
- * Sequentially and stopping at the first failure, exactly as the Python runner does: the checks
- * build on one another's vocabulary, and a store that cannot commit has nothing to say about
- * migration. The rule that broke is named in the message, with the original assertion as the cause.
+ * Sequential, stopping at the first failure, as the Python runner does. Throws `ConformanceFailure`
+ * naming the check, with the original assertion as `cause`.
  */
 export async function runConformance(makeStore: StoreFactory): Promise<void> {
   for (const check of CHECKS) {

@@ -14,30 +14,24 @@ export interface UseOperationOptions extends TaskwireOptions {
 export interface OperationBinding {
   /** The handle itself, so a template can reach `token`, `title`, `result` and `startedHere`. */
   operation: Operation<unknown>;
-  /**
-   * The progress **document**, not the state string: §5.5 spells this `ProgressState`, which
-   * `wire.ts` (and `models.py` before it) uses for the closed state vocabulary. `Progress` is the
-   * document in both languages, and TW-SYM-002 does not let the two disagree. `progress.value.state`
-   * is the state.
-   */
+  /** The progress document (`Progress`); `progress.value.state` is the state. */
   progress: Ref<Progress | null>;
-  /** This entry's open question, `null` when it has none - on the entry, never the client (TW-TS-006). */
+  /** This entry's open question, `null` when it has none (TW-TS-006). */
   dialog: Ref<DialogRequest | null>;
   /** Whether the state is `queued` or `running`. `false` before the first document arrives. */
   isRunning: ComputedRef<boolean>;
   /** Whether the state is `done`. A `failed` or `cancelled` operation is neither running nor done. */
   isDone: ComputedRef<boolean>;
-  /** Answer `dialog` with one of its buttons. Quiet when another tab got there first (TW-DLG-011). */
+  /** Answer `dialog` with one of its buttons. Resolves when another tab answered first (TW-DLG-011). */
   answer(button: string, values?: Record<string, unknown>): Promise<void>;
-  /** Ask for a cancel. Answered `202`, and only the terminal state confirms it (TW-CANCEL-003). */
+  /** Ask for a cancel; only the terminal state confirms it (TW-CANCEL-003). */
   cancel(): Promise<void>;
 }
 
 /**
  * One operation, by token, watched on the single-token endpoint (TW-REST-011's ladder).
  *
- * The token may come from anywhere - a URL, a websocket, a server-rendered attribute - because a
- * token is an address and reaches its operation from any tab of the namespace (TW-SEC-003).
+ * A token reaches its operation from any tab of the namespace (TW-SEC-003).
  */
 export function use_operation(source: string | UseOperationOptions): OperationBinding {
   const options: UseOperationOptions = typeof source === 'string' ? { token: source } : source;

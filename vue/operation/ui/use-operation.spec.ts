@@ -39,8 +39,7 @@ describe('the vue composables (§5.5)', () => {
     expect(bound.progress.value?.percent).toBe(25);
     expect(bound.isRunning.value).toBe(true);
     expect(bound.isDone.value).toBe(false);
-    // The dialog hangs on the entry and there is no global slot for it (TW-TS-006). This document
-    // carries no open question, so the ref reads null.
+    // The document carries no open question, so the ref reads null (TW-TS-006).
     expect(bound.dialog.value).toBeNull();
 
     server.documents.set(token, snapshotWire(token, { rev: 2 }, { state: 'done', percent: 100 }));
@@ -48,8 +47,8 @@ describe('the vue composables (§5.5)', () => {
     expect(bound.isDone.value).toBe(true);
     expect(bound.isRunning.value).toBe(false);
 
-    // Both writes go out through the entry. With no open question `answer` sends nothing, and a
-    // cancel is a request that resolves without moving any state (TW-CANCEL-003).
+    // With no open question `answer` sends nothing; a cancel resolves without moving any state
+    // (TW-CANCEL-003).
     await expect(bound.answer('yes', { overwrite: true })).resolves.toBeUndefined();
     await expect(bound.cancel()).resolves.toBeUndefined();
 

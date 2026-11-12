@@ -12,16 +12,8 @@ import type { Envelope, WireObject } from '../wire/wire';
 import { attachMuxws, detachMuxws, MuxwsCalls, MuxwsClientTransport } from './muxws';
 
 /**
- * `taskwire/muxws`, browser side.
- *
- * The socket is the superior transport because it does two things REST cannot: it PUSHES the instant
- * a state changes, and it carries the client's own calls back up the same connection. REST can only
- * ask again - its floor is its interval, and it spends a request per tab per tick whether or not
- * anything happened.
- *
- * The last test in this file is the one that keeps that from costing anything: the package entry
- * point must not reach this module, so an application that only ever polls never loads a socket
- * library it does not use.
+ * `taskwire/muxws`, browser side: pushes, calls over the socket, and that `index.ts` does not reach
+ * this module.
  */
 
 /** One outgoing stream: the status in the leading reply headers, then one body (TW-WS-003). */
@@ -108,7 +100,7 @@ class FakePeer {
     this.handler?.(payload, { headers });
   }
 
-  /** The socket died; `willRetry` is muxws's business and taskwire reads only the fact. */
+  /** The socket died; taskwire ignores `willRetry`. */
   die(): void {
     this.isOpen = false;
     this.closeHandlers.forEach((handler) => handler({ willRetry: true }));
@@ -120,7 +112,7 @@ class FakePeer {
   }
 }
 
-/** `${method} ${path}`, which is the whole of how a viewset action is addressed (TW-WS-002). */
+/** `${method} ${path}`: how a viewset action is addressed (TW-WS-002). */
 function addressed(peer: FakePeer): string[] {
   return peer.opened.map((stream) => `${String(stream.headers[':method'])} ${String(stream.headers[':path'])}`);
 }
@@ -154,7 +146,7 @@ function snapshotWire(token: string): WireObject {
 
 describe('the muxws client transport', () => {
   it('delivers a pushed envelope the instant it arrives', () => {
-    // The whole reason to have a socket. No poll, no interval, no request.
+    // A pushed envelope moves the handle without any HTTP read.
     const peer = new FakePeer();
     const seen: Envelope[] = [];
     new MuxwsClientTransport({ peer: peer as never, onEnvelope: (e) => seen.push(e) });
@@ -166,8 +158,7 @@ describe('the muxws client transport', () => {
   });
 
   it('treats an unparseable push as a dropped push and stays alive (TW-CORE-002)', () => {
-    // The store is the truth, so no state depends on this frame arriving and the next read corrects
-    // it. Throwing here would take out the socket over one bad frame.
+    // A malformed frame is dropped without throwing; the next read corrects the state.
     const peer = new FakePeer();
     const seen: Envelope[] = [];
     new MuxwsClientTransport({ peer: peer as never, onEnvelope: (e) => seen.push(e) });
@@ -193,8 +184,7 @@ describe('the muxws client transport', () => {
   });
 
   it('keeps the previous map when a declaration is rejected (TW-DEL-008)', async () => {
-    // Rejected rather than truncated. A truncated map is one the user asked for and did not get,
-    // with no way to tell which half survived - so the client must not pretend it applied.
+    // An oversized map is rejected, not truncated.
     const peer = new FakePeer();
     const transport = new MuxwsClientTransport({ peer: peer as never });
     await transport.watch({ a: false });
@@ -209,9 +199,7 @@ describe('the muxws client transport', () => {
   });
 
   it('obtains the connection id with an empty declaration (TW-REG-020, TW-DEL-022)', async () => {
-    // A reconnecting client restores NOTHING. It may send one empty `watch` purely to learn the new
-    // socket's id - an empty declaration is not a restoration, it asserts exactly the state the new
-    // socket already has.
+    // A reconnecting client restores nothing; it may send one empty `watch` to learn the new id.
     const peer = new FakePeer();
     const transport = new MuxwsClientTransport({ peer: peer as never });
 
@@ -222,9 +210,7 @@ describe('the muxws client transport', () => {
   });
 
   it('prunes an ended operation from its local copy (TW-DEL-023)', async () => {
-    // The server prunes its own at the last hop; this is the client's half. The copy exists only to
-    // be re-sent, so dead tokens would eventually make a re-declaration exceed maxOverrides over
-    // operations that finished days ago.
+    // `forget()` drops a token from the client's copy of the map.
     const peer = new FakePeer();
     const transport = new MuxwsClientTransport({ peer: peer as never });
     await transport.watch({ ended: false, live: false });
@@ -234,7 +220,7 @@ describe('the muxws client transport', () => {
   });
 
   it('persists nothing at all (TW-REG-018, TW-INV-016)', async () => {
-    // A client that crashed while silencing something must not come back permanently silent.
+    // Nothing is written to browser storage, so overrides do not survive a reload.
     const setItem = vi.spyOn(Storage.prototype, 'setItem');
     const peer = new FakePeer();
     const transport = new MuxwsClientTransport({ peer: peer as never });
@@ -255,8 +241,7 @@ describe('the muxws client transport', () => {
   });
 
   it('replies to a dialog over the socket only when asked to (TW-WS-008)', async () => {
-    // Optional and off by default: REST is the recommended reply path, because it is the one that
-    // works with no socket at all. Nothing calls this unless an application does.
+    // Optional and off by default; the client replies over REST.
     const peer = new FakePeer();
     const transport = new MuxwsClientTransport({ peer: peer as never });
 
@@ -272,9 +257,8 @@ describe('the muxws client transport', () => {
   });
 
   it('reports the socket dying and coming back, so the client knows when to poll (TW-TS-007)', async () => {
-    // The smallest signal that makes a loss observable, and the whole of what suspends and resumes
-    // the ladder. A reconnect restores nothing (TW-WS-006) - what comes back with it is the ability
-    // to push, and the client's own recovery is a read.
+    // `onHealth` reports loss and reconnect; it suspends and resumes the ladder. A reconnect restores
+    // nothing (TW-WS-006).
     const peer = new FakePeer();
     const transport = new MuxwsClientTransport({ peer: peer as never });
 
@@ -290,16 +274,15 @@ describe('the muxws client transport', () => {
     peer.die();
     expect(seen).toEqual([false, true]);
 
-    // A listener that arrives after the socket is already down has no event left to fire, so it is
-    // told at once: a client that read silence as health would sit suspended over a dead socket.
+    // A listener subscribed while the socket is down is told at once.
     const late: boolean[] = [];
     transport.onHealth((healthy) => late.push(healthy));
     expect(late).toEqual([false]);
   });
 
   it("shares the peer's one stream handler with the fastapi-viewsets event client", async () => {
-    // A stream carrying `:event` is the event client's, and every other one is an envelope, so one
-    // peer carries both libraries' pushes. The handler stays installed after detaching.
+    // A stream carrying `:event` is the event client's, every other one an envelope. The handler
+    // stays installed after detaching.
     const peer = new FakePeer();
     peer.response = { rev: 1 };
     const seen: Envelope[] = [];
@@ -327,8 +310,7 @@ describe('the muxws client transport', () => {
   });
 
   it('attaches to a client without taking anything away from it (TW-TR-006)', () => {
-    // Everything keeps working if this line is deleted. That is the test of the layering: the
-    // register still answers, and the ladder is what carries a client whose socket has just died.
+    // Without the socket the register still answers over the ladder.
     const peer = new FakePeer();
     const attached: unknown[] = [];
     const routed: unknown[] = [];
@@ -341,22 +323,18 @@ describe('the muxws client transport', () => {
     const transport = attachMuxws(client, peer as never);
     expect(attached).toEqual([transport]);
     expect(transport).toBeInstanceOf(MuxwsClientTransport);
-    // Both halves in one call: the six calls go up the socket and the pushes come down it.
+    // The six calls go up the socket and the pushes come down it.
     expect(routed[0]).toBeInstanceOf(MuxwsCalls);
 
-    // ...and a client that wants only the pushes says so.
+    // `routeCalls: false` keeps the calls on HTTP.
     const pushesOnly = attachMuxws(client, peer as never, { routeCalls: false });
     expect(attached).toEqual([transport, pushesOnly]);
     expect(routed).toHaveLength(1);
   });
 
   it("hands the client this socket's id, and takes it back with the socket (TW-DEL-022)", async () => {
-    // The id is server-issued and belongs to the socket, not to the client: it decides what
-    // `progress_delivery` answers this reader (TW-DEL-015) and which socket a private operation's
-    // progress is written to (TW-PRIV-003), and both are decided from the header on the way in. A
-    // client that held an id it never sent has neither, and one that kept a dead socket's id names
-    // a connection that is not there - so it travels as a call, on every reply, rather than as a
-    // value somebody has to re-read.
+    // The server-issued connection id is passed to the client on every reply (TW-DEL-015,
+    // TW-PRIV-003).
     const peer = new FakePeer();
     const seen: (string | null)[] = [];
     const client = {
@@ -384,8 +362,7 @@ describe('the muxws client transport', () => {
   });
 
   it('re-declares nothing on a socket that never declared (TW-REG-020)', async () => {
-    // One empty `watch` after a reconnect is permitted purely to learn the new id. A client that
-    // never asked for one is not given one here either, and nothing is restored in either case.
+    // After a reconnect an empty `watch` is sent only if the transport declared before.
     const peer = new FakePeer();
     const transport = new MuxwsClientTransport({ peer: peer as never });
 
@@ -430,14 +407,9 @@ describe('the headers on every stream opened on an attached peer (TW-TS-020)', (
 
 describe('a client carried by nothing but pushes', () => {
   it('replays the demo hold job over one attached socket and ends with no question on screen', async () => {
-    // The sequence is the live one, in order: `queued`, `running`, `dialog.open`, and then a
-    // terminal `progress` carrying `failed`. There is NO `dialog.close` in it - `withdraw_dialogs`
-    // publishes none - so that terminal envelope is the only announcement a client ever gets that
-    // the question is gone (TW-CANCEL-011), and a client that ignored it would leave a modal on
-    // screen pointing at a worker that no longer exists.
-    //
-    // The axios instance throws, so any read at all fails this rather than passing unnoticed: what
-    // moves the handle here is the socket and only the socket (TW-TS-007).
+    // `queued`, `running`, `dialog.open`, then a terminal `progress` carrying `failed` with no
+    // `dialog.close`: the terminal envelope closes the dialog (TW-CANCEL-011). The axios instance
+    // throws, so only the socket moves the handle (TW-TS-007).
     vi.useFakeTimers();
     try {
       const http = axios.create({
@@ -491,7 +463,7 @@ describe('a client carried by nothing but pushes', () => {
       expect(handle.dialog).toBeNull();
       expect(handle.dialogs[0].state).toBe('cancelled');
 
-      // Not one request went out, in either direction: no stream was opened and no HTTP call made.
+      // No stream was opened and no HTTP call made.
       expect(peer.opened).toEqual([]);
       await vi.advanceTimersByTimeAsync(30_000);
       expect(peer.opened).toEqual([]);
@@ -504,8 +476,7 @@ describe('a client carried by nothing but pushes', () => {
 
 describe('the six calls over a stream each (TW-REST-004, TW-WS-003)', () => {
   it('addresses every one of them the way the viewset declares it', async () => {
-    // The same `TaskwireViewSet` serves both transports, so there is no second routing table here -
-    // only `:method` and `:path` in the opening headers of one stream per call.
+    // One stream per call, addressed by `:method` and `:path` in its opening headers.
     const peer = new FakePeer();
     const calls = new MuxwsCalls({ peer: peer as never, basePath: '/taskwire' });
     const backgrounds: boolean[] = [];
@@ -538,9 +509,8 @@ describe('the six calls over a stream each (TW-REST-004, TW-WS-003)', () => {
   });
 
   it('is what a client reads through once its calls are routed here', async () => {
-    // The seam is the point: the client issues its six calls through one interface and knows
-    // nothing about which wire answered. The axios instance is rigged to throw, so a single HTTP
-    // request would fail this rather than pass unnoticed.
+    // The client's six calls go through one interface. The axios instance throws, so any HTTP
+    // request fails this.
     vi.useFakeTimers();
     try {
       const http = axios.create({
@@ -568,9 +538,7 @@ describe('the six calls over a stream each (TW-REST-004, TW-WS-003)', () => {
 
 describe('what the core is allowed to reach (TW-CORE-006)', () => {
   it('is a subpath the package entry point never reaches', () => {
-    // An application that only ever polls must not load a socket library it does not use, nor the
-    // viewset proxy that addresses its streams. The core may import neither, and index.ts may not
-    // reach this module transitively.
+    // The core imports neither muxws nor the viewset proxy, and index.ts does not reach this module.
     const { modules, packages } = reachableFrom('index.ts');
     expect([...modules].filter((name) => name.startsWith('muxws'))).toEqual([]);
     expect(packages).not.toContain('muxws');

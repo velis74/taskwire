@@ -1,20 +1,9 @@
 /** The ambient token (TW-TS-003). */
 
-/**
- * Bound for exactly the synchronous portion of `fn` and unbound in a `finally`.
- *
- * Module-level rather than per-client because the interceptor that reads it is per-client and the
- * binding is per-call: two clients in one page share one call stack, and a token bound on one of them
- * must not stamp a request issued by the other, which is why the interceptor also checks nothing
- * else - the ambient token is the *only* condition under which the header is written.
- */
+/** The token bound by `run()` for the synchronous part of its `fn`, shared by all clients; `null` otherwise. */
 let ambientToken: string | null = null;
 
-/**
- * @internal The token `run()` has bound, or `null` outside the synchronous part of its `fn`. What
- * `taskwire/muxws` stamps on the streams an application opens, as the axios interceptor of `Taskwire` stamps
- * requests (TW-TS-003, TW-TS-020).
- */
+/** @internal The token `run()` has bound, or `null` outside the synchronous part of its `fn` (TW-TS-003, TW-TS-020). */
 export function ambientTaskwireToken(): string | null {
   return ambientToken;
 }

@@ -9,12 +9,8 @@ import type { Progress, Result } from '../../wire/wire';
 import { TaskwireOperations } from './operations';
 
 /**
- * The shipped register UI: `TaskwireFooter` and `TaskwireOperations`.
- *
- * The rule this file exists to protect is TW-REG-013: **the footer draws one selected operation's
- * own percentage and never an aggregate one.** There is no unit in which two operations'
- * self-reported percentages are commensurable, so any figure derived across them is invented - and
- * an aggregate bar is the single most natural thing for somebody to add later.
+ * The shipped register UI: `TaskwireFooter` and `TaskwireOperations`. The footer draws one selected
+ * operation's own percentage and never an aggregate one (TW-REG-013).
  */
 
 function progress(overrides: Partial<Progress> = {}): Progress {
@@ -54,28 +50,20 @@ function hostWith(): OperationHost {
 
 describe('the shipped UI deliverables', () => {
   it('draws one selected operation percentage and never an aggregate one (TW-REG-013)', () => {
-    // The single most natural thing for somebody to add later is a bar over the aggregate. There is
-    // no honest number to put in it: one operation is 40% through a row count, the other 40%
-    // through a byte count.
     const code = withoutComments(readSource('register/ui/footer.ts') + readSource('register/ui/operations.ts'));
 
-    // Precisely, rather than by proximity: a "these two words appear near each other" regex finds
-    // the footer reading `aggregate.label` beside its own `percent` variable and calls that a
-    // violation. What the rule forbids is READING a percentage off the aggregate, or DERIVING one
-    // across operations.
+    // Forbids reading a percentage off the aggregate or deriving one across operations.
     expect(code).toContain('selected.value?.progress?.percent');
     expect(code).not.toMatch(/aggregate[^\n]*\.\s*percent/i);
     expect(code).not.toMatch(/percent[^\n]*\breduce\b|\breduce\b[^\n]*percent/i);
     expect(code).not.toMatch(/\bavg\b|\baverage\b|\bmean\b/i);
 
-    // And at the type level, which is stronger than any scan: `Aggregate` declares `percent?: never`,
-    // so reintroducing one fails the typecheck rather than only a test (TW-REG-011).
+    // `Aggregate` declares `percent?: never`, so a percentage on it fails the typecheck (TW-REG-011).
     const wire = readSource('wire/wire.ts');
     expect(wire).toMatch(/percent\?:\s*never/);
   });
 
   it('renders nothing at rest (TW-REG-017)', () => {
-    // A resting widget that still occupies space is a widget users learn to ignore.
     const source = readSource('register/ui/footer.ts');
     expect(source).toMatch(/aggregate\.value === null.*return null/s);
   });

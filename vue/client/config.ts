@@ -1,10 +1,11 @@
 /** `configure_taskwire` - §8.3's module-level UI policy. */
 
-/** §8.3's policy, whole: what `taskwireConfig()` answers and what `configure_taskwire()` writes. */
+/** §8.3's UI policy. */
 export interface TaskwireUiConfig {
   /**
    * The visible collection's policy: how old a `startedHere` operation must be to appear, and how
-   * long a failed one is held after it ends. `false` turns the collection off wholesale.
+   * long a failed one is held after it ends. `delay` is also the age at which a call enters
+   * `tw.busy`. `false` turns the collection off.
    */
   progressUi: { delay: number; failureLinger: number } | false;
   /** How long a question goes unadopted before another tab may present it (TW-TAB-005). */
@@ -13,11 +14,7 @@ export interface TaskwireUiConfig {
   unreachableAfter: number;
 }
 
-/**
- * §8.3's defaults. None of these is derived from the poll interval and none may ever be
- * (TW-THR-007): the frontend must never assume any update frequency, so no animation, timeout or
- * stall heuristic may be built on how often a poll happens.
- */
+/** §8.3's defaults. None is derived from the poll interval (TW-THR-007). */
 const DEFAULT_UI_CONFIG: TaskwireUiConfig = {
   progressUi: { delay: 250, failureLinger: 8000 },
   dialogAdoptDelay: 2000,
@@ -29,7 +26,7 @@ let uiConfig: TaskwireUiConfig = { ...DEFAULT_UI_CONFIG };
 /**
  * Module-level UI policy, kept under its Python name (TW-TS-011).
  *
- * `progressUi: false` turns the visible collection off wholesale; `{ delay }` moves the age at which
+ * `progressUi: false` turns the visible collection off; `{ delay }` moves the age at which
  * a `startedHere` operation becomes visible and the age at which a call enters `tw.busy`.
  * `unreachableAfter` is the number of unanswered attempts after which a call is unreachable.
  */
@@ -52,12 +49,12 @@ export function configure_taskwire(options: {
   if (options.unreachableAfter !== undefined) uiConfig.unreachableAfter = options.unreachableAfter;
 }
 
-/** What `configure_taskwire` last left behind: the visible collection's policy and the adopt delay. */
+/** The current UI policy set by `configure_taskwire()` (§8.3). */
 export function taskwireConfig(): Readonly<TaskwireUiConfig> {
   return uiConfig;
 }
 
-/** Back to §8.3's defaults. Exists because module-level policy needs a way out of a test. */
+/** Restore §8.3's defaults. */
 export function resetTaskwireConfig(): void {
   uiConfig = { ...DEFAULT_UI_CONFIG };
 }

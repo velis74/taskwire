@@ -50,7 +50,7 @@ function hostWith(replies: unknown[] = []): OperationHost & { calls: unknown[] }
       const next = replies.shift();
       if (next !== undefined) throw next;
     },
-    // The dialog components issue none of the three; a modal answers, it does not collect.
+    // Dialog handling issues none of the three.
     cancel: async () => undefined,
     collect: async () => undefined,
     dismiss: async () => undefined,
@@ -71,10 +71,9 @@ describe('OperationFailed (TW-PROG-005)', () => {
   });
 });
 
-describe('Operation.dialog (M3b, TW-TS-006)', () => {
+describe('Operation.dialog (TW-TS-006)', () => {
   it('hangs on its own entry and is the oldest OPEN question', () => {
-    // There is no `tw.dialog`, no queue and no policy for a second question. The pending dialog
-    // belongs to the entry it was asked on.
+    // The pending dialog belongs to the entry it was asked on (TW-TS-006).
     const operation = new Operation({ token: 'tok', host: hostWith() });
     operation.applySnapshot({
       rev: 1,
@@ -91,8 +90,7 @@ describe('Operation.dialog (M3b, TW-TS-006)', () => {
   });
 
   it('keeps answered dialogs in the document (TW-DLG-013)', () => {
-    // Re-delivery is idempotent by construction: an unanswered dialog is part of the snapshot, so
-    // there is no replay mechanism and none is needed.
+    // Re-delivery is idempotent: an unanswered dialog is part of the snapshot.
     const operation = new Operation({ token: 'tok', host: hostWith() });
     operation.applySnapshot({ rev: 1, progress: progress(), dialogs: [dialog({ state: 'answered' })] });
 
@@ -101,8 +99,7 @@ describe('Operation.dialog (M3b, TW-TS-006)', () => {
   });
 
   it('applies a dialog regardless of rev, and never reopens a settled one (TW-REV-006, TW-REV-007)', () => {
-    // A stale rev on a dialog envelope means only "do not touch progress". A dialog.open overtaken
-    // by a later progress commit must still be applied, or the question never appears.
+    // A dialog.open with a stale rev is still applied; only progress is gated (TW-REV-006).
     const operation = new Operation({ token: 'tok', host: hostWith() });
     operation.applySnapshot({ rev: 100, progress: progress(), dialogs: [] });
 
@@ -131,8 +128,7 @@ describe('answer() (TW-DLG-011)', () => {
   });
 
   it.each([409, 404, 410])('resolves quietly on %i and logs nothing', async (status) => {
-    // A second tab answering first is a NORMAL outcome of a namespace-wide question, not a fault.
-    // No application error handler ever sees it.
+    // A 409 from another tab answering first resolves (TW-DLG-011).
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
@@ -149,7 +145,7 @@ describe('answer() (TW-DLG-011)', () => {
   });
 
   it('still rejects on 422', async () => {
-    // A malformed reply is a programming error and worth seeing.
+    // A 422 rejects.
     const operation = new Operation({ token: 'tok', host: hostWith([{ response: { status: 422 } }]) });
     operation.applySnapshot({ rev: 1, progress: progress(), dialogs: [dialog()] });
 

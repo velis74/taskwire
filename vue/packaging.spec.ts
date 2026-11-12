@@ -9,8 +9,8 @@ import { VERSION } from './index';
 
 describe('packaging', () => {
   it('version matches pyproject', () => {
-    // TW-PKG-001: one repository, two packages, a single version stream. The Python side asserts
-    // the same equality from the other direction, so neither language can drift alone.
+    // TW-PKG-001: one repository, two packages, one version. The Python side asserts the same
+    // equality.
     const pyproject = readFileSync(resolve(REPO_ROOT, 'pyproject.toml'), 'utf-8');
     const match = /^version = "([^"]+)"$/m.exec(pyproject);
     expect(match, 'pyproject.toml must declare a static version').not.toBeNull();
@@ -21,10 +21,7 @@ describe('packaging', () => {
   });
 
   it('every published subpath is a bundle the build produces', () => {
-    // The export map and the build's entry list are two lists of the same thing, written in two
-    // files. A subpath with no entry behind it resolves to nothing at install time, and an entry
-    // with no subpath is a bundle nobody can import - and neither shows up in any other test,
-    // because everything here imports through the source.
+    // Every subpath export has a build entry and every build entry a subpath export.
     const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf-8'));
     const subpaths = Object.keys(packageJson.exports)
       .map((name) => (name === '.' ? 'index' : name.slice(2)))
@@ -57,18 +54,16 @@ describe('packaging', () => {
   });
 
   it('conformance fixtures are reachable from vitest', () => {
-    // TW-PKG-002: read in place by both runners, with no copy step that could let them drift.
+    // TW-PKG-002: read in place by both runners, with no copy step.
     expect(existsSync(resolve(REPO_ROOT, 'conformance/wire'))).toBe(true);
     expect(existsSync(resolve(REPO_ROOT, 'conformance/sequences'))).toBe(true);
   });
 
   it('the core entry reaches no optional peer, and the build keeps every one of them out', () => {
-    // TW-CORE-006 / TW-TS-010: the core must not import Vue, Vuetify, the modal kit, muxws or the
-    // viewset proxy outside a subpath export, and `vue/index.ts` is the core's entry point. Every
-    // one of the six is behind a subpath - `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws`,
-    // `taskwire/fastapi-viewsets` - so the list is the whole of the policy and each entry is checked
-    // three ways: the core does not reach it, it is not a dependency, and the bundle does not inline
-    // it.
+    // TW-CORE-006 / TW-TS-010: Vue, Vuetify, the modal kit, muxws and the viewset proxy are imported
+    // only behind the subpath exports `taskwire/vue`, `taskwire/vuetify`, `taskwire/muxws` and
+    // `taskwire/fastapi-viewsets`. Each is checked three ways: the core does not reach it, it is not
+    // a dependency, and the bundle does not inline it.
     const PEERS = [
       'vue',
       'vuetify',
@@ -83,14 +78,13 @@ describe('packaging', () => {
     [...packages].forEach((specifier) => expect(specifier).not.toMatch(forbidden));
     expect(modules.has('client/taskwire.ts')).toBe(true);
     expect(modules.has('register/base/register.ts')).toBe(true);
-    // The four subpath entries, and the reason the walk above is not vacuous: each of them does
-    // import a peer, and none of them is reachable from the core.
+    // Each of the four subpath entries imports a peer, and none is reachable from the core.
     expect(modules.has('vue.ts')).toBe(false);
     expect(modules.has('vuetify.ts')).toBe(false);
     expect(modules.has('muxws.ts')).toBe(false);
     expect(modules.has('fastapi-viewsets.ts')).toBe(false);
 
-    // The dependency policy that makes the subpaths meaningful: not one of them is a dependency.
+    // None of them is a dependency.
     const manifest = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf-8'));
     const declared = Object.keys(manifest.dependencies ?? {});
     PEERS.forEach((name) => {
@@ -101,9 +95,8 @@ describe('packaging', () => {
     expect(manifest.exports['./muxws']).toBeDefined();
     expect(manifest.exports['./fastapi-viewsets']).toBeDefined();
 
-    // ...and the build keeps every one of them external. A peer that is bundled instead is a
-    // second copy: an `instanceof` written against the installed package never matches the frozen
-    // one, and the declared version range is bypassed by whatever was installed at build time.
+    // The build keeps every one of them external: a bundled peer is a second copy, against which
+    // `instanceof` fails and the declared version range does not apply.
     const viteConfig = readFileSync(resolve(REPO_ROOT, 'vite.config.ts'), 'utf-8');
     const external = /external:\s*\[([\s\S]*?)\]/.exec(viteConfig)?.[1] ?? '';
     PEERS.forEach((name) => expect(external).toContain(`'${name}'`));
@@ -111,8 +104,7 @@ describe('packaging', () => {
 
   it('the core entry reaches no ui/ directory (TW-CORE-006, TW-TS-010)', () => {
     // A feature's UI half lives in its `ui/` directory and shared UI helpers in `vue/ui/`; only
-    // `vue.ts` and `vuetify.ts` import them. A core that reached one would import a UI library, and
-    // a core that does cannot be used from React, from Svelte, or from a plain script tag.
+    // `vue.ts` and `vuetify.ts` import them.
     const { modules } = reachableFrom('index.ts');
     expect([...modules].filter((path) => /(^|\/)ui\//.test(path))).toEqual([]);
     expect(modules.has('busy/base/busy.ts')).toBe(true);
@@ -121,9 +113,8 @@ describe('packaging', () => {
   });
 
   it('only ui/ modules import a UI library (TW-CORE-006, TW-TS-010)', () => {
-    // Every module outside a `ui/` directory, whichever entry reaches it, imports neither a UI peer
-    // nor a `ui/` module. The two UI entries are the exception: importing the `ui/` modules is what
-    // they are for.
+    // Every module outside a `ui/` directory imports neither a UI peer nor a `ui/` module, except the
+    // two UI entries.
     const UI_PEER = /^(vue|vuetify|@dynamicforms\/vuetify-[\w-]+)$/;
     const UI_ENTRIES = new Set(['vue.ts', 'vuetify.ts']);
     const offenders: string[] = [];
@@ -137,7 +128,7 @@ describe('packaging', () => {
       });
     }
     expect(offenders).toEqual([]);
-    // Not vacuous: the modules only the socket and viewset entries reach are among those checked.
+    // The modules only the socket and viewset entries reach are among those checked.
     expect(checked).toBeGreaterThan(20);
     expect(sourceFiles().has('busy/base/viewset-call-source.ts')).toBe(true);
   });

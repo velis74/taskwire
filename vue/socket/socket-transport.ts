@@ -22,11 +22,9 @@ export interface WatchReply {
   /** `0` accepted, `1` rejected for exceeding `maxOverrides`, `2` malformed. */
   status: 0 | 1 | 2;
   /**
-   * The opaque, server-issued id of the socket the declaration was applied to.
-   *
-   * Present even on a rejection, because the socket is unchanged (TW-DEL-022). It is **not** stable
-   * across a reconnect and decides exactly two things: the `progressDelivery` display flag, and
-   * which socket a private operation's progress is written to (TW-DEL-016).
+   * The opaque, server-issued id of the socket the declaration was applied to; present on a
+   * rejection too (TW-DEL-022). Not stable across a reconnect. It decides the `progressDelivery`
+   * display flag and which socket a private operation's progress is written to (TW-DEL-016).
    */
   connection: string | null;
   /**
@@ -38,18 +36,13 @@ export interface WatchReply {
 
 /** What a socket transport is built from: the socket, and the two things it reports back. */
 export interface SocketTransportOptions {
-  /**
-   * A connected muxws `Peer`. taskwire does not open the socket: an application already has one, its
-   * authentication is the application's business, and a library that dialled its own would be a
-   * second connection nobody asked for.
-   */
+  /** A connected muxws `Peer`, opened and authenticated by the application. */
   peer: Peer;
-  /** Called for every envelope the server pushes. `use_taskwire().attachTransport()` supplies this. */
+  /** Called for every envelope the server pushes. */
   onEnvelope?: (envelope: Envelope) => void;
   /**
-   * Called with this socket's connection id whenever it changes, `null` while there is none. The
-   * attach functions supply `client.setConnection`, which puts the id on the wire as
-   * `X-Taskwire-Connection` (TW-REST-002).
+   * Called with this socket's connection id whenever it changes, `null` while there is none
+   * (TW-REST-002).
    */
   onConnection?: (connection: string | null) => void;
 }
@@ -64,14 +57,13 @@ export abstract class SocketClientTransport implements ClientTransport {
   protected onEnvelope: ((envelope: Envelope) => void) | null;
 
   /**
-   * The override map this socket last declared, and the connection id its reply carried: two of the
-   * three things allowed in client memory (TW-REG-019). Nothing here is persisted (TW-REG-018).
+   * The override map this socket last declared (TW-REG-019). Not persisted (TW-REG-018).
    */
   private overrides: Record<string, boolean> = {};
 
   private connectionId: string | null = null;
 
-  /** Whether this socket has ever declared, and therefore whether a new one owes an id (TW-REG-020). */
+  /** Whether this transport has ever declared; a reconnect then re-obtains the id (TW-REG-020). */
   protected declaredOnce = false;
 
   private readonly onConnection: ((connection: string | null) => void) | null;
@@ -89,8 +81,8 @@ export abstract class SocketClientTransport implements ClientTransport {
   }
 
   /**
-   * Attach a consumer after construction - what `attachTransport()` does. The returned function,
-   * which detaching runs, also removes the open interceptor (TW-TS-020).
+   * Attach a consumer after construction. The returned function detaches it and removes the open
+   * interceptor (TW-TS-020).
    */
   subscribe(handler: (envelope: Envelope) => void): () => void {
     this.onEnvelope = handler;
@@ -125,9 +117,8 @@ export abstract class SocketClientTransport implements ClientTransport {
   protected abstract isHealthy(): boolean;
 
   /**
-   * Health as it changes, so the client knows when to poll (TW-TS-007). A listener that arrives
-   * while the socket is not healthy is told so at once: the loss was reported before it was
-   * listening.
+   * Health as it changes (TW-TS-007). A listener that arrives while the socket is not healthy is
+   * told so at once.
    */
   onHealth(listener: (healthy: boolean) => void): () => void {
     this.healthListeners.add(listener);
@@ -147,16 +138,16 @@ export abstract class SocketClientTransport implements ClientTransport {
     try {
       this.onEnvelope(parseEnvelope(payload));
     } catch {
-      // The next read of the token corrects what this frame would have said.
+      // Dropped; the next read of the token corrects the state.
     }
   }
 
   /**
-   * Declare the **whole** override map for this connection (TW-DEL-006): `false` suppresses, `true`
+   * Declare the whole override map for this connection (TW-DEL-006): `false` suppresses, `true`
    * revives, absent defers to the server's `push_filter`, and `{}` returns everything to the
    * predicate. Idempotent and last-writer-wins per connection (TW-DEL-017).
    *
-   * An over-large declaration is **rejected, not truncated** (TW-DEL-008); the previous map stays in
+   * An over-large declaration is rejected, not truncated (TW-DEL-008); the previous map stays in
    * force and the reply says so.
    */
   async watch(overrides: Record<string, boolean> = {}): Promise<WatchReply> {
@@ -169,7 +160,7 @@ export abstract class SocketClientTransport implements ClientTransport {
 
   /** What a `watch` reply sets in motion: by default, holding its connection id. */
   protected acceptReply(reply: WatchReply): void | Promise<void> {
-    // Carried even on a rejection, because the socket is unchanged and the id is what identifies it.
+    // The id is carried on a rejection too.
     this.setConnection(reply?.connection ?? null);
   }
 
@@ -188,35 +179,31 @@ export abstract class SocketClientTransport implements ClientTransport {
     return this.connectionId;
   }
 
-  /** This socket's declared map. Exposed for re-declaration, never as a source of display truth. */
+  /** This socket's declared map. */
   get declared(): Readonly<Record<string, boolean>> {
     return this.overrides;
   }
 
   /**
-   * Prune an ended operation's override from the local copy (TW-DEL-023). The server prunes its own
-   * at the last hop that fans the terminal envelope out; the copy exists only to be re-sent.
+   * Prune an ended operation's override from the local copy (TW-DEL-023).
    */
   forget(token: string): void {
     delete this.overrides[token];
   }
 }
 
-/** What the attach functions need of a client. `Taskwire` is the only thing that satisfies it. */
+/** What the attach functions need of a client; `Taskwire` satisfies it. */
 export interface SocketAttachable {
   attachTransport(transport: ClientTransport): void;
   useCalls?(calls: TaskwireCalls | null): void;
-  /** Told this socket's connection id, so every request the client makes carries it (TW-DEL-022). */
+  /** Receives this socket's connection id, which every request then carries (TW-DEL-022). */
   setConnection?(connection: string | null): void;
   readonly basePath?: string;
 }
 
 /** The two choices the attach functions leave open: whether the calls move too, and where they are mounted. */
 export interface AttachSocketOptions {
-  /**
-   * Whether the six calls travel the socket too. Default `true`: a client whose pushes arrive on a
-   * socket while its reads go out over HTTP is paying for two wires to learn one thing.
-   */
+  /** Whether the six calls also travel the socket. Default `true`. */
   routeCalls?: boolean;
   /** The prefix the viewset is mounted under, when it is not the client's own (TW-REST-003). */
   basePath?: string;
@@ -228,8 +215,7 @@ export interface AttachSocketOptions {
  */
 export function detachSocket(client: SocketAttachable & { detachTransport(): void }): void {
   client.useCalls?.(null);
-  // No socket, no connection: `progress_delivery` is the predicate's answer alone from here
-  // (TW-DEL-015), and a stamped id would name a socket this client is no longer reading.
+  // Without a socket there is no connection id (TW-DEL-015).
   client.setConnection?.(null);
   client.detachTransport();
 }

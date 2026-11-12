@@ -1,32 +1,22 @@
 /**
  * `Taskwire` - the client (§5.5). One poller per token, one register loop, and a push transport that
- * holds both while it is attached.
+ * suspends both while it is attached and healthy.
  *
- * Five rules shape the client, and four of them are about what it refuses to do.
+ * **It persists nothing** (TW-REG-018, TW-INV-016): no `sessionStorage`, `localStorage`, IndexedDB
+ * or cookie. Three things live in memory (TW-REG-019): the tokens this page minted, the per-token
+ * override map, and the connection id a `watch` reply carried. A client that restarts therefore
+ * starts with no overrides.
  *
- * **It persists nothing** (TW-REG-018, TW-INV-016). Not the register, not the token list, not a tab
- * id, not a delivery preference. There is no `sessionStorage`, no `localStorage`, no IndexedDB and no
- * cookie anywhere in the package, and `client.spec.ts` spies on all four to keep it that way. Exactly
- * three things live in memory (TW-REG-019): the tokens **this page** minted, the per-token override
- * map, and the connection id a `watch` reply carried. A client that crashed while silencing something
- * must not come back permanently silent, and the only way to guarantee that is to have nothing to
- * come back to.
+ * **It never polls faster than advised** (TW-REST-014). The cadence is `poll.ts`; `poll_after_ms`
+ * is a floor, and a server answering `0` is polled at the base interval.
  *
- * **It can never be talked into polling faster** (TW-REST-014). The cadence is `poll.ts`, a pure
- * function; the loop here is a `setTimeout` around it and adds no policy of its own. `poll_after_ms`
- * is a floor. A server answering `0` gets polled at 400 ms, not flooded.
+ * **The tab id never leaves the browser** (TW-TAB-001, TW-PROG-007). The client sends
+ * `X-Taskwire-Token` and, once a socket has declared one, `X-Taskwire-Connection`, both as headers,
+ * never as query parameters, which access logs and proxy caches record (TW-CELERY-011).
  *
- * **The tab id never leaves the browser** (TW-TAB-001, TW-PROG-007). There is no `X-Taskwire-Tab`
- * header, no `origin_tab` field and no tab id in the client at all. The two headers that do travel are
- * `X-Taskwire-Token` and, once a socket has declared one, `X-Taskwire-Connection` - both headers, never
- * query parameters (TW-CELERY-011), because a token in a URL lands in every access log and proxy
- * cache between here and the application.
- *
- * **The ambient token covers only the synchronous part of `fn`.** The axios interceptor is installed
- * with `synchronous: true` so that it runs inside the `http.get(...)` call rather than a microtask
- * later, which is what makes `run(() => api.start())` work at all. It still cannot survive an `await`
- * before the request, and that is why `fn` also *receives* the token: `run(token => ...)` is the
- * always-correct form, and a callback that awaits before requesting sends no header (TW-TS-003).
+ * **The ambient token covers only the synchronous part of `fn`** (TW-TS-003). The axios interceptor
+ * is installed with `synchronous: true`, so it runs inside the `http.get(...)` call. A callback that
+ * awaits before requesting sends no header; `fn` also receives the token for that case.
  *
  * **Identity is the token** (TW-TS-005). One token is one handle and one poller, whether it arrived
  * through `run()`, `track()` or `subscribe()`.
@@ -63,12 +53,9 @@ export function normaliseBasePath(path: string): string {
 /**
  * One namespace, read through one base path and one axios instance.
  *
- * It owns the handles, a poller per token and the register loop, and it is the only thing in the
- * package that issues a call: a handle asks it to write, and `register.ts` asks it to read. Which
- * wire those calls travel is `useCalls()`, and whether anything pushes is `attachTransport()`.
- *
- * `use_taskwire()` is how an application obtains one; constructing a second for the same pair would
- * poll the same tokens twice.
+ * Owns the handles, one poller per token and the register loop; all six calls go through `calls`.
+ * `useCalls()` selects the transport of the calls, `attachTransport()` the push transport. Two
+ * clients for the same pair poll the same tokens twice; `use_taskwire()` returns one per pair.
  */
 export class Taskwire implements OperationHost, RegisterClient {
   readonly basePath: string;
@@ -118,7 +105,7 @@ export class Taskwire implements OperationHost, RegisterClient {
   constructor(basePath: string = DEFAULT_BASE_PATH, http: AxiosInstance = axios) {
     this.basePath = normaliseBasePath(basePath);
     this.http = http;
-    // After the two fields they read: a field initialiser would run before them.
+    // Assigned after `basePath` and `http`, which they read.
     this.rest = new RestCalls(this.basePath, this.http);
     this.registerState = new RegisterState(this);
     this.busyCalls = new BusyCalls({
@@ -129,10 +116,8 @@ export class Taskwire implements OperationHost, RegisterClient {
       },
     });
 
-    // `synchronous: true` is load-bearing (TW-TS-003). Without it axios runs request interceptors in a
-    // promise chain, so the interceptor would fire a microtask *after* `http.get(...)` returned - by
-    // which time `run()` has already unbound the ambient token and the header would never be written
-    // even for the synchronous form the ambient binding exists to serve.
+    // `synchronous: true` runs the interceptor inside `http.get(...)`, while the ambient token is
+    // still bound (TW-TS-003); without it the interceptor runs a microtask later and writes no token.
     this.interceptorId = this.http.interceptors.request.use(
       (config: InternalAxiosRequestConfig) => {
         for (const [name, value] of Object.entries(this.headers())) config.headers.set(name, value);
@@ -144,12 +129,10 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // The register. `register.ts` holds the loop; these are its four windows and two hooks.
+  // The register (`register.ts`).
   //
-  // Reading any of the register-facing members starts the poll, and nothing else does: an
-  // application that only ever calls `run()` polls its own tokens and never `{prefix}`.
-  // `operations` deliberately does not start it - this tab's visible subset is local policy over
-  // handles this tab already has, and is never populated from the register (TW-REG-021).
+  // Reading a register-facing member starts the register poll; nothing else does. `operations` does
+  // not start it: this tab's visible subset is never populated from the register (TW-REG-021).
   // ---------------------------------------------------------------------------------------------
 
   /** The namespace's shared register plus this tab's own private operations, merged locally. */
@@ -158,18 +141,18 @@ export class Taskwire implements OperationHost, RegisterClient {
     return this.registerState.entries;
   }
 
-  /** This tab's visible subset (§4.3). Two doors in, and neither is the register (TW-REG-021). */
+  /** This tab's visible subset (§4.3), never populated from the register (TW-REG-021). */
   get operations(): Operation<unknown>[] {
     return this.registerState.operations;
   }
 
-  /** No `percent` on it, ever (TW-REG-011); `null` at rest, so a widget can hide (TW-REG-017). */
+  /** The register's aggregate, with no `percent` (TW-REG-011); `null` at rest (TW-REG-017). */
   get aggregate(): Aggregate | null {
     this.registerState.start();
     return this.registerState.aggregate;
   }
 
-  /** Whose own percentage a footer draws: FIFO by default, advancing itself (TW-REG-013, TW-TS-012). */
+  /** The operation whose percentage a footer draws: FIFO by default (TW-REG-013, TW-TS-012). */
   get selected(): Operation<unknown> | null {
     this.registerState.start();
     return this.registerState.selected;
@@ -180,12 +163,13 @@ export class Taskwire implements OperationHost, RegisterClient {
     this.registerState.select(token);
   }
 
-  /** For non-reactive consumers. The reactive collections are the documented default (TW-TS-008). */
+  /** Calls `callback` with every new `tw.register`; returns the function that removes it (TW-TS-008). */
   onRegisterChange(callback: (operations: Operation<unknown>[]) => void): () => void {
     this.registerState.start();
     return this.registerState.onRegisterChange(callback);
   }
 
+  /** Calls `callback` with every new `tw.operations`; returns the function that removes it. */
   onOperationsChange(callback: (operations: Operation<unknown>[]) => void): () => void {
     return this.registerState.onOperationsChange(callback);
   }
@@ -197,10 +181,9 @@ export class Taskwire implements OperationHost, RegisterClient {
   /**
    * Mint a token, bind it for the synchronous part of `fn`, hand it to `fn`, and watch it.
    *
-   * The returned handle is a `PromiseLike` over **`fn`'s own promise** (TW-TS-002): awaiting it gives
-   * back exactly what the request returned, and rejects with exactly what it threw. The operation's
-   * own outcome is on `op.progress`, and deliberately not on the promise - a caller who wanted the
-   * request's answer must not have it replaced by the worker's.
+   * The returned handle is a `PromiseLike` over `fn`'s own promise (TW-TS-002): it resolves with
+   * what `fn` resolved to and rejects with what it threw. The operation's own outcome is on
+   * `op.progress`.
    */
   run<T>(fn: (token: string) => Promise<T>, options: RunOptions = {}): Operation<T> {
     const token = new_token();
@@ -273,24 +256,21 @@ export class Taskwire implements OperationHost, RegisterClient {
       poller.searchIsOver();
       if (readOnSettle) poller.callSettled();
     };
-    // The command's answer is the earliest moment a row can be shown. The front end mints the token
-    // and sends it with its own command, and the server writes `queued` before it replies
-    // (TW-CORE-007) - so a reply is proof that the register can already answer for this token, and
-    // for a shared operation the register is the only thing that can (TW-REG-006, TW-PRIV-002).
-    // A caller who declared no `resultKind` means a private operation, whose row this client holds
-    // itself and asks nobody for.
+    // The server writes `queued` before it replies (TW-CORE-007), so on a reply the register already
+    // lists a shared operation: read it (TW-REG-006). A private one (no `resultKind`) is never in it
+    // (TW-PRIV-002).
     promise.then(() => {
       settled();
       if (options.resultKind !== undefined) this.registerState.noteMembership(token);
     }, settled);
-    // §4.3's first door: `startedHere` plus `progressUi.delay`, and this tab only (TW-TAB-002).
+    // Visible in this tab after `progressUi.delay` (§4.3, TW-TAB-002).
     this.registerState.noteStarted(handle as Operation<unknown>, options.progressUi !== false);
     return handle;
   }
 
   /**
-   * Watch a token somebody else minted (or this page did). One token is one handle (TW-TS-005), so a
-   * second call for the same token hands back the first one rather than starting a second poller.
+   * Watch a token minted anywhere. One token is one handle (TW-TS-005): a second call for the same
+   * token returns the first handle.
    */
   track<T>(token: string, options: TrackOptions = {}): Operation<T> {
     const existing = this.handles.get(token);
@@ -303,11 +283,8 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * The raw single-token surface: snapshots as they are read, on the same ladder (TW-REST-011).
-   *
-   * The ladder is held while a transport is attached and healthy and comes back on its base rung
-   * when one is lost or detached (TW-TS-007), so a subscription costs nothing extra over a live
-   * socket and recovers by reading, which is the only recovery there is (TW-CORE-005).
+   * The raw single-token surface: snapshots as they are read, on the same ladder (TW-REST-011,
+   * TW-TS-007).
    */
   subscribe(token: string): Subscription {
     const poller = this.pollerFor(token);
@@ -355,15 +332,13 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Which wire this client speaks
+  // Transports
   //
-  // Two independent choices, and they are independent on purpose. `useCalls()` decides where the
-  // six calls of TW-REST-004 travel; `attachTransport()` decides whether anything pushes, and it is
-  // the one that stops the polling. An application may move its calls onto a socket and keep no
-  // push at all, or take pushes while its calls stay on HTTP.
+  // Two independent choices: `useCalls()` selects where the six calls of TW-REST-004 travel;
+  // `attachTransport()` selects whether anything pushes, and suspends the polling.
   // ---------------------------------------------------------------------------------------------
 
-  /** @internal What `register.ts` and the pollers issue every request through. */
+  /** @internal The transport chosen by `useCalls()`, or REST. */
   get calls(): TaskwireCalls {
     return this.chosenCalls ?? this.rest;
   }
@@ -374,18 +349,13 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * Hold the id a `watch` reply carried, so every request this client makes can name its socket
-   * (TW-DEL-022, TW-REG-019).
+   * Set the connection id sent as `X-Taskwire-Connection` on every request; `null` stops sending it
+   * (TW-DEL-022, TW-REG-019). Not persisted.
    *
-   * The id decides exactly two things, and both are decided **server-side, from the header**: which
-   * answer `progress_delivery` gives this reader (TW-DEL-014, TW-DEL-015), and which socket a
-   * private operation's progress is written to (TW-PRIV-003) - the latter fixed once, at the opening
-   * write, from the command that started the operation (TW-PRIV-001). A client holding an id it
-   * never sends has neither.
-   *
-   * `null` on a socket that died, and the transport says so rather than this client noticing: the id
-   * is not stable across a reconnect (TW-DEL-016), and a request carrying a dead socket's id is
-   * answered for a socket that no longer exists. Nothing is persisted (TW-REG-018, TW-INV-016).
+   * The server uses it to decide `progress_delivery` for this reader (TW-DEL-014, TW-DEL-015) and,
+   * at the opening write, the socket a private operation's progress goes to (TW-PRIV-001,
+   * TW-PRIV-003). The id changes on reconnect (TW-DEL-016); the transport sets `null` when its
+   * socket closes.
    */
   setConnection(connection: string | null): void {
     this.connectionId = connection;
@@ -411,33 +381,18 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * Take pushes from `transport`, and **suspend every polling ladder** while it is attached and
-   * healthy (TW-TS-007).
-   *
-   * Exclusive rather than additive. A socket that pushes the instant a state changes and a ladder
-   * that asks again every five seconds are two answers to one question, and paying for both leaves
-   * a request per tab per tick on the wire in exactly the deployment that exists to avoid them.
-   * `onHealth` is what makes a loss observable: a transport that reports itself lost puts every
-   * ladder back on its base rung within one base interval, and the store is what the next read
-   * returns (TW-CORE-002).
-   *
-   * Suspended is not silent. Every ladder still owes its first read - the register's and each
-   * token's - because a transport carries what changes and can say nothing about what a namespace
-   * was already doing when the socket arrived.
-   *
-   * Attaching a second transport replaces the first and closes nothing: taskwire never opened the
-   * socket, and a library that closed one it did not dial would take an application's connection
-   * away from it (TW-WS-001).
+   * Take pushes from `transport` and suspend every polling ladder while it is attached and healthy;
+   * on loss the ladders resume on the base rung (TW-TS-007, TW-CORE-002). Every ladder still
+   * performs its first read, except the poller of a token this page minted. Attaching a second
+   * transport replaces the first without closing it (TW-WS-001).
    */
   attachTransport(transport: ClientTransport): void {
     this.releaseTransport();
     this.transport = transport;
-    // Subscribed before the ladders are held, which is the order that makes the suspension correct
-    // rather than merely quiet: from here on the pushes are what carries every handle, and a client
-    // that stopped polling without consuming them would update from nothing.
+    // Subscribed before the ladders are suspended, so no push is missed.
     this.transportListeners.push(transport.subscribe((envelope) => this.applyEnvelope(envelope)));
-    // Held first, listened to second. A transport that is already down says so the moment a listener
-    // arrives, and that report has to be able to undo this suspension rather than precede it.
+    // Suspended before the health listener is added: a transport that is already down reports it
+    // on subscription, which then resumes the ladders.
     this.suspendPolling(true);
     const stop = transport.onHealth?.((healthy) => this.noteTransportHealth(healthy));
     if (stop !== undefined) this.transportListeners.push(stop);
@@ -445,7 +400,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     if (stopResync !== undefined) this.transportListeners.push(stopResync);
   }
 
-  /** One read of the register and of every polled token, ladders held or not. */
+  /** One read of the register and of every polled token, suspended or not. */
   private resync(): void {
     if (this.disposed) return;
     this.registerState.resync();
@@ -453,39 +408,29 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * @internal One pushed envelope, routed to everything a read of the same token moves.
-   *
-   * A push is an accelerator and never a second source of truth (TW-CORE-002), so it lands on the
-   * three consumers `TokenPoller.deliver` already feeds and on no path of its own: the handle -
-   * through the register route, which is also what moves `tw.register`, the aggregate and the
-   * selection - then the token's `latest` document and the subscriptions watching it. `dialog.reply`
-   * and `watch` originate with a client and are dropped rather than routed (TW-CORE-009).
+   * @internal Route one pushed envelope to what a read of the same token updates (TW-CORE-002): the
+   * handle, through the register (which also updates `tw.register`, the aggregate and the
+   * selection), then the token's `latest` document and its subscriptions. Kinds that are never
+   * pushed, `dialog.reply` and `watch`, are dropped (TW-CORE-009).
    */
   private applyEnvelope(envelope: Envelope): void {
     if (this.disposed || !PUSHED_KINDS.has(envelope.kind)) return;
     const poller = this.pollers.get(envelope.token);
-    // A `subscribe()` token has a poller and no handle of its own. One token is one handle
-    // (TW-TS-005), so the envelope lands on an adopted one rather than on a second state machine
-    // built inside the poller - which is also what keeps the `rev` gate and the dialog rules in
-    // `Operation`, where a read leaves them. The loop takes that handle rather than leaving it
-    // loose: one token is one handle *and* one poller, so the handle a push adopts is the one the
-    // terminal document finishes and the one the loop releases on its way out.
+    // A subscribe()-only token gets an adopted handle, which its poller then owns (TW-TS-005).
     if (poller !== undefined) poller.adoptHandle(this.adopt(envelope.token));
-    // Read before the route, because the route may close it: a terminal envelope is a departure
-    // from the register, a departure releases the handle the register adopted, and the document
-    // that carries it is the last one the subscriptions will ever be owed.
+    // Looked up before the route: a terminal envelope releases the adopted handle (TW-REG-007).
     const handle = this.handle(envelope.token);
     if (this.registerState.applyEnvelope(envelope) && handle !== null) poller?.notePush(handle);
   }
 
-  /** Let the transport go and put the ladders back. The socket itself is the application's. */
+  /** Detach the transport, without closing it, and resume the ladders. */
   detachTransport(): void {
     if (this.transport === null) return;
     this.releaseTransport();
     this.suspendPolling(false);
   }
 
-  /** A transport that lost its connection is a client that polls again, on the base rung. */
+  /** Suspend the ladders while the transport is healthy, resume them on the base rung otherwise. */
   private noteTransportHealth(healthy: boolean): void {
     if (this.transport === null) return;
     this.suspendPolling(healthy);
@@ -497,7 +442,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     this.transport = null;
   }
 
-  /** One switch over every ladder there is: the register's, and one per token. */
+  /** Suspend or resume the register's ladder and every token's. */
   private suspendPolling(suspended: boolean): void {
     if (this.pollingSuspended === suspended) return;
     this.pollingSuspended = suspended;
@@ -506,39 +451,23 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * POST a dialog reply, over whichever transport `useCalls()` chose. REST is the default and the
-   * recommended path (TW-WS-008): it is the one that works with no socket at all, and the reply is
-   * the one place where "works everywhere" beats "arrives sooner". A client whose calls were moved
-   * onto a socket has asked for the other trade in one explicit call.
-   *
-   * This throws on any non-2xx. `Operation.answer()` is what decides that a 409, a 404 and a 410 are
-   * normal outcomes of a namespace-wide question rather than faults (TW-DLG-011) - keeping that
-   * judgement in one place, on the handle, rather than in every call site.
+   * POST a dialog reply over the transport chosen by `useCalls()` (REST by default, TW-WS-008), then
+   * read the token and the register. Throws on any non-2xx; `Operation.answer()` treats a 404, 409
+   * and 410 as outcomes (TW-DLG-011).
    */
   async replyToDialog(token: string, did: string, button: string, values: Record<string, unknown> = {}): Promise<void> {
     try {
       await this.calls.replyToDialog(token, did, button, values);
     } finally {
-      // Whether or not the reply was accepted. A `409` or a `410` is another tab having answered
-      // first (TW-DLG-011), which ends this question exactly as an accepted reply does and leaves the
-      // same worker running with nobody reading it.
+      // Also on failure: a `409` or `410` means another tab answered first (TW-DLG-011).
       this.noteWrite(token);
     }
   }
 
   /**
-   * The other three writes of TW-REST-004, over whichever transport `useCalls()` chose.
-   *
-   * They are three lines each for the same reason the reply is: the endpoint and the wire are the
-   * client's business, and what a `202`, a `404` and a `409` *mean* is `Operation`'s - a cancel is a
-   * request rather than a completion (TW-CANCEL-003), a release happens exactly once (TW-RES-010),
-   * and a race between two readers of one namespace is not a fault. Keeping that judgement on the
-   * handle is what stops every call site having to make it again.
-   *
-   * None of the three moves any state here. A cancel changes nothing until the operation notices
-   * (TW-CANCEL-001), and a release leaves the register in the same step it releases (TW-REG-007) -
-   * which arrives as the terminal document, over a socket as the push and without one as the next
-   * read (TW-CORE-002).
+   * POST cancel for `token` over the chosen transport, then read the token and the register. A
+   * `202` is a request, not a completion (TW-CANCEL-003); no local state changes (TW-CANCEL-001).
+   * Throws on any non-2xx.
    */
   async cancel(token: string): Promise<void> {
     try {
@@ -548,6 +477,10 @@ export class Taskwire implements OperationHost, RegisterClient {
     }
   }
 
+  /**
+   * POST collect for `token` over the chosen transport, then read the token and the register. The
+   * terminal document arrives by push or by the next read (TW-REG-007). Throws on any non-2xx.
+   */
   async collect(token: string): Promise<void> {
     try {
       await this.calls.collect(token);
@@ -556,6 +489,10 @@ export class Taskwire implements OperationHost, RegisterClient {
     }
   }
 
+  /**
+   * POST dismiss for `token` over the chosen transport, then read the token and the register. The
+   * terminal document arrives by push or by the next read (TW-REG-007). Throws on any non-2xx.
+   */
   async dismiss(token: string): Promise<void> {
     try {
       await this.calls.dismiss(token);
@@ -565,16 +502,8 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * A write of this client's own has changed what the operation is doing: read, on both loops.
-   *
-   * The interval rules answer their ceiling for the two situations these calls end - a question a
-   * human is deciding, and an operation with nothing left to do - so the rung in flight when one of
-   * them returns is the one chosen for the situation that has just stopped being true. Every one of
-   * the four also changes the register: a question answered moves `needs_attention`, and a release
-   * takes the row out of it in the same step (TW-REG-007, TW-REG-004).
-   *
-   * Neither loop is asked for anything while a transport carries the namespace: it delivers what
-   * changed, and the ladders are held for that reason (TW-TS-007).
+   * After a write of this client's own: read the token and the register now, restarting both ladders
+   * from the base rung (§8.2, TW-REG-004, TW-REG-007). Does nothing while suspended (TW-TS-007).
    */
   private noteWrite(token: string): void {
     this.pollers.get(token)?.readNow();
@@ -600,19 +529,19 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * Push this client's whole override map to the attached transport, if any (TW-DEL-006). A no-op
-   * with nothing attached: there is no push channel to suppress anything on, and the map itself
-   * still lives in memory for whichever transport attaches next.
+   * Send this client's whole override map to the attached transport, if any (TW-DEL-006). With none
+   * attached the map stays in memory only.
    */
   private declareOverrides(): void {
     void this.transport?.watch?.(Object.fromEntries(this.overrides));
   }
 
-  /** Purely local, this tab's visible collection, and invisible to every other tab (§4.3). */
+  /** Add the token to this tab's visible collection; local to this tab (§4.3). */
   show(token: string): void {
     this.registerState.show(token);
   }
 
+  /** Remove the token from this tab's visible collection; local to this tab (§4.3). */
   hide(token: string): void {
     this.registerState.hide(token);
   }
@@ -623,10 +552,10 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // RegisterClient - what `register.ts` is allowed to ask of the client
+  // RegisterClient
   // ---------------------------------------------------------------------------------------------
 
-  /** @internal §8.3, read live so `configure_taskwire()` after construction still governs. */
+  /** @internal The current §8.3 policy, read on every call. */
   uiPolicy(): Readonly<UiPolicy> {
     return taskwireConfig();
   }
@@ -637,11 +566,10 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * @internal A handle for a register entry, minted **with no poller of its own** (TW-REG-002).
+   * @internal A handle for a register entry, minted with no poller of its own (TW-REG-002).
    *
-   * The register payload carries the whole snapshot, so a follow-up `GET {prefix}/{token}` would ask
-   * for something the client was just handed. A token that already has a poller - one this tab
-   * started or tracked - keeps it: one token is one handle and one poller (TW-TS-005).
+   * The register payload carries the whole snapshot. A token that already has a handle keeps it
+   * (TW-TS-005).
    */
   adopt(token: string): Operation<unknown> {
     const existing = this.handles.get(token);
@@ -654,10 +582,8 @@ export class Taskwire implements OperationHost, RegisterClient {
   /**
    * @internal This tab's own private operations (TW-PRIV-002, TW-REG-019).
    *
-   * No register payload carries one, for any caller including its own, so the only copy that exists
-   * anywhere is the one this tab's per-token polls are already reading. A terminal one is left out:
-   * it has left every register there is (TW-REG-007), and holding a corpse in `tw.register` is what
-   * TW-REG-015 says `failureLinger` must not do.
+   * No register payload carries one, so these come from this tab's per-token reads. Terminal ones are
+   * excluded (TW-REG-007, TW-REG-015).
    */
   privateSnapshots(): Snapshot[] {
     const out: Snapshot[] = [];
@@ -686,18 +612,8 @@ export class Taskwire implements OperationHost, RegisterClient {
   }
 
   /**
-   * @internal A per-token document landed: the private half of the merged register moved, and a
-   * **shared** token seen here for the first time is a membership change this client can prove.
-   *
-   * The row of a shared operation comes from the register payload and from nowhere else - these
-   * reads carry only the private half (TW-PRIV-002) - so `tw.register` learns about an operation
-   * this tab started no earlier than the ladder's next rung, which is the ceiling whenever nothing
-   * else in the namespace was active (TW-REST-014, §8.2). A document under the token is proof that
-   * the list can now answer for it, and the register is what says who is in it (TW-REG-006): one
-   * read off the ladder is the answer, exactly as it is for a push naming a token with no row.
-   *
-   * Only the first document asks. The payload it fetches carries the token, so every later read
-   * finds the membership already known and asks for nothing.
+   * @internal A per-token document landed: refresh the merged register, and on the first document of
+   * a non-terminal shared token read the register once off the ladder (TW-PRIV-002, TW-REG-006).
    */
   noteSnapshot(snapshot: Snapshot, firstDocument: boolean): void {
     this.registerState.refresh();
@@ -705,19 +621,17 @@ export class Taskwire implements OperationHost, RegisterClient {
     this.registerState.noteMembership(snapshot.token);
   }
 
-  /** Stop every poller and take the interceptor back off the axios instance. */
+  /** Stop every poller, close the attached transport and remove the axios interceptor. Issues no request. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    // A vanished watcher changes nothing (TW-REG-008): this stops timers and drops local handles,
-    // and issues no cancel, no dismiss and no request of any kind on the way out.
+    // A vanished watcher changes nothing (TW-REG-008): no cancel, dismiss or other request.
     this.registerState.stop();
     this.busyCalls.dispose();
     [...this.pollers.values()].forEach((poller) => poller.stop());
     this.pollers.clear();
     this.handles.clear();
-    // The one place taskwire closes a socket it did not open: the client is going away, so a
-    // transport it is holding the only reference to would otherwise stay attached to nothing.
+    // The only place taskwire closes a transport it did not open.
     this.transport?.close?.();
     this.releaseTransport();
     if (this.interceptorId !== null) this.http.interceptors.request.eject(this.interceptorId);
@@ -737,8 +651,7 @@ export class Taskwire implements OperationHost, RegisterClient {
     const existing = this.pollers.get(token);
     if (existing !== undefined) return existing;
     const poller = new TokenPoller(this, token);
-    // Born held when a transport is already carrying this client, so a token tracked while a socket
-    // is up does not start the one ladder the attach was supposed to have stopped (TW-TS-007).
+    // Created suspended while a transport is attached and healthy (TW-TS-007).
     if (this.pollingSuspended) poller.setSuspended(true);
     this.pollers.set(token, poller);
     return poller;

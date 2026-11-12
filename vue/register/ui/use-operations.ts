@@ -7,9 +7,8 @@ import { clientFor, untilScopeEnds } from '../../ui/scope';
 /**
  * This tab's visible subset (§4.3), reactively.
  *
- * It is **not** the register: nothing here can put a row on screen, and reading it starts no poll of
- * `{prefix}` (TW-REG-021). Entries arrive by `startedHere` plus `progressUi.delay`, or by `show()`,
- * and by nothing else.
+ * Not the register: reading it starts no poll of `{prefix}` (TW-REG-021). Entries arrive only by
+ * `startedHere` plus `progressUi.delay`, or by `show()`.
  */
 export function use_operations(options?: TaskwireOptions): Ref<Operation<unknown>[]> {
   const client = clientFor(options);

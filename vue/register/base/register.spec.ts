@@ -25,8 +25,7 @@ import {
 import { aggregate } from './aggregate';
 import { mergePrivate, sortEntries } from './register';
 
-// The register is the collection, so it lives at the collection URL and carries no extra
-// segment. Derived from the constant rather than spelled out, so a move cannot pass here.
+// Derived from `REGISTER_PATH`.
 const REGISTER_URL = REGISTER_PATH === '' ? DEFAULT_BASE_PATH : `${DEFAULT_BASE_PATH}/${REGISTER_PATH}`;
 
 function sources(): Map<string, string> {
@@ -34,7 +33,7 @@ function sources(): Map<string, string> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// A server that never exists, holding one register and any number of single-token documents.
+// A fake server holding one register and any number of single-token documents.
 // ---------------------------------------------------------------------------------------------
 
 interface Recorded {
@@ -107,8 +106,8 @@ function summaryWire(token: string, options: EntryOptions = {}): WireObject {
 }
 
 /**
- * The body of a `progress` push, taken through the parser and the serializer so that the pushed
- * document and the register row are provably the same document rather than two literals that drift.
+ * The body of a `progress` push, taken through the parser and the serialiser, so that the pushed
+ * document and the register row are the same document.
  */
 function progressBody(options: EntryOptions = {}): WireObject {
   return serializeProgress(parseProgress(progressWire(options))) as WireObject;
@@ -125,8 +124,7 @@ class FakeTransport implements ClientTransport {
     };
   }
 
-  /** Through the same serialize/parse pair a real frame crosses, so no test can push a shape the
-   *  wire could not carry. */
+  /** Through the serialise/parse pair a real frame crosses. */
   push(token: string, rev: number, kind: EnvelopeKind, body: WireObject): void {
     this.listener?.(parseEnvelope(serializeEnvelope({ v: WIRE_VERSION, token, rev, kind, body })));
   }
@@ -147,8 +145,8 @@ class Server {
   /**
    * A read held open, so a test can make something happen while one is in flight.
    *
-   * The payload is decided before the wait, which is the whole point: a read already on the wire
-   * was answered by the list as it stood when the request went out.
+   * The payload is decided before the wait: a read in flight is answered with the list as it stood
+   * when the request went out.
    */
   gate: Promise<void> | null = null;
 
@@ -216,9 +214,7 @@ let tw: Taskwire;
 /**
  * One full register read, at the base interval.
  *
- * Reading `tw.register` is what starts the loop: an application that only ever calls `run()` polls
- * its own tokens and never `{prefix}`, so a test that never touched the register would be
- * advancing a clock nothing is waiting on.
+ * Reading `tw.register` starts the loop.
  */
 async function poll(times = 1, client: Taskwire = tw): Promise<void> {
   void client.register;
@@ -247,8 +243,8 @@ afterEach(() => {
 
 describe('tw.register (TW-REG-001..007)', () => {
   it('the register is the namespace the tab is in, not the tab', async () => {
-    // TW-REG-001: scoped to the account when a user is logged in and to the session otherwise, and
-    // never to a tab. An operation this tab never started is in it, in full.
+    // TW-REG-001: scoped to the account or the session, never to a tab. An operation this tab never
+    // started is in it, in full.
     const elsewhere = new_token();
     server.list(summaryWire(elsewhere, { percent: 42, title: { key: 'acme.importer.title' } }));
 
@@ -263,14 +259,14 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('a private operation appears only in the tab that minted it', async () => {
-    // TW-PRIV-002: no payload carries a private operation, for any caller including its own. The
-    // client library merges its own back in locally, and no other client can (TW-REG-019).
+    // TW-PRIV-002: no payload carries a private operation. The client that minted it merges it in
+    // locally; no other client can (TW-REG-019).
     const other = new Taskwire(DEFAULT_BASE_PATH, server.http);
     try {
       const op = tw.run(() => server.http.get('/api/start'));
       server.documents.set(op.token, snapshotWire(op.token, { resultKind: null, percent: 12 }));
       await op;
-      // The register payload never mentions it - that is the whole of TW-PRIV-002.
+      // The register payload does not list it (TW-PRIV-002).
       server.list();
       await poll(2);
 
@@ -279,7 +275,7 @@ describe('tw.register (TW-REG-001..007)', () => {
       expect(tw.register[0].resultKind).toBeNull();
       expect(tw.register[0].progress?.percent).toBe(12);
 
-      // The second client holds the same namespace's register and cannot see it at all.
+      // Another client of the same namespace does not see it.
       expect(other.register).toEqual([]);
       await poll();
       expect(other.register).toEqual([]);
@@ -289,9 +285,7 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('a private operation the payload does list is one entry, not two', async () => {
-    // TW-PRIV-004 (from M3): a private operation *is* listed while it holds an open question. A
-    // merge that appended rather than keyed by token would put two rows on screen for one operation
-    // in exactly the case a user is being asked something.
+    // TW-PRIV-004: a private operation is listed while it holds an open question, and appears once.
     const op = tw.run(() => server.http.get('/api/start'));
     server.documents.set(op.token, snapshotWire(op.token, { resultKind: null, dialog: true }));
     await op;
@@ -303,8 +297,7 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('each entry carries the whole snapshot and no follow-up GET is issued', async () => {
-    // TW-REG-002: one request renders an entire operations UI. A per-token poll for a row the
-    // payload just delivered in full would be asking for something the client already has.
+    // TW-REG-002: no per-token read for a row the payload delivered in full.
     const first = new_token();
     const second = new_token();
     server.list(summaryWire(first, { percent: 10 }), summaryWire(second, { percent: 20, dialog: true }));
@@ -322,8 +315,7 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('the register request carries no parameters', async () => {
-    // TW-REG-003: always the whole register, and there is therefore no parameter that could name
-    // another namespace.
+    // TW-REG-003: always the whole register, with no parameter.
     server.list(summaryWire(new_token()));
     await poll(3);
 
@@ -339,9 +331,7 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('needs_attention sorts first, then created_at ascending', async () => {
-    // TW-REG-005, and there is no third key: an old uncollected result sorts above a fresh
-    // question, which is accepted because the result holds nothing and the aggregate's
-    // `waiting_input` lights the indicator either way.
+    // TW-REG-005, with no third key: an old uncollected result sorts above a fresh question.
     const oldest = new_token();
     const middle = new_token();
     const newest = new_token();
@@ -356,9 +346,8 @@ describe('tw.register (TW-REG-001..007)', () => {
 
     expect(tokensOf(tw.register)).toEqual([asking, oldest, middle, newest]);
 
-    // No third key at all: entries that tie on both keys keep the order they arrived in. (The
-    // open question above put the ladder on the ceiling, which is TW-REST-010 doing its job, so
-    // this read is several rungs away rather than one.)
+    // Entries that tie on both keys keep their input order. The open question put the ladder on the
+    // ceiling (TW-REST-010), so this read is several rungs away.
     const left = new_token();
     const right = new_token();
     server.list(
@@ -371,8 +360,7 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('a running operation is always listed', async () => {
-    // TW-REG-006: no liveness detection, no orphan grace and no listing filter. The client applies
-    // none of its own either - it renders what the payload says.
+    // TW-REG-006: the client renders what the payload says, with no liveness or listing filter.
     const token = new_token();
     server.list(summaryWire(token, { state: 'running' }));
     await poll(10);
@@ -384,8 +372,8 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('a terminal entry is gone from the very next payload', async () => {
-    // TW-REG-007 / TW-INV-021: the terminal write and the departure are one step, so the client
-    // never sees a `done` row - it sees a shorter list. That is not an error and not a reason to retry.
+    // TW-REG-007 / TW-INV-021: the terminal write and the departure are one step, so the client sees a
+    // shorter list, never a `done` row, and does not retry.
     const going = new_token();
     const staying = new_token();
     server.list(summaryWire(going), summaryWire(staying, { createdAt: '2026-01-01T00:00:02.000Z' }));
@@ -398,16 +386,14 @@ describe('tw.register (TW-REG-001..007)', () => {
 
     const before = server.requests.length;
     await poll(3);
-    // No retry of the departed token, and no attempt to confirm the absence.
+    // No read of the departed token.
     expect(server.polls(`${DEFAULT_BASE_PATH}/${going}`)).toEqual([]);
     expect(server.requests.slice(before).every((request) => request.url === REGISTER_URL)).toBe(true);
     expect(tokensOf(tw.register)).toEqual([staying]);
   });
 
   it('a failed read is polled through, never surfaced as an empty register', async () => {
-    // TW-REG-006 from the client's side: a running operation is always listed, so a read that did
-    // not arrive is a failure to read and never evidence that the register is empty. A client that
-    // stopped on a dropped connection would also never notice the connection coming back.
+    // TW-REG-006: a failed read is not evidence that the register is empty; polling continues.
     const token = new_token();
     server.list(summaryWire(token));
     await poll();
@@ -424,10 +410,8 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('a question on a departed entry closes with the entry (TW-CANCEL-011, TW-DLG-016)', async () => {
-    // An entry this loop adopted has no poller of its own (TW-REG-002), and no payload ever carries
-    // the terminal document - the write that makes it terminal de-indexes it (TW-REG-007). So the departure
-    // is the only news a tab that did not start the operation will ever get, and a client that let
-    // it say nothing about the question would leave a modal on screen over a worker that is gone.
+    // An adopted entry has no poller (TW-REG-002) and no payload carries its terminal document
+    // (TW-REG-007), so the departure withdraws its open question.
     const elsewhere = new_token();
     server.list(summaryWire(elsewhere, { dialog: true }));
     await poll();
@@ -435,8 +419,7 @@ describe('tw.register (TW-REG-001..007)', () => {
     expect(entry.dialog?.state).toBe('open');
 
     server.list();
-    // A question open holds the ladder at its ceiling (§8.2), which is where a client with no
-    // transport learns of the departure.
+    // An open question holds the ladder at its ceiling (§8.2).
     await poll(10);
     expect(tw.register).toEqual([]);
     expect(entry.dialog).toBeNull();
@@ -444,8 +427,7 @@ describe('tw.register (TW-REG-001..007)', () => {
   });
 
   it('the aggregate and the selection follow the payload', async () => {
-    // TW-REG-013 through TW-REG-017 as the loop applies them: FIFO advances by itself, and the
-    // resting state is nothing at all rather than a zeroed document.
+    // TW-REG-013 to TW-REG-017 in the loop: FIFO advances, and the resting aggregate is `null`.
     const first = new_token();
     const second = new_token();
     server.list(
@@ -472,17 +454,15 @@ describe('tw.register (TW-REG-001..007)', () => {
 
 describe('what puts a row on screen with no push to carry it (TW-REG-006)', () => {
   it('the command answering is what shows the row of an operation this tab started', async () => {
-    // The front end mints the token and sends it with its own command, and the server writes
-    // `queued` before it replies (TW-CORE-007) - so the reply is proof the list can answer for this
-    // token. Without a read there, the row waits for the ladder, and the ladder is on its ceiling
-    // for as long as the last payload was quiet: the click is followed by seconds of nothing.
+    // The server writes `queued` before it replies (TW-CORE-007), so the reply triggers a register
+    // read rather than waiting for the ladder.
     server.list();
     await poll(2);
     const reads = server.polls(REGISTER_URL).length;
 
     const op = tw.run(
       async (token) => {
-        // What the server does while it answers, in the order it does it.
+        // The server's actions while it answers, in order.
         server.list(summaryWire(token, { percent: 3 }));
       },
       { resultKind: 'acme.report' },
@@ -495,9 +475,8 @@ describe('what puts a row on screen with no push to carry it (TW-REG-006)', () =
   });
 
   it('a first document under a token with no row is one read of the list', async () => {
-    // The command may answer before the operation exists - an application is free to write `queued`
-    // in the worker instead. The token's own poller is the other proof, and it is the one that
-    // covers a token this tab never started but was asked to watch.
+    // The command may answer before the operation exists (`queued` written by the worker). The
+    // token's own poller then triggers the register read, also for a token this tab only watches.
     const token = new_token();
     server.list();
     await poll(2);
@@ -513,10 +492,8 @@ describe('what puts a row on screen with no push to carry it (TW-REG-006)', () =
   });
 
   it('reads the list when one of this client own writes lands', async () => {
-    // Every one of the four moves the payload: an answered question clears `needs_attention` and
-    // re-sorts the row (TW-REG-004, TW-REG-005), and a cancel, a collect or a dismiss takes it out
-    // (TW-REG-007). The rung that would otherwise carry that news was chosen while the question was
-    // still open, which is the ceiling.
+    // Each write changes the payload: an answer clears `needs_attention` and re-sorts the row
+    // (TW-REG-004, TW-REG-005); a cancel, collect or dismiss removes it (TW-REG-007).
     const token = new_token();
     server.list(summaryWire(token, { dialog: true }));
     server.documents.set(token, snapshotWire(token, { dialog: true }));
@@ -531,9 +508,8 @@ describe('what puts a row on screen with no push to carry it (TW-REG-006)', () =
   });
 
   it('asks for nothing on behalf of a private operation, on either path (TW-PRIV-002)', async () => {
-    // No register payload carries a private operation for any caller including its own, so a read
-    // asked for on its behalf is a question the list cannot answer. Its row is the one its own
-    // poller holds, and it is on screen without a request of any kind.
+    // No payload carries a private operation (TW-PRIV-002): no register read is issued for it, and its
+    // row comes from its own poller.
     server.list();
     await poll(2);
     const reads = server.polls(REGISTER_URL).length;
@@ -553,7 +529,7 @@ describe('what puts a row on screen with no push to carry it (TW-REG-006)', () =
 
 describe('tw.operations (§4.3, TW-REG-021)', () => {
   it('tw.operations is not populated from tw.register', async () => {
-    // TW-REG-021: ten rows in the register, none of them this tab's, and nothing on screen.
+    // TW-REG-021: ten rows in the register, none of them this tab's, and an empty visible collection.
     const tokens = Array.from({ length: 10 }, () => new_token());
     server.list(...tokens.map((token, index) => summaryWire(token, { createdAt: `2026-01-01T00:00:0${index}.000Z` })));
     await poll(5);
@@ -561,15 +537,15 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     expect(tw.register).toHaveLength(10);
     expect(tw.operations).toEqual([]);
 
-    // `show()` is one of the two doors in, and it admits exactly one row.
+    // `show()` enters exactly one row.
     tw.register[3].show();
     expect(tokensOf(tw.operations)).toEqual([tw.register[3].token]);
     expect(tw.register).toHaveLength(10);
   });
 
   it('startedHere enters tw.operations after progressUi.delay', async () => {
-    // TW-REG-021's other door, and TW-TAB-002: this tab may auto-open its own progress view after
-    // the delay, and every other tab must not.
+    // TW-REG-021 and TW-TAB-002: this tab's own operation enters after the delay; another tab's does
+    // not.
     const elsewhere = new_token();
     server.list(summaryWire(elsewhere));
 
@@ -582,7 +558,7 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     await vi.advanceTimersByTimeAsync(2);
     expect(tokensOf(tw.operations)).toEqual([op.token]);
 
-    // The other tab's entry has been in the register the whole time and is still not on screen.
+    // The other tab's entry is in the register and not in the visible collection.
     await poll(4);
     expect(tw.register.map((entry) => entry.token)).toContain(elsewhere);
     expect(tokensOf(tw.operations)).toEqual([op.token]);
@@ -590,7 +566,7 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
 
   it('progressUi false stays out of tw.operations but stays in tw.register', async () => {
     // §4.3: a per-call opt-out of the visible collection only. The operation is still awaitable,
-    // still cancellable and still a register entry.
+    // cancellable and a register entry.
     const op = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report', progressUi: false });
     server.documents.set(op.token, snapshotWire(op.token));
     server.list(summaryWire(op.token));
@@ -600,7 +576,7 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     expect(tokensOf(tw.register)).toEqual([op.token]);
     expect(tw.operations).toEqual([]);
 
-    // The module-level `progressUi: false` turns the collection off wholesale, and does no more.
+    // The module-level `progressUi: false` turns the collection off and changes nothing else.
     configure_taskwire({ progressUi: false });
     const second = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report' });
     server.documents.set(second.token, snapshotWire(second.token));
@@ -610,8 +586,8 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
   });
 
   it('hiding a lingering row takes it off at once, and progressUi false never lingers at all', async () => {
-    // The linger is a courtesy, not a lock: `hide()` during it removes the row and its timer, and a
-    // client with the visible collection turned off has nothing on screen to hold there.
+    // `hide()` during the linger removes the row and its timer; with the collection turned off there
+    // is no linger.
     const first = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report' });
     server.documents.set(first.token, snapshotWire(first.token, { state: 'running' }));
     await first;
@@ -620,8 +596,8 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     await vi.advanceTimersByTimeAsync(600);
     expect(tokensOf(tw.operations)).toEqual([first.token]);
 
-    // Through the client, because a lingering row is by definition a **closed** handle and
-    // `Operation.close()` drops its host, so `first.hide()` reaches nothing (see GAPS.md).
+    // Through the client: a lingering row is a closed handle, and `Operation.close()` drops its host,
+    // so `first.hide()` reaches nothing (see GAPS.md).
     tw.hide(first.token);
     expect(tw.operations).toEqual([]);
     await vi.advanceTimersByTimeAsync(20_000);
@@ -640,8 +616,8 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
   });
 
   it('a done entry leaves on its terminal state; a failed one lingers then leaves', async () => {
-    // §4.3 and TW-REG-015: `failureLinger` holds the client's own last copy of a row the register
-    // has already dropped. It re-polls nothing and is in no recomputed aggregate.
+    // §4.3 and TW-REG-015: `failureLinger` keeps the client's last copy of a row the register has
+    // dropped. It triggers no read and is in no recomputed aggregate.
     const done = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report' });
     const failed = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report' });
     server.documents.set(done.token, snapshotWire(done.token, { state: 'running' }));
@@ -654,15 +630,15 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     server.documents.set(failed.token, snapshotWire(failed.token, { state: 'failed', rev: 2 }));
     await poll();
 
-    // The terminal state took the finished row off; the failed one is still there.
+    // The finished row has left; the failed one lingers.
     expect(tokensOf(tw.operations)).toEqual([failed.token]);
 
     const after = server.requests.length;
     await vi.advanceTimersByTimeAsync(7000);
     expect(tokensOf(tw.operations)).toEqual([failed.token]);
-    // A corpse costs nothing: no poll of either token while it is held on screen.
+    // No read of either token while it lingers.
     expect(server.requests.slice(after).some((request) => request.url.endsWith(failed.token))).toBe(false);
-    // And it is in no register and no aggregate - the server took it out, so there is nothing to count.
+    // It is in no register and no aggregate.
     expect(tw.register).toEqual([]);
     expect(tw.aggregate).toBeNull();
 
@@ -671,20 +647,17 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
   });
 
   it('tw.operations keeps the order entries were shown in (TW-REG-023)', async () => {
-    // The register's own order is TW-REG-005's - `needs_attention` first, then `created_at` - and it
-    // is for a reader choosing what to look at. The visible collection is already on screen: a row
-    // that reordered itself under the cursor because a question opened somewhere else would be worse
-    // than one that grows at the end.
+    // The visible collection keeps its entry order; it does not follow TW-REG-005's register order.
     const tokens = [new_token(), new_token(), new_token()];
     server.list(...tokens.map((token, index) => summaryWire(token, { createdAt: `2026-01-01T00:00:0${index}.000Z` })));
     await poll();
 
-    // Shown youngest first, which is the opposite of the register's own order.
+    // Shown youngest first, the opposite of the register's order.
     [...tw.register].reverse().forEach((entry) => entry.show());
     expect(tokensOf(tw.operations)).toEqual([tokens[2], tokens[1], tokens[0]]);
     expect(tokensOf(tw.register)).toEqual(tokens);
 
-    // A question on the last one moves it to the top of the register and nowhere in the collection.
+    // A question on the last one moves it to the top of the register only.
     server.list(
       summaryWire(tokens[2], { createdAt: '2026-01-01T00:00:02.000Z', dialog: true, rev: 2 }),
       ...tokens.slice(0, 2).map((token, index) => summaryWire(token, { createdAt: `2026-01-01T00:00:0${index}.000Z` })),
@@ -695,11 +668,8 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
   });
 
   it('a lingering row can be dismissed from its own handle (§4.3, §5.5)', async () => {
-    // The row `failureLinger` is holding is a **closed** handle - the terminal state settled and
-    // closed it - so the ✕ a footer draws on it calls `hide()` on a handle that has stopped
-    // watching. The purely local members must survive that: they are this tab's own view of its own
-    // collection and reach no server, and a `hide()` that reached nothing would leave the row with
-    // no way off the screen but its own timer.
+    // The lingering row is a closed handle. Its local members (`hide()`) still work; they reach no
+    // server.
     const failed = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report' });
     server.documents.set(failed.token, snapshotWire(failed.token, { state: 'running' }));
     await failed;
@@ -715,7 +685,7 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
     row.hide();
     expect(tw.operations).toEqual([]);
 
-    // And the writes are what closing silenced: a corpse asks the server for nothing.
+    // The writes on a closed handle issue no request.
     const posts = (): number => server.requests.filter((request) => request.method === 'post').length;
     const before = posts();
     await row.cancel();
@@ -725,7 +695,7 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
   });
 
   it('hide, close and dispose each remove an entry and nothing else does', async () => {
-    // §4.3's four ways out, and no fifth.
+    // §4.3's ways out.
     const tokens = [new_token(), new_token(), new_token()];
     server.list(...tokens.map((token, index) => summaryWire(token, { createdAt: `2026-01-01T00:00:0${index}.000Z` })));
     await poll();
@@ -756,8 +726,8 @@ describe('tw.operations (§4.3, TW-REG-021)', () => {
 
 describe('what the client refuses to do', () => {
   it('no cross-tab synchronisation exists', () => {
-    // TW-REG-022: `BroadcastChannel` dialog mirroring and leader-elected polling are rejected, not
-    // omitted. Every tab polls for itself and shows what it decided to show.
+    // TW-REG-022: no `BroadcastChannel` dialog mirroring and no leader-elected polling. Every tab polls
+    // for itself.
     const offenders = [...sources()].filter(([, text]) =>
       /BroadcastChannel|SharedWorker|ServiceWorker|leaderElect|electLeader|navigator\.locks/i.test(text),
     );
@@ -765,8 +735,7 @@ describe('what the client refuses to do', () => {
   });
 
   it('the handoff is reactive collections, with change subscriptions beside them', async () => {
-    // TW-TS-008: the collections are the documented default and these exist for consumers that
-    // cannot use them. Both return an unsubscribe function.
+    // TW-TS-008: listener methods for non-reactive consumers. Both return an unsubscribe function.
     const seenRegister: number[] = [];
     const seenOperations: number[] = [];
     const stopRegister = tw.onRegisterChange((operations) => seenRegister.push(operations.length));
@@ -793,8 +762,7 @@ describe('what the client refuses to do', () => {
   });
 
   it('a closing tab cancels nothing', async () => {
-    // TW-REG-008: a disconnect is not a statement of intent. Disposing issues no cancel, no dismiss
-    // and no request at all - and there is no unload handler anywhere to do it later.
+    // TW-REG-008: disposing issues no cancel, no dismiss and no request, and no unload handler exists.
     const token = new_token();
     server.list(summaryWire(token));
     const op = tw.run(() => server.http.get('/api/start'), { resultKind: 'acme.report' });
@@ -813,8 +781,7 @@ describe('what the client refuses to do', () => {
   });
 
   it('nothing is persisted', async () => {
-    // TW-REG-018 / TW-REG-019: not the register, not the token list, not a tab id, not a delivery
-    // preference. A reload is a new client with nothing to come back to.
+    // TW-REG-018 / TW-REG-019: nothing is persisted, so a reload is a new client with empty local state.
     const setItem = vi.spyOn(window.Storage.prototype, 'setItem');
     const getItem = vi.spyOn(window.Storage.prototype, 'getItem');
 
@@ -828,11 +795,11 @@ describe('what the client refuses to do', () => {
 
     const reloaded = new Taskwire(DEFAULT_BASE_PATH, server.http);
     try {
-      // Everything local starts empty: no visible entry, no selection, no restored preference.
+      // Local state starts empty: no visible entry, no selection, no override.
       expect(reloaded.register).toEqual([]);
       expect(reloaded.operations).toEqual([]);
       expect(reloaded.selected).toBeNull();
-      // The shared half comes back from the server and only from the server.
+      // The register entries come from the server.
       await poll();
       expect(tokensOf(reloaded.register)).toEqual([token]);
       expect(reloaded.operations).toEqual([]);
@@ -845,8 +812,8 @@ describe('what the client refuses to do', () => {
   });
 
   it('merges by token, with the payload winning', () => {
-    // The merge is additive and keyed, never appended: one entry per token, the server's copy
-    // preferred where both exist, which is also what keeps the recomputation from counting twice.
+    // The merge is keyed by token, the server's copy preferred, so the recomputation counts each
+    // operation once.
     const shared = parseSnapshot(snapshotWire('t1', { percent: 90 }));
     const own = parseSnapshot(snapshotWire('t1', { percent: 10, resultKind: null }));
     const other = parseSnapshot(snapshotWire('t2', { resultKind: null }));
@@ -860,9 +827,8 @@ describe('what the client refuses to do', () => {
 
 describe('the register poll while a transport carries the namespace (TW-TS-007)', () => {
   it('stops asking while one is attached and healthy, and asks again the moment it is lost', async () => {
-    // The exclusivity is the whole point: in socket mode the network tab must show no register GET
-    // every five seconds, or the transport choice proves nothing. The health signal is the whole of
-    // what protects the store's truth while the ladder is suspended.
+    // In socket mode no register GET is issued while the transport is healthy (TW-TS-007); a reported
+    // loss resumes the ladder.
     const token = new_token();
     server.list(summaryWire(token));
     await poll(2);
@@ -884,8 +850,7 @@ describe('the register poll while a transport carries the namespace (TW-TS-007)'
     await vi.advanceTimersByTimeAsync(30_000);
     expect(server.polls(REGISTER_URL)).toHaveLength(before);
 
-    // Back on the base rung rather than wherever the climb had reached: at the ceiling this window
-    // would hold no read at all, and the recovery this exists for would take five seconds to begin.
+    // Resumed on the base rung, not where the climb had reached.
     report(false);
     await vi.advanceTimersByTimeAsync(600);
     expect(server.polls(REGISTER_URL)).toHaveLength(before + 1);
@@ -897,12 +862,8 @@ describe('the register poll while a transport carries the namespace (TW-TS-007)'
   });
 
   it('reads the list once when it starts under one, and then holds', async () => {
-    // A transport carries what CHANGES, and an operation already parked on an open question changes
-    // nothing until it ends: its `dialog.open` was published before this page connected, and the
-    // next envelope it sends is the terminal one. So a page that attached its socket before it first
-    // read `tw.register` would show no operation and no question at all for the life of that socket,
-    // which is the state TW-TS-009 exists to forbid - a question nobody can see is a worker nobody
-    // can free. The store is the truth and one read is the whole of it (TW-CORE-002).
+    // A suspended ladder still performs the first read (TW-CORE-002, TW-TS-009): an operation parked
+    // on an open question pushes nothing until it ends.
     const elsewhere = new_token();
     server.list(summaryWire(elsewhere, { dialog: true }));
 
@@ -914,17 +875,14 @@ describe('the register poll while a transport carries the namespace (TW-TS-007)'
     expect(tw.register[0].dialog?.id).toBe(OPEN_DIALOG.id);
     expect(tw.aggregate?.state).toBe('waiting_input');
 
-    // One read, not a resumed loop: every rung after the first is the ladder, and the ladder is
-    // what the attach stopped (TW-TS-007).
+    // One read, then no further rung while suspended (TW-TS-007).
     await vi.advanceTimersByTimeAsync(30_000);
     expect(server.polls(REGISTER_URL)).toHaveLength(1);
   });
 
   it('still takes the read it owed when the socket arrives before it', async () => {
-    // The page's own order: `use_register()` at setup starts the loop, and the wire is chosen on a
-    // click - so the first read is *scheduled* rather than taken when the transport attaches. What
-    // is suspended is the ladder and never that read (TW-TS-007), and a suspension that only
-    // cancelled the timer would leave the register empty for the whole life of the socket.
+    // The loop starts before the transport attaches, so the first read is only scheduled; suspending
+    // keeps it (TW-TS-007).
     const elsewhere = new_token();
     server.list(summaryWire(elsewhere, { dialog: true }));
 
@@ -937,9 +895,8 @@ describe('the register poll while a transport carries the namespace (TW-TS-007)'
   });
 
   it('resumes on the base rung even with a question open (TW-TS-007)', async () => {
-    // The ladder's own rules answer the ceiling for an open question, so a resumption asked of them
-    // would begin the recovery five seconds after the socket died - and a reconnect inside that
-    // window would cancel it again. The base rung is what the rule says the recovery costs.
+    // Resuming starts on the base rung even with a question open, where `next()` would answer the
+    // ceiling.
     server.list(summaryWire(new_token(), { dialog: true }));
     await poll(2);
     const before = server.polls(REGISTER_URL).length;
@@ -975,9 +932,8 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
     expect(tw.selected?.token).toBe(token);
     expect(tw.aggregate?.data.running).toBe(1);
 
-    // The aggregate and the order are recomputed from the payload's rows and never from the handles
-    // (TW-REG-016), so a push that moved only the handle would leave the footer showing whatever the
-    // last read said for as long as the socket stayed up.
+    // The aggregate and the order are recomputed from the payload's rows (TW-REG-016), so a push
+    // re-states the row as well as the handle.
     socket.push(token, 3, 'dialog.open', OPEN_DIALOG);
     expect(tw.register[0].dialog?.id).toBe(OPEN_DIALOG.id);
     expect(tw.aggregate?.state).toBe('waiting_input');
@@ -988,9 +944,7 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
   });
 
   it('a terminal push is a departure, and needs no read to be one (TW-REG-007)', async () => {
-    // The server takes a terminal entry out of the register in the same step that ends it, so the row
-    // has left every register there is and the envelope that announced the state announced the
-    // departure too.
+    // A terminal push is a departure (TW-REG-007).
     const token = new_token();
     server.list(summaryWire(token));
     await poll(2);
@@ -1007,10 +961,8 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
   });
 
   it('reads the register for a push naming a token this tab started (TW-REG-006)', async () => {
-    // Having a handle is not being in the register. `run()` mints one before the command is even
-    // sent, so the `handle === null` test says "known" about a token that has no row yet, and the
-    // row only ever arrives with a read of the list. Held ladder, moved handle, empty register - the
-    // failure is silent, because the push did land and the entry it landed on is not on screen.
+    // A handle without a row (minted by `run()` before the command is sent) is a membership change:
+    // the push triggers a register read.
     server.list();
     await poll(2);
 
@@ -1028,9 +980,7 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
   });
 
   it('asks for no read on behalf of a private operation of its own (TW-PRIV-002)', async () => {
-    // No register payload carries a private operation for any caller including its own, so a read
-    // asked for on its behalf is a question the list cannot answer - and it would be asked again on
-    // its every push. The only copy is the one its own poller holds, and that is where it stays.
+    // No payload carries a private operation (TW-PRIV-002): its pushes trigger no register read.
     server.list();
     await poll(2);
 
@@ -1051,8 +1001,8 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
   });
 
   it('asks for no read on a private operation no handle here knows (TW-PRIV-001)', async () => {
-    // Every viewset call over the socket is a private operation pushed to this connection; none of
-    // its progress documents can put a row in the register.
+    // A tracked viewset call is a private operation pushed to this connection; its progress pushes
+    // are not membership changes.
     server.list();
     await poll(2);
 
@@ -1072,9 +1022,8 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
   });
 
   it('reads the register once for a burst of pushes it cannot place', async () => {
-    // A token no handle here knows is a membership change - something started in another tab. One
-    // read of the list answers it for the whole burst, and what appears on screen is the payload's
-    // row rather than anything synthesised out of an envelope.
+    // An unknown token is a membership change: one register read for the whole burst, and the row
+    // comes from the payload.
     const known = new_token();
     server.list(summaryWire(known));
     await poll(2);
@@ -1092,17 +1041,13 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
     expect(tokensOf(tw.register)).toEqual([known, ...strangers]);
     expect(tw.register[1].progress?.percent).toBe(42);
 
-    // And the ladder is still held afterwards: the read was the answer to a question, not a resumed
-    // loop (TW-TS-007).
+    // The ladder stays suspended after that read (TW-TS-007).
     await vi.advanceTimersByTimeAsync(30_000);
     expect(server.polls(REGISTER_URL)).toHaveLength(reads + 1);
   });
 
   it('re-issues the read for a push that arrived while one was in flight', async () => {
-    // The read on the wire was issued before the envelope reached the client, so the list it brings
-    // back was written before the token it is being asked about. Dropping the request would leave
-    // that token out of the register until something else happened to push - and for one parked on
-    // a question, the next envelope is the terminal one, by which time it has departed anyway.
+    // A read in flight predates the envelope; the requested read is issued when it lands.
     const known = new_token();
     const stranger = new_token();
     server.list(summaryWire(known));
@@ -1118,7 +1063,7 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(server.polls(REGISTER_URL)).toHaveLength(1);
 
-    // The stranger appears on the server and pushes, while the read that cannot see it is open.
+    // The unknown operation appears on the server and pushes while the first read is in flight.
     server.list(summaryWire(known), summaryWire(stranger, { dialog: true }));
     socket.push(stranger, 2, 'dialog.open', OPEN_DIALOG);
 
@@ -1127,16 +1072,14 @@ describe('what a push does to the register (TW-CORE-002, TW-CORE-008)', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(server.polls(REGISTER_URL)).toHaveLength(2);
-    // Attention first, and the whole row comes from the payload rather than from the envelope.
+    // Attention first, and the row comes from the payload.
     expect(tokensOf(tw.register)).toEqual([stranger, known]);
     expect(tw.register[0].dialog?.id).toBe(OPEN_DIALOG.id);
   });
 
   it('a terminal push reaches the subscription of a token the register carries', async () => {
-    // The departure closes the handle this loop adopted, and the document being carried at that
-    // moment is the last one the token will ever have (TW-REG-007). What is left holding the token
-    // afterwards is the subscription, so it is the one that has to be told - over the ladder the
-    // same terminal document arrives as a read and closes it, and the two paths must not differ.
+    // The departure closes the adopted handle; the subscription still receives the terminal document
+    // (TW-REG-007), as it does over the ladder.
     const token = new_token();
     server.list(summaryWire(token, { percent: 40 }));
     await poll(2);

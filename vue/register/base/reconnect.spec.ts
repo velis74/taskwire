@@ -1,13 +1,10 @@
 /**
- * TW-REG-020, and the test the specification names by file.
+ * TW-REG-020: a reconnecting client reads the register and restores nothing. It may send one
+ * `{"kind": "watch", "overrides": {}}` on the new socket to obtain its connection id (TW-DEL-022),
+ * and does not re-declare the overrides the old socket held.
  *
- * A reconnecting client reads the register and restores **nothing**. It may send one
- * `{"kind": "watch", "overrides": {}}` on the new socket to obtain that socket's connection id
- * (TW-DEL-022) - an empty declaration is not a restoration, it asserts exactly the state the new
- * socket already has - and it MUST NOT re-declare the overrides the old socket held.
- *
- * Two sockets and a scan of the sources carry the claim between them: nothing the first socket held
- * is declared on the second, and no module calls `watch()` with a stored override map.
+ * Asserted with two sockets and a scan of the sources: nothing the first socket held is declared on
+ * the second, and no module calls `watch()` with a stored override map.
  */
 
 import axios, { type AxiosInstance } from 'axios';
@@ -20,8 +17,7 @@ import { new_token } from '../../reporter/operation-scope';
 import { sourceFiles } from '../../test-helpers/sources';
 import type { Envelope, WireObject } from '../../wire/wire';
 
-// The register is the collection, so it lives at the collection URL and carries no extra
-// segment. Derived from the constant rather than spelled out, so a move cannot pass here.
+// Derived from `REGISTER_PATH`.
 const REGISTER_URL = REGISTER_PATH === '' ? DEFAULT_BASE_PATH : `${DEFAULT_BASE_PATH}/${REGISTER_PATH}`;
 
 function sources(): Map<string, string> {
@@ -129,15 +125,11 @@ afterEach(() => {
 
 describe('reconnecting (TW-REG-020)', () => {
   it('the only watch on on_reconnect declares an empty map', async () => {
-    // Named in the specification. The two ways the claim could stop holding are both asserted
-    // rather than described: the fresh socket a reconnect attaches declares nothing on its own,
-    // and no module replays an override map on one.
     const token = new_token();
     server.list(token);
     const client = new Taskwire(DEFAULT_BASE_PATH, server.http);
     try {
-      // A socket that lived and held overrides. Each explicit call declares the whole map at that
-      // instant - TW-DEL-006's own purpose - and the last one leaves it empty again.
+      // Each explicit call declares the whole map (TW-DEL-006); the last one leaves it empty.
       const first = new FakeSocket();
       client.attachTransport(first);
       client.mute(token);
@@ -147,8 +139,7 @@ describe('reconnecting (TW-REG-020)', () => {
       await vi.advanceTimersByTimeAsync(2000);
       expect(first.declared).toEqual([{ [token]: false }, { [token]: true }, {}]);
 
-      // The new socket after the reconnect. Nothing the old one held travels with it: attaching
-      // declares nothing by itself, and nothing here calls mute/unmute/clearOverride again.
+      // Attaching the new socket declares nothing.
       const second = new FakeSocket();
       client.attachTransport(second);
       await vi.advanceTimersByTimeAsync(2000);
@@ -157,16 +148,13 @@ describe('reconnecting (TW-REG-020)', () => {
       client.dispose();
     }
 
-    // And statically. The rule is not "watch takes no arguments" - a user muting an operation
-    // declares a non-empty map, and that is TW-DEL-006's whole purpose. The rule is that nothing
-    // RE-DECLARES a map it had stored: `watch(this.overrides)` on a fresh socket is exactly the
-    // restoration TW-REG-020 forbids, while `watch(whatTheUserJustAskedFor)` is the feature. A
-    // check that forbade every non-empty argument would forbid TW-DEL-006 outright.
+    // No module passes a stored map to `watch()`; a non-empty map from an explicit call is allowed
+    // (TW-DEL-006).
     const restores = /\.watch\(\s*(this\.[A-Za-z]*[Oo]verrides|saved|stored|previous|restored)/;
     const offenders = [...sources()].filter(([, text]) => restores.test(text));
     expect(offenders.map(([name]) => name)).toEqual([]);
 
-    // ...and the one place that reconnects really does declare nothing.
+    // The reconnect path declares an empty map.
     const socket = [...sources()].find(([name]) => name === 'socket/socket-transport.ts');
     if (socket !== undefined) {
       expect(socket[1]).toMatch(/announce\(\)[\s\S]*?this\.watch\(\{\}\)/);
@@ -174,9 +162,7 @@ describe('reconnecting (TW-REG-020)', () => {
   });
 
   it('a reconnecting client reads the register and restores nothing', async () => {
-    // TW-REG-018 leaves nothing to restore *from*, which is what makes TW-REG-020 easy to obey: a
-    // client that crashed while silencing something must not come back permanently silent, and the
-    // only way to guarantee that is to have nothing to come back to.
+    // Nothing is persisted (TW-REG-018), so nothing is restored (TW-REG-020).
     const token = new_token();
     server.list(token);
 
@@ -198,11 +184,11 @@ describe('reconnecting (TW-REG-020)', () => {
       expect(after.selected).toBeNull();
       expect(after.aggregate).toBeNull();
 
-      // The register is read again - that is the whole of the recovery (TW-REG-020).
+      // The register is read again (TW-REG-020).
       await vi.advanceTimersByTimeAsync(1000);
       expect(server.urls.filter((url) => url === REGISTER_URL).length).toBeGreaterThan(reads);
       expect(after.register.map((entry) => entry.token)).toEqual([token]);
-      // The shared half came back from the server; the local half did not come back at all.
+      // The register entries come from the server; the visible collection stays empty.
       expect(after.operations).toEqual([]);
       expect(after.register[0].startedHere).toBe(false);
     } finally {

@@ -26,16 +26,13 @@ import {
 } from './operation-scope';
 import { DEFAULT_SETTINGS, encodedSize, InertReporter, Reporter, type ReporterStore } from './reporter';
 
-/** One already-resolved namespace string (TW-AMB-007). Never a user, a request or an identity. */
+/** One already-resolved namespace string (TW-AMB-007). */
 const NS = 'acct-42';
 
-/** TW-SEC-001: `${ns}:${token}`, always - through the store's own key function, never rebuilt here. */
+/** TW-SEC-001: `${ns}:${token}`, through the store's own key function. */
 const key = (token: string, ns: string = NS): string => storeKey(ns, token);
 
-/**
- * An injected clock (TW-THR-002). Time moves only when a test says so - no test here sleeps to make
- * the throttle open, which is the whole point of the clock being a parameter.
- */
+/** An injected clock (TW-THR-002); time moves only when a test advances it. */
 class Clock {
   now: number;
 
@@ -59,18 +56,11 @@ interface Entry {
 }
 
 /**
- * A store that remembers what it was asked to do, in the order it was asked.
- *
- * It is deliberately not `MemoryStore`: these tests are about what the reporter *asks* a store to
- * do and in what order, and a real store would answer without recording the questions. The
- * end-to-end test below runs the same code against `MemoryStore` itself.
- *
- * `calls` is what proves the commit/publish ordering (TW-CORE-001); `commits` keeps a shallow copy
- * of every committed document, so a terminal write is observable as the write it is rather than
- * only through what it left behind.
+ * A store that records its calls in order. `calls` holds the commit/publish ordering (TW-CORE-001);
+ * `commits` holds a shallow copy of every committed document.
  */
 class RecordingStore implements ReporterStore {
-  /** `ask()` writes through these two, so the double has to answer them. */
+  /** The dialog methods `ask()` writes through. */
   async putDialog(k: string, dialog: DialogRequest, ttl: number): Promise<number> {
     const entry = this.entries.get(k);
     if (entry === undefined) return 0;
@@ -105,7 +95,7 @@ class RecordingStore implements ReporterStore {
   /** TW-KEY-003: shared operations only. A private operation is addressable but unlisted. */
   private readonly index = new Map<string, Set<string>>();
 
-  /** Wall-clock seconds, deliberately not the injected throttle clock: TTLs are real time here. */
+  /** Wall-clock seconds, not the injected throttle clock: TTLs are real time here. */
   private readonly clock = (): number => Date.now() / 1000;
 
   constructor(private readonly recordBodies = true) {}
@@ -163,8 +153,7 @@ class RecordingStore implements ReporterStore {
     entry.rev = rev;
     entry.expiresAt = this.clock() + ttl;
     this.entries.set(k, entry);
-    // TW-REG-007: a terminal document is de-indexed by the write that makes it terminal, which is
-    // what the register reads and what the tests below assert the departure through.
+    // TW-REG-007: a terminal document is de-indexed by the write that makes it terminal.
     const ns = k.slice(0, k.lastIndexOf(':'));
     if (isTerminal(written)) {
       this.index.get(ns)?.delete(k);
@@ -235,8 +224,7 @@ afterEach(() => {
 
 describe('Reporter.set', () => {
   it('rejects a `state` key and commits nothing (TW-PROG-012)', async () => {
-    // Not silently absorbed into `data` either: a caller who could write `state` could park an
-    // operation in `waiting_input` that nothing will ever release (TW-INV-006).
+    // Not absorbed into `data` either (TW-INV-006).
     const store = new RecordingStore();
     const token = new_token();
 
@@ -260,8 +248,7 @@ describe('Reporter.set', () => {
   });
 
   it('throws on oversized data, names the size, and does not commit (TW-PROG-008)', async () => {
-    // Never truncated silently: the field survives, the application believes it wrote what it wrote,
-    // and the missing half surfaces in a browser weeks later.
+    // Throws; the value is never truncated.
     const store = new RecordingStore();
     const token = new_token();
     const oversized = { payload: 'x'.repeat(DEFAULT_SETTINGS.maxDataBytes + 4000) };
@@ -327,7 +314,7 @@ describe('Reporter.set', () => {
       expect(stored?.progress.data).toEqual({ rows: 20 });
       expect(stored?.progress.title).toEqual(title);
 
-      // A key present with `undefined` is the shape real calling code has, and reads as omitted.
+      // A key present with `undefined` reads as omitted.
       await reporter.set({ title: undefined, percent: 51 });
       await reporter.flush();
       stored = await store.snapshot(key(token));
@@ -352,13 +339,11 @@ describe('Reporter.set', () => {
 
 describe('the throttle', () => {
   it('commits throughout a tight loop that awaits nothing of its own (TW-THR-002)', async () => {
-    // 12 000 iterations. A background flush would never be scheduled here - a chain of awaited
-    // promises yields microtasks, and a timer callback runs between macrotasks only - so the bar
-    // would read 0 % for the whole phase and the phase's final value would never be written.
+    // 12 000 iterations of awaited microtasks only: commits happen inline (TW-THR-002).
     const store = new RecordingStore();
     const clock = new Clock();
     const iterations = 12_000;
-    const step = 0.001; // 12 s of injected time across the loop, against a 0.25 s window
+    const step = 0.001; // 12 s of injected time across the loop, against a 0.1 s window
 
     const commitIterations: number[] = [];
     await operation(options(store, new_token(), clock), async (reporter) => {
@@ -373,11 +358,10 @@ describe('the throttle', () => {
       }
     });
 
-    const expected = (iterations * step) / DEFAULT_SETTINGS.progressInterval; // ~48
+    const expected = (iterations * step) / DEFAULT_SETTINGS.progressInterval; // ~120
     expect(commitIterations.length).toBeGreaterThanOrEqual(expected * 0.8);
 
-    // Throughout, not only at the end: the first commit lands early and every quarter of the loop
-    // carries several of them.
+    // The first commit lands early and every quarter of the loop carries several.
     expect(commitIterations[0]).toBeLessThan(iterations / 10);
     const quarter = iterations / 4;
     for (let index = 0; index < 4; index += 1) {
@@ -387,8 +371,7 @@ describe('the throttle', () => {
   });
 
   it('coalesces a burst and guarantees its last value only at the next forced flush (TW-THR-006)', async () => {
-    // Asserting the stronger claim - that the burst's last value is visible immediately - would be
-    // asserting that coalescing does not happen, and would fail the moment the window is honoured.
+    // The burst's last value is not required to be visible before the window closes.
     const store = new RecordingStore();
     const clock = new Clock();
     const burst = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -404,14 +387,12 @@ describe('the throttle', () => {
       expect(burst).toContain(store.commits[store.commits.length - 1].percent);
     });
 
-    // The burst was genuinely coalesced (TW-THR-001). Without this the membership assertion above
-    // would hold just as well for an implementation that committed every single call - which is the
-    // one thing the window exists to prevent.
+    // The burst was coalesced: fewer commits than calls (TW-THR-001).
     expect(duringBurst).toBeGreaterThan(0);
     expect(duringBurst).toBeLessThan(burst.length);
 
-    // The terminal write is a forced, unthrottled flush (TW-THR-004/005), and only there is the
-    // burst's last value guaranteed.
+    // The terminal write is a forced, unthrottled flush and carries the burst's last value
+    // (TW-THR-004/005).
     const terminal = terminalCommits(store);
     expect(terminal).toHaveLength(1);
     expect(terminal[0].percent).toBe(burst[burst.length - 1]);
@@ -434,11 +415,7 @@ describe('the throttle', () => {
   });
 
   it('yields to the host once per interval, not once per call (TW-THR-003)', async () => {
-    // Once per call turns a 1 000-row loop into 1 000 host round trips; never yielding starves
-    // everything else - the keepalive included (TW-RET-002). The rule is the middle of those two.
-    //
-    // A macrotask is what is counted, deliberately: `await Promise.resolve()` would satisfy the
-    // letter of "yields" and let no timer through, which is the whole reason the yield exists.
+    // One macrotask yield per interval, not per call (TW-THR-003); macrotasks are what is counted.
     const scheduled = vi.spyOn(globalThis, 'setTimeout');
     const store = new RecordingStore();
     const clock = new Clock();
@@ -449,8 +426,7 @@ describe('the throttle', () => {
       for (let index = 0; index < 1000; index += 1) await reporter.set({ percent: 7 });
       expect(macrotasks() - before).toBe(1);
 
-      // Once *per interval*: each new window owes another yield. Counting only the first window
-      // would pass an implementation that yielded once for the reporter's whole life.
+      // Each new window owes another yield.
       const perWindow: number[] = [];
       for (let window = 0; window < 3; window += 1) {
         clock.advance(DEFAULT_SETTINGS.progressInterval);
@@ -465,8 +441,7 @@ describe('the throttle', () => {
 
 describe('operation()', () => {
   it('orders every write before its push, and publishes the terminal state last (TW-CORE-001)', async () => {
-    // A client that saw a push whose state a later read contradicts cannot recover: it is entitled
-    // to current state only (TW-CORE-005), and current state just disagreed with what it was told.
+    // Every publish follows the commit it carries (TW-CORE-001, TW-CORE-005).
     const store = new RecordingStore();
     const clock = new Clock();
     const token = new_token();
@@ -481,10 +456,7 @@ describe('operation()', () => {
     expect(ordering.length % 2).toBe(0);
     expect(ordering).toEqual(Array.from({ length: ordering.length / 2 }, () => ['commit', 'publish']).flat());
 
-    // And the terminal envelope is the last thing published: it is what a watching client hears,
-    // and the tombstone the write leaves behind (TW-RET-004) is what an unwatching one reads. The
-    // envelope's own body is what is checked rather than merely the ordering, because a `publish`
-    // last would also hold for a non-terminal one.
+    // The last envelope published carries the terminal state in its body.
     expect(store.calls[store.calls.length - 1][0]).toBe('publish');
     const [lastNs, lastEnvelope] = store.published[store.published.length - 1];
     expect(lastNs).toBe(NS);
@@ -495,15 +467,13 @@ describe('operation()', () => {
   });
 
   it('the await using form writes the same terminal state, and `done` when nobody said otherwise', async () => {
-    // TW-TS-014: the same lifecycle, spelled as a block. `operation()` is written on top of this, so
-    // what is asserted here is the half `operation()` cannot do for a caller who writes the block.
+    // TW-TS-014: the same lifecycle as a block.
     const clean = new RecordingStore();
     const token = new_token();
     {
       await using op = await operationScope(options(clean, token, new Clock()));
       await op.reporter.set({ percent: 10 });
-      // Disposed by hand and then again by the block: exactly one terminal state leaves an
-      // operation (TW-API-001), whoever asks for it and however often.
+      // Disposed by hand and again by the block: one terminal write (TW-API-001).
       await op[Symbol.asyncDispose]();
     }
     let terminal = terminalCommits(clean);
@@ -533,9 +503,7 @@ describe('operation()', () => {
       text: 'boom',
     });
 
-    // And the trap this form carries, asserted rather than described: `Symbol.asyncDispose` is
-    // handed no arguments, so a block that throws WITHOUT calling `failed()` ends `done`. That is
-    // the reason `operation(opts, body)` exists - it is the one form that can see the exception.
+    // A block that throws without calling `failed()` ends `done`: the disposal sees no exception.
     const silent = new RecordingStore();
     await expect(
       (async () => {
@@ -586,8 +554,7 @@ describe('operation()', () => {
     // TW-PROG-005: no stack trace on a document that reaches a browser.
     expect(Object.keys(terminal[0].error!)).toEqual(['code', 'message', 'retryable']);
 
-    // OperationCancelled -> cancelled, which is not `failed` (TW-CANCEL-006). Collapsing the two
-    // would make a user-requested stop indistinguishable from a crash in every dashboard.
+    // OperationCancelled -> cancelled, not `failed` (TW-CANCEL-006).
     const cancelled = new RecordingStore();
     await expect(
       operation(options(cancelled, new_token()), async () => {
@@ -608,8 +575,7 @@ describe('operation()', () => {
   });
 
   it('leaves the register in the same step, so the very next listing is empty (TW-REG-007)', async () => {
-    // There is no linger to wait out - the very next listing is already empty, and this test issues
-    // it with no clock advance and no sleep between the write and the read.
+    // The next listing, with no clock advance or sleep, is already empty.
     const store = new RecordingStore();
     const token = new_token();
 
@@ -620,18 +586,15 @@ describe('operation()', () => {
     });
 
     expect(await store.listOperations(NS)).toEqual([]);
-    // The document itself outlives the register for `tombstoneTtl` (TW-RET-004), carrying the one
-    // thing the absence cannot: which of the three terminal states this was.
+    // The document stays readable for `tombstoneTtl`, with its terminal state (TW-RET-004).
     const tombstone = await store.snapshot(key(token));
     expect(tombstone).not.toBeNull();
     expect(tombstone?.progress.state).toBe('done');
   });
 
   it('runs a keepalive without the operation cooperating (TW-RET-002)', async () => {
-    // The body awaits nothing of its own; the only opening the keepalive gets is the
-    // once-per-interval yield `set()` owes it (TW-THR-003). The phase that most needs the document
-    // to survive is exactly the phase that never yields voluntarily, which is why the period is
-    // derived from the TTL rather than scheduled by the caller.
+    // The body awaits nothing of its own; the keepalive runs in the once-per-interval yield of
+    // `set()` (TW-THR-003).
     const activeTtl = 0.2; // keepalive period 0.05 s
     const store = new RecordingStore(false);
     const clock = new Clock();
@@ -658,8 +621,8 @@ describe('operation()', () => {
   });
 
   it('adopts an existing queued document instead of reopening it (TW-INV-009, TW-PROG-006)', async () => {
-    // `markQueued()` owns the opening write; entering `operation()` only flips `queued` to
-    // `running`, and the write-once fields belong to whoever wrote them first (TW-PROG-006).
+    // Entering `operation()` flips `queued` to `running`; the write-once fields keep the values
+    // `markQueued()` wrote (TW-PROG-006).
     const store = new RecordingStore();
     const token = new_token();
     const queued: OperationOptions = {
@@ -676,7 +639,7 @@ describe('operation()', () => {
     expect(stored?.progress.state).toBe('queued');
     const createdAt = stored!.progress.createdAt;
 
-    // Idempotent: a second call must not reach back and rewrite an operation that has since started.
+    // Idempotent: a second call leaves a started operation unchanged.
     await markQueued(queued);
     expect((await store.snapshot(key(token)))?.progress.state).toBe('queued');
 
@@ -691,8 +654,7 @@ describe('operation()', () => {
   });
 
   it('writes failed from outside the operation and leaves the register (TW-REG-007)', async () => {
-    // The caller is already watching this token, and a `404` would tell it nothing about why the
-    // work never started - so the failure is readable at its own address (TW-RET-004).
+    // The failure is readable at its own address (TW-RET-004).
     const store = new RecordingStore();
     const token = new_token();
     await markQueued({ ns: NS, store, token, resultKind: 'report' });
@@ -723,9 +685,7 @@ describe('operation()', () => {
 
 describe('the inert reporter', () => {
   it('is live-looking and writes nothing when token or ns is null (TW-AMB-010, TW-AMB-009)', async () => {
-    // A resolver returning no namespace is an application opting a request out of taskwire entirely
-    // (TW-AMB-009); `token: null` is the same situation from the other side. Neither is an error,
-    // and neither may force `if (reporter !== null)` through the calling code.
+    // A null namespace (TW-AMB-009) or `token: null` yields an inert reporter, not an error.
     const shapes: { ns: string | null; token: string | null }[] = [
       { ns: NS, token: null },
       { ns: null, token: new_token() },
@@ -743,8 +703,7 @@ describe('the inert reporter', () => {
         expect(reporter.cancelled).toBe(false);
         expect(reporter.rev).toBe(0);
 
-        // Silent, not permissive: code rejected in production must not pass merely because it ran
-        // with no namespace (TW-PROG-012, TW-PROG-008).
+        // Validation still applies (TW-PROG-012, TW-PROG-008).
         await expect(reporter.set({ state: 'running' } as never)).rejects.toThrow(/no `state` key/);
         await expect(reporter.set({ data: { payload: 'x'.repeat(20_000) } })).rejects.toThrow(/bytes encoded/);
         return 'ran';
@@ -769,9 +728,7 @@ describe('the inert reporter', () => {
 
 describe('cancellation', () => {
   it('caches `cancelled` and makes wasAborted() force a store read (TW-CANCEL-004)', async () => {
-    // The distinction is the point. A caller polling `cancelled` in a tight loop must not be issuing
-    // a store read per iteration, and a caller that genuinely needs the current answer must have a
-    // way to ask for one.
+    // `cancelled` reads no store; `wasAborted()` does.
     const store = new RecordingStore();
     const token = new_token();
 
@@ -780,7 +737,7 @@ describe('cancellation', () => {
       await expect(reporter.wasAborted()).resolves.toBe(false);
 
       store.requestCancel(key(token));
-      // The cached value is deliberately stale until something refreshes it.
+      // The cached value is stale until something refreshes it.
       expect(reporter.cancelled).toBe(false);
       await expect(reporter.wasAborted()).resolves.toBe(true);
       expect(reporter.cancelled, 'wasAborted() refreshes the cached answer').toBe(true);
@@ -788,10 +745,7 @@ describe('cancellation', () => {
   });
 
   it('refreshes the cached answer on every commit (TW-CANCEL-004)', async () => {
-    // `raiseOnCancel: false` so the commit can be observed at all: by default the very next
-    // progress call THROWS (TW-CANCEL-002), which is a different rule and has its own test. An
-    // operation that opts out is choosing to poll `cancelled` itself - and this asserts
-    // that polling it is free and still correct.
+    // `raiseOnCancel: false`, so the commit does not throw (TW-CANCEL-002) and `cancelled` is read.
     const store = new RecordingStore();
     const token = new_token();
 
@@ -804,15 +758,12 @@ describe('cancellation', () => {
   });
 
   it('throws from the next progress call when nothing opted out (TW-CANCEL-002)', async () => {
-    // The loop below contains no cancellation handling of any kind. It still stops, and the
-    // operation still ends `cancelled` - which is what a polling API cannot give you, because
-    // somebody always forgets the poll in one of forty loops.
+    // A loop with no cancellation handling stops and ends `cancelled`.
     const store = new RecordingStore();
     const token = new_token();
     let rowsProcessed = 0;
 
-    // Commit on every set(), so the cancel is noticed at the next call rather than at the next
-    // throttle window - the throttle has its own tests, and this one is about the raise.
+    // Commit on every set(), so the cancel is noticed at the next call.
     const eagerly = { ...options(store, token), settings: { ...DEFAULT_SETTINGS, progressInterval: 0 } };
 
     await expect(
@@ -839,8 +790,7 @@ describe('cancellation', () => {
 
 describe('failing loudly', () => {
   it('rejects a misused surface rather than silently doing nothing', async () => {
-    // A `setResult()` that quietly did nothing would let an application ship a result nobody can
-    // collect, and the failure would surface as a missing download weeks later.
+    // A subtask's `setResult()` throws.
     const store = new RecordingStore();
     await operation(options(store, new_token()), async (reporter) => {
       await expect(reporter.subtask(0, 50).setResult({ kind: 'report' })).rejects.toThrow(/root reporter/);
@@ -872,22 +822,17 @@ describe('new_token', () => {
 
 describe('encodedSize', () => {
   it('measures the same bytes Python measures (TW-PROG-008, TW-SYM-002)', () => {
-    // `JSON.stringify` emits no separators, which is what Python's `separators=(",", ":")` produces,
-    // so a payload accepted by one language is accepted by the other.
+    // No separators, as Python's `separators=(",", ":")`.
     expect(encodedSize({ a: 1, b: 'x' })).toBe('{"a":1,"b":"x"}'.length);
     expect(encodedSize({})).toBe(2);
-    // UTF-8 bytes, not code units: a 16 KiB cap counted in characters would let through half again
-    // as much of a Cyrillic or CJK payload.
+    // UTF-8 bytes, not code units.
     expect(encodedSize({ t: 'č' })).toBe('{"t":"?"}'.length + 1);
   });
 });
 
 describe('TW-CORE-003', () => {
   it('keeps every transport out of the reporter and out of operation()', () => {
-    // The reporter writes to the store and calls store.publish(); the reader is the only thing that
-    // may call a transport. A static assertion because the failure it guards against - an envelope
-    // arriving twice by two paths, re-rendering an answered dialog - is cheap to introduce and
-    // expensive to notice (TW-INV-002).
+    // Neither module imports a transport or calls `notify()` (TW-INV-002).
     for (const module of ['reporter.ts', 'operation-scope.ts']) {
       const source = readSource(`reporter/${module}`);
       expect(source, `${module} imports a transport`).not.toMatch(/from '\.\.\/transport\/transport'/);
@@ -896,8 +841,6 @@ describe('TW-CORE-003', () => {
   });
 
   it('exports no ambient reporter and no progress singleton (TW-SYM-004, TW-TS-017)', async () => {
-    // `TW-AMB-*` rests on contextvars; browsers have no equivalent, and an unbound ambient proxy is
-    // a *silent* no-op - a progress bar that never moves, with no error anywhere.
     const scope = await import('./operation-scope');
     const reporter = await import('./reporter');
     for (const module of [scope, reporter]) {
@@ -910,9 +853,8 @@ describe('TW-CORE-003', () => {
 
 describe('one language, one process (TW-SYM-001)', () => {
   it('drives an operation end to end on MemoryStore and LocalTransport, with nothing else wired', async () => {
-    // No wire, no REST endpoint, no second process and no Python anywhere. The transport is reached
-    // through the store's dispatch hook, never by the reporter (TW-CORE-003): a reader - or, here,
-    // the application itself - is the only thing that turns a publish into a push.
+    // In-process only. The transport is reached through the store's dispatch hook, never by the
+    // reporter (TW-CORE-003).
     const transport = new LocalTransport();
     const store = new MemoryStore({ dispatch: (ns, envelope) => transport.notify(ns, envelope) });
     const clock = new Clock();
@@ -948,8 +890,7 @@ describe('one language, one process (TW-SYM-001)', () => {
 
 describe('the Reporter port', () => {
   it('needs a small structural subset of the store and nothing else (TW-STORE-001)', async () => {
-    // The reporter is written against a structural subset of the store port, so an application's own
-    // store satisfies it by having the methods rather than by inheriting anything.
+    // A plain object with the `ReporterStore` methods is accepted.
     const written: [string, WireObject][] = [];
     const minimal: ReporterStore = {
       commit: async (k, progress) => {
@@ -986,14 +927,12 @@ describe('the Reporter port', () => {
   });
 });
 
-// ============================================================ M2: nesting (TW-NEST-*)
+// ============================================================ nesting (TW-NEST-*)
 //
-// The rule this section exists for is TW-NEST-004: a parent keeps a per-child CONTRIBUTION MAP and
-// each commit rewrites exactly one entry. The alternative - a last-written percent - passes a
-// monotonicity property test and is still wrong, which is why TW-NEST-006 names its test.
+// TW-NEST-004: a per-child contribution map; each commit rewrites one entry.
 
 describe('nesting', () => {
-  /** Commit on every set(), so a test reads a deterministic document rather than a clock's mood. */
+  /** Commit on every set(), so the document is deterministic. */
   const eager = { ...DEFAULT_SETTINGS, progressInterval: 0 };
 
   function nested(store: RecordingStore, token: string): OperationOptions {
@@ -1005,9 +944,7 @@ describe('nesting', () => {
   }
 
   it('concurrent siblings sum contributions (TW-NEST-006)', async () => {
-    // Four equal siblings, and the one that finishes LAST reports FIRST. Under last-write-wins the
-    // bar reads 100% from that first report onwards - for three quarters of the work - and a
-    // monotonicity assertion passes on the trace happily. So assert the SUM.
+    // Four equal siblings; the one that finishes last reports first. The percent is the sum.
     const store = new RecordingStore();
     const token = new_token();
     await operation(nested(store, token), async (reporter) => {
@@ -1025,9 +962,8 @@ describe('nesting', () => {
   });
 
   it('composes recursively, so a child covers a slice of a slice (TW-NEST-002)', async () => {
-    // `r.subtask(10, 25).subtask(50, 100)` covers 17.5-25 of `r`: the inner reporter owns 7.5 of the
-    // root's hundred, at an offset of 17.5. It does not START the root at 17.5 - the 10-17.5 slice
-    // belongs to its parent's undelegated lower half, which nobody has reported.
+    // `r.subtask(10, 25).subtask(50, 100)` covers 17.5-25 of `r`: 7.5 of the root's hundred. The
+    // 10-17.5 slice is the parent's unreported lower half.
     const store = new RecordingStore();
     const token = new_token();
     await operation(nested(store, token), async (reporter) => {
@@ -1044,8 +980,7 @@ describe('nesting', () => {
   });
 
   it('gives the callee no way to learn its range (TW-NEST-001)', async () => {
-    // What makes a subtask genuinely substitutable for a root: a function taking a Reporter cannot
-    // behave differently depending on how much of the bar it happens to own.
+    // A subtask exposes nothing of its range (TW-NEST-001).
     const store = new RecordingStore();
     await operation(nested(store, new_token()), async (reporter) => {
       const child = reporter.subtask(10, 25);
@@ -1070,8 +1005,7 @@ describe('nesting', () => {
   });
 
   it('takes the larger of its own percent and its children (TW-NEST-005)', async () => {
-    // Not the sum of the two - a reporter that both works and delegates would jump past 100. Not the
-    // children alone either, or the work it did itself vanishes the moment it delegates.
+    // The larger of own and children's, not their sum (TW-NEST-005).
     const store = new RecordingStore();
     const token = new_token();
     await operation(nested(store, token), async (reporter) => {
@@ -1112,8 +1046,7 @@ describe('nesting', () => {
   });
 
   it('freezes a contribution when a child goes indeterminate (TW-NEST-011)', async () => {
-    // Indeterminate is not zero. A child that stops knowing its percentage has not un-done its work,
-    // and dropping the contribution would walk the bar backwards for a reason nobody can act on.
+    // An indeterminate child keeps its last contribution (TW-NEST-011).
     const store = new RecordingStore();
     const token = new_token();
     await operation(nested(store, token), async (reporter) => {
@@ -1157,8 +1090,7 @@ describe('nesting', () => {
   });
 
   it('keeps concurrent branches from interfering when each has its own reporter (TW-NEST-014)', async () => {
-    // The wrong form shares one reporter across concurrent branches and lands three sets of
-    // contributions on one range. This is the right form, and it must total exactly 100.
+    // One subtask per concurrent branch; the total is exactly 100.
     const store = new RecordingStore();
     const token = new_token();
 
@@ -1176,9 +1108,7 @@ describe('nesting', () => {
   });
 
   it('exports no ambient progress proxy (TW-SYM-004, TW-TS-017)', async () => {
-    // contextvars has no browser equivalent, and TW-AMB-002 makes an unbound proxy a SILENT no-op -
-    // so a proxy that worked under Node and no-opped in a browser would fail as a progress bar that
-    // never moves, with nothing logged. TypeScript callers pass the reporter explicitly.
+    // TypeScript callers pass the reporter explicitly (TW-SYM-004).
     const entry = await import('../index');
     for (const forbidden of ['progress', 'ask', 'current_reporter', 'currentReporter']) {
       expect(forbidden in entry).toBe(false);

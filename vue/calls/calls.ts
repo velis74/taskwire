@@ -1,40 +1,32 @@
 /**
- * The six calls of TW-REST-004 behind one interface, so the transport that carries them is a
- * runtime choice rather than a build-time one.
+ * The six calls of TW-REST-004 behind one interface, so the transport that carries them is chosen
+ * at runtime.
  *
- * `TaskwireViewSet` declares exactly six endpoints and this is exactly six methods: two reads and
- * four writes, all keyed by the token, which **is** the identity of an operation and the only key
- * in the system (TW-KEY-001). Nothing else in the client issues a request, so selecting an
- * implementation moves the whole client onto that transport instead of half of it.
+ * `TaskwireViewSet` declares six endpoints and this interface has six methods: two reads and four
+ * writes, all keyed by the token, the identity of an operation (TW-KEY-001). The client issues no
+ * request outside this interface, so selecting an implementation moves the whole client onto that
+ * transport.
  *
- * **The reads hand back the raw wire payload and parse nothing** (TW-TS-000). `wire.ts` is the one
- * converter and it runs in both directions; a transport that parsed on the way through would be a
- * second one, and two converters is how a field ends up renamed on one path only.
+ * **The reads return the raw wire payload**; `wire.ts` parses it (TW-TS-000).
  *
- * **The writes answer with nothing** (TW-REST-008). Collect, dismiss and a dialog reply are `204`
- * and cancel is `202` - an acknowledgement, never a completion (TW-CANCEL-003). What any of them
- * changed is what the next read reports, which is the same rule that lets a push be dropped
- * (TW-CORE-002).
+ * **The writes return nothing** (TW-REST-008). Collect, dismiss and a dialog reply are `204` and
+ * cancel is `202`, an acknowledgement, not a completion (TW-CANCEL-003). What a write changed is
+ * reported by the next read (TW-CORE-002).
  *
- * **A failure carries its status on `error.response.status`**, whichever implementation raised it:
- * axios raises that shape natively and `ViewSetRequestError` mirrors it deliberately. That is what
- * lets the client keep one rule for a `404` - not written yet, or gone (TW-TS-004) - without
- * knowing how the call travelled.
+ * **A failure carries its status on `error.response.status`** in every implementation: axios
+ * raises that shape and `ViewSetRequestError` mirrors it. A `404` therefore means "not written yet,
+ * or gone" (TW-TS-004) on every transport.
  */
 
 import type { AxiosInstance } from 'axios';
 
 /**
- * The one endpoint an ordinary client polls (TW-REG-001): **the base path itself**.
- *
- * The register is the collection, so it lives at the collection's URL and carries no extra segment.
- * That is what removes TW-REST-006's hazard by construction: with nothing literal after the prefix
- * there is no path a token could ever be mistaken for, and the ordering of route declarations stops
- * being load-bearing.
+ * The register's path relative to the base path (TW-REG-001): empty, the collection's own URL. No
+ * literal segment follows the prefix, so no token can collide with a route (TW-REST-006).
  */
 export const REGISTER_PATH = '';
 
-/** The six calls, and the whole of what a transport has to carry (TW-REST-004). */
+/** The six calls a transport carries (TW-REST-004). */
 export interface TaskwireCalls {
   /** `GET {prefix}` - the whole register of the namespace, with no parameters (TW-REG-003). */
   register(): Promise<unknown>;
@@ -50,18 +42,16 @@ export interface TaskwireCalls {
   replyToDialog(token: string, did: string, button: string, values: Record<string, unknown>): Promise<void>;
 }
 
-/**
- * The six calls over HTTP, on the axios instance the client was built with.
- *
- * Both headers travel on the request interceptor `Taskwire` installs on that instance rather than
- * here: `X-Taskwire-Token` exists only for the window of an ambient binding (TW-TS-003) and
- * `X-Taskwire-Connection` goes on every request there is (TW-REST-002), and neither is a decision
- * a call site could make correctly. So this class writes no header at all, and there is nowhere for
- * a token to end up in a URL (TW-CELERY-011).
- */
 /** taskwire's own requests are background calls for `axiosCallSource` (TW-TS-022, TW-TS-023). */
 const QUIET = { background: true };
 
+/**
+ * The six calls over HTTP, on the axios instance the client was built with.
+ *
+ * This class writes no header: `X-Taskwire-Token` (TW-TS-003) and `X-Taskwire-Connection`
+ * (TW-REST-002) are added by the request interceptor `Taskwire` installs on that instance. The ambient
+ * token travels only as a header, never in a URL (TW-CELERY-011).
+ */
 export class RestCalls implements TaskwireCalls {
   constructor(
     private readonly basePath: string,

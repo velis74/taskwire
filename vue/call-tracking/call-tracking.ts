@@ -10,8 +10,7 @@
  * - where the work is handed to another process, `CallExecution.handOff()`.
  *
  * There is no ambient binding here (TW-SYM-004), so the receipt and the execution are passed to the
- * code that needs them. `trackFetch()` places all three around a WHATWG `fetch` handler, which is
- * the request shape of every server runtime that has one.
+ * code that needs them. `trackFetch()` places all three around a WHATWG `fetch` handler.
  */
 
 import { CONNECTION_HEADER, DEFAULT_BASE_PATH, TOKEN_HEADER } from '../client/types';
@@ -20,6 +19,7 @@ import { type Reporter, type ReporterStore } from '../reporter/reporter';
 import { key as storeKey, type TaskwireStore } from '../store/store';
 import { DISPATCH_FAILED, HTTP_STATUS, isTerminal, NOT_EXECUTED, type TaskwireError } from '../wire/wire';
 
+/** The header whose UUID key a call is tracked under when it carries no token (TW-CALL-001). */
 export const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 
 const UUID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
@@ -136,7 +136,9 @@ export function callFromCarried(carried: Record<string, unknown>): Call | null {
   return { token, ns };
 }
 
+/** Options of `executeCall()`. */
 export interface ExecuteOptions {
+  /** Where the operation is written; `null` runs the body untracked. */
   store: ReporterStore | null;
   /** Per-operation overrides of §8.1's tunables. */
   settings?: OperationOptions['settings'];
@@ -203,6 +205,7 @@ export async function executeCall<T>(
   }
 }
 
+/** Options of `receiveCall()`. */
 export interface ReceiveOptions extends ExecuteOptions {
   /** Errors meaning the work was not handed to the process that executes it: `taskwire.dispatch_failed`. */
   dispatchError?: (error: unknown) => boolean;
@@ -258,7 +261,7 @@ export async function receiveCall<T>(
     if (existing !== null && isTerminal(existing.progress)) await store.drop?.(k);
     await markQueued(opts);
   } catch {
-    // Reporting is an accelerator; the call runs.
+    // A store failure does not stop the call.
   }
 
   let raised: { error: unknown } | null = null;
@@ -279,7 +282,7 @@ export async function receiveCall<T>(
           await markFailed({ ...opts, error, call: true });
         }
       } catch {
-        // Logged nowhere: there is no logger in the operating half, and the call's outcome stands.
+        // Not logged: the operating half has no logger, and the call's outcome stands.
       }
     }
   }
@@ -295,6 +298,7 @@ export function statusError(status: number): TaskwireError | null {
   };
 }
 
+/** Options of `trackFetch()`. */
 export interface TrackFetchOptions extends ExecuteOptions {
   /** The namespace of a request; `null` leaves it untracked (TW-AMB-009). */
   resolveNs: (request: Request) => string | null;
