@@ -637,8 +637,9 @@ parameters (`token`, `did`, the optional `X-Taskwire-Connection` header), reques
 bodies and error responses, with a description on every field; the error body is `ErrorBody`.
 The operations carry the tag `taskwire.contrib.openapi.TAG` (`Taskwire`), and
 `taskwire.contrib.openapi.TAG_DESCRIPTION` describes it. With `register_taskwire_rest`,
-`apply_viewset_tags(app)` from `fastapi_viewsets.endpoint_docs` adds the description to the document; with `router()`,
-the application passes it itself:
+`apply_viewset_tags(app)` from `fastapi_viewsets.endpoint_docs` adds the description to the document, and an
+application's `settings.viewsets_tag_name` function, given the class `TaskwireViewSet`, decides the tag instead of
+`TAG`; with `router()`, the application passes it itself:
 
 ```python
 from fastapi import FastAPI

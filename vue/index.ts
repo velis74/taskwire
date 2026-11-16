@@ -16,7 +16,7 @@
  * The package's version, independent of `WIRE_VERSION`, which changes only on a breaking wire change
  * (TW-CORE-011).
  */
-export const VERSION = '0.5.0';
+export const VERSION = '0.5.1';
 
 // §5.5 - the client
 export { configure_taskwire, resetTaskwireConfig, taskwireConfig, type TaskwireUiConfig } from './client/config';
