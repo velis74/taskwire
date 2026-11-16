@@ -6,6 +6,14 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-11-16
+
+### Changed
+
+- The optional npm peer dependency `@dynamicforms/fastapi-viewsets` is `>=0.13.0 <0.17` and
+  `@dynamicforms/vuetify-inputs` is `>=0.15.0 <0.17`: fastapi-viewsets 0.16 and vuetify-inputs 0.16
+  (which `@dynamicforms/vuetify-modal-form-kit` 0.11.1 requires) install beside taskwire.
+
 ## [0.5.0] - 2026-11-12
 
 ### Added
