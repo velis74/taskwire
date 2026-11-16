@@ -170,7 +170,7 @@ describes the topics, who is admitted to each, and the setup.
 
 ## The npm package
 
-`@dynamicforms/fastapi-viewsets` `>=0.13.0 <0.16` is an optional peer dependency of the npm package, imported
+`@dynamicforms/fastapi-viewsets` `>=0.13.0 <0.17` is an optional peer dependency of the npm package, imported
 by `taskwire/muxws` and `taskwire/fastapi-viewsets`. Both send the six calls through its
 `MuxwsProxyImpl`. `taskwire/muxws` hands the event streams on the peer to its `handleEventStream`, so
 one socket carries taskwire's pushes and the event client's events (see
