@@ -13,6 +13,10 @@ uv run python demo.py
 
 Then open <http://127.0.0.1:5174>.
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
+
+The badge starts the same demo in GitHub Codespaces, on your own account's quota.
+
 The server listens on `127.0.0.1:8030` (override with `TASKWIRE_DEMO_PORT`) and Vite proxies
 `/taskwire`, `/demo` and `/ws` to it, so both halves share one origin and need no CORS. The socket
 goes through the proxy too: a `SameSite=lax` cookie is not sent on a cross-site WebSocket upgrade,
@@ -59,6 +63,7 @@ server, where the test suites fake one end.
 
 ```text
 demo.py               starts both halves; one Ctrl-C stops them
+.devcontainer/        the demo in GitHub Codespaces: installs both halves and starts demo.py
 demo/server/          FastAPI: the viewset registration, the socket, the jobs, the fake book
   main.py             the app: taskwire configuration, the viewset registration and the /ws endpoint
   jobs.py             the four operations; no transport appears in this file

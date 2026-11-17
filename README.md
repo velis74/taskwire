@@ -50,13 +50,18 @@ npm install taskwire
 
 ## The demo
 
+A night batch over one book: four back-office jobs that between them exercise progress, nested
+progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](demo/README.md).
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
+
+The codespace installs both halves, starts the server and the client and opens the page in a new tab. It runs on
+your own GitHub account's Codespaces quota. To run the same demo locally:
+
 ```bash
 uv sync && npm ci
 uv run python demo.py                # then open http://127.0.0.1:5174
 ```
-
-A night batch over one book: four back-office jobs that between them exercise progress, nested
-progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](demo/README.md).
 
 ## Status
 

@@ -29,6 +29,20 @@ npm install taskwire
 The Python core has no runtime dependencies; the npm package requires axios only. Each extra adds an
 adapter to an external framework or service.
 
+## Try the demo
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
+
+The demo runs four back-office jobs that use progress, nested progress, dialogs, cancellation and collectable
+results, over HTTP or one WebSocket. The codespace installs it, starts its server and client and opens the page in a
+new tab; it runs on your own GitHub account's Codespaces quota. Locally, from a clone of the
+[repository](https://github.com/velis74/taskwire):
+
+```bash
+uv sync && npm ci
+uv run python demo.py    # then open http://127.0.0.1:5174
+```
+
 ## Wire it up once
 
 ```python
