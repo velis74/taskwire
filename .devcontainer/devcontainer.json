@@ -9,11 +9,7 @@
   "hostRequirements": { "cpus": 2 },
   "containerEnv": { "UV_LINK_MODE": "copy" },
   "postCreateCommand": "pipx install uv && uv sync --locked && npm ci",
-  // Runs in a terminal of the editor, where Ctrl-C stops the demo. Another attached editor finds the
-  // demo already answering on 5174 and does not start a second copy.
-  "postAttachCommand": {
-    "demo": "curl -sf -o /dev/null localhost:5174 && echo 'The demo is already running.' || uv run python demo.py"
-  },
+  "postStartCommand": "nohup uv run python demo.py > /tmp/taskwire-demo.log 2>&1 &",
   "forwardPorts": [5174, 8030],
   "portsAttributes": {
     "5174": { "label": "Demo", "onAutoForward": "openBrowser" },
