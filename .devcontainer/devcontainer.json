@@ -7,7 +7,8 @@
     "ghcr.io/devcontainers/features/node:1": { "version": "22" }
   },
   "hostRequirements": { "cpus": 2 },
-  "containerEnv": { "UV_LINK_MODE": "copy" },
+  // TASKWIRE_DEMO_VITE_HOST: Vite listens on all interfaces; `localhost` resolves to `::1` only in the container.
+  "containerEnv": { "UV_LINK_MODE": "copy", "TASKWIRE_DEMO_VITE_HOST": "1" },
   "postCreateCommand": "pipx install uv && uv sync --locked && npm ci",
   "postStartCommand": "nohup uv run python demo.py > /tmp/taskwire-demo.log 2>&1 &",
   "forwardPorts": [5174, 8030],
