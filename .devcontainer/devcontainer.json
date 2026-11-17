@@ -11,13 +11,20 @@
   "containerEnv": { "UV_LINK_MODE": "copy", "TASKWIRE_DEMO_VITE_HOST": "1" },
   "postCreateCommand": "pipx install uv && uv sync --locked && npm ci",
   "postAttachCommand": "curl -sf -o /dev/null localhost:5174 && echo 'The demo is already running.' || uv run python demo.py",
-  "forwardPorts": [5174, 8030],
+  // No forwardPorts: the ports are forwarded when the demo starts listening, and onAutoForward opens the frontend.
   "portsAttributes": {
-    "5174": { "label": "Demo", "onAutoForward": "openBrowser" },
+    "5174": { "label": "Demo", "onAutoForward": "openBrowserOnce" },
     "8030": { "label": "Demo server", "onAutoForward": "silent" }
   },
+  // No venv activation in terminals: it types into the demo's terminal and interrupts the demo; uv run needs none.
   "customizations": {
     "codespaces": { "openFiles": [".devcontainer/README.md"] },
-    "vscode": { "extensions": ["ms-python.python", "Vue.volar"] }
+    "vscode": {
+      "settings": {
+        "python.terminal.activateEnvironment": false,
+        "python-envs.terminal.autoActivationType": "off"
+      },
+      "extensions": ["ms-python.python", "Vue.volar"]
+    }
   }
 }
