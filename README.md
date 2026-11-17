@@ -1,3 +1,4 @@
+<!-- markdownlint-disable-next-line MD013 -->
 # <img src="https://raw.githubusercontent.com/velis74/taskwire/main/taskwire-icon.svg" alt="" width="40" height="40" style="vertical-align: middle"> taskwire
 
 Progress reporting and awaitable dialogs for long-running operations, in Python and TypeScript.
