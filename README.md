@@ -50,13 +50,20 @@ npm install taskwire
 
 ## The demo
 
+A night batch over one book: four back-office jobs that between them exercise progress, nested
+progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](demo/README.md).
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
+
+### Run locally
+
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node 22+.
+
 ```bash
+git clone https://github.com/velis74/taskwire.git && cd taskwire
 uv sync && npm ci
 uv run python demo.py                # then open http://127.0.0.1:5174
 ```
-
-A night batch over one book: four back-office jobs that between them exercise progress, nested
-progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](demo/README.md).
 
 ## Status
 

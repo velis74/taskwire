@@ -1,0 +1,23 @@
+{
+  // The demo (`demo.py`): the FastAPI server on 8030 and the Vite client on 5174, which proxies the
+  // server, so the browser needs only 5174.
+  "name": "taskwire demo",
+  "image": "mcr.microsoft.com/devcontainers/python:3.13-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" }
+  },
+  "hostRequirements": { "cpus": 2 },
+  // TASKWIRE_DEMO_VITE_HOST: Vite listens on all interfaces; `localhost` resolves to `::1` only in the container.
+  "containerEnv": { "UV_LINK_MODE": "copy", "TASKWIRE_DEMO_VITE_HOST": "1" },
+  "postCreateCommand": "pipx install uv && uv sync --locked && npm ci",
+  "postStartCommand": "nohup uv run python demo.py > /tmp/taskwire-demo.log 2>&1 &",
+  "forwardPorts": [5174, 8030],
+  "portsAttributes": {
+    "5174": { "label": "Demo", "onAutoForward": "openBrowser" },
+    "8030": { "label": "Demo server", "onAutoForward": "silent" }
+  },
+  "customizations": {
+    "codespaces": { "openFiles": ["demo/README.md"] },
+    "vscode": { "extensions": ["ms-python.python", "Vue.volar"] }
+  }
+}

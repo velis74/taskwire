@@ -29,6 +29,20 @@ npm install taskwire
 The Python core has no runtime dependencies; the npm package requires axios only. Each extra adds an
 adapter to an external framework or service.
 
+## Try the demo
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
+
+### Run locally
+
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node 22+.
+
+```bash
+git clone https://github.com/velis74/taskwire.git && cd taskwire
+uv sync && npm ci
+uv run python demo.py    # then open http://127.0.0.1:5174
+```
+
 ## Wire it up once
 
 ```python

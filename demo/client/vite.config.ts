@@ -1,7 +1,13 @@
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vite';
+
+// Set in GitHub Codespaces, where the page is served from `<codespace>-5174.<domain>`.
+const forwardingDomain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN;
+// Set in the dev container, where `localhost` resolves to `::1` only and `demo.py` prints `127.0.0.1`.
+const listenOnAllInterfaces = Boolean(process.env.TASKWIRE_DEMO_VITE_HOST);
 
 export default defineConfig({
   plugins: [vue()],
@@ -19,6 +25,8 @@ export default defineConfig({
     port: 5174,
     // demo.py prints 5174; fail instead of moving to another port.
     strictPort: true,
+    ...((listenOnAllInterfaces || forwardingDomain) && { host: true }),
+    allowedHosts: forwardingDomain ? [`.${forwardingDomain}`] : undefined,
     proxy: {
       // One origin for both halves: no CORS, and the session cookie is first-party.
       '/taskwire': { target: 'http://127.0.0.1:8030', changeOrigin: false },

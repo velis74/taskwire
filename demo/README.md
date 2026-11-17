@@ -5,13 +5,19 @@ progress, awaitable dialogs, cancellation, collectable results, and a worker's o
 on an unanswered question. The page uses either wire, HTTP or one WebSocket; the jobs are the same
 for both.
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
+
+## Run locally
+
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node 22+.
+
 ```bash
 uv sync
 npm ci
-uv run python demo.py
+uv run python demo.py               # open http://127.0.0.1:5174
 ```
 
-Then open <http://127.0.0.1:5174>.
+## Ports, proxy and modes
 
 The server listens on `127.0.0.1:8030` (override with `TASKWIRE_DEMO_PORT`) and Vite proxies
 `/taskwire`, `/demo` and `/ws` to it, so both halves share one origin and need no CORS. The socket
@@ -59,6 +65,7 @@ server, where the test suites fake one end.
 
 ```text
 demo.py               starts both halves; one Ctrl-C stops them
+.devcontainer/        the demo in GitHub Codespaces: installs both halves and starts demo.py
 demo/server/          FastAPI: the viewset registration, the socket, the jobs, the fake book
   main.py             the app: taskwire configuration, the viewset registration and the /ws endpoint
   jobs.py             the four operations; no transport appears in this file
