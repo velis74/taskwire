@@ -14,10 +14,10 @@ Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node 22+.
 ```bash
 uv sync
 npm ci
-uv run python demo.py
+uv run python demo.py               # open http://127.0.0.1:5174
 ```
 
-Then open <http://127.0.0.1:5174>.
+## Ports, proxy and modes
 
 The server listens on `127.0.0.1:8030` (override with `TASKWIRE_DEMO_PORT`) and Vite proxies
 `/taskwire`, `/demo` and `/ws` to it, so both halves share one origin and need no CORS. The socket
