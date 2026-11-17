@@ -9,8 +9,11 @@
   "hostRequirements": { "cpus": 2 },
   "containerEnv": { "UV_LINK_MODE": "copy" },
   "postCreateCommand": "pipx install uv && uv sync --locked && npm ci",
-  // Runs in a terminal of the editor, where Ctrl-C stops the demo.
-  "postAttachCommand": { "demo": "uv run python demo.py" },
+  // Runs in a terminal of the editor, where Ctrl-C stops the demo. Another attached editor finds the
+  // demo already answering on 5174 and does not start a second copy.
+  "postAttachCommand": {
+    "demo": "curl -sf -o /dev/null localhost:5174 && echo 'The demo is already running.' || uv run python demo.py"
+  },
   "forwardPorts": [5174, 8030],
   "portsAttributes": {
     "5174": { "label": "Demo", "onAutoForward": "openBrowser" },
