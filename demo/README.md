@@ -5,6 +5,12 @@ progress, awaitable dialogs, cancellation, collectable results, and a worker's o
 on an unanswered question. The page uses either wire, HTTP or one WebSocket; the jobs are the same
 for both.
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
+
+## Run locally
+
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node 22+.
+
 ```bash
 uv sync
 npm ci
@@ -12,10 +18,6 @@ uv run python demo.py
 ```
 
 Then open <http://127.0.0.1:5174>.
-
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
-
-The badge starts the same demo in GitHub Codespaces, on your own account's quota.
 
 The server listens on `127.0.0.1:8030` (override with `TASKWIRE_DEMO_PORT`) and Vite proxies
 `/taskwire`, `/demo` and `/ws` to it, so both halves share one origin and need no CORS. The socket

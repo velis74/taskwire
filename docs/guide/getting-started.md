@@ -33,12 +33,12 @@ adapter to an external framework or service.
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
 
-The demo runs four back-office jobs that use progress, nested progress, dialogs, cancellation and collectable
-results, over HTTP or one WebSocket. The codespace installs it, starts its server and client and opens the page in a
-new tab; it runs on your own GitHub account's Codespaces quota. Locally, from a clone of the
-[repository](https://github.com/velis74/taskwire):
+### Run locally
+
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node 22+.
 
 ```bash
+git clone https://github.com/velis74/taskwire.git && cd taskwire
 uv sync && npm ci
 uv run python demo.py    # then open http://127.0.0.1:5174
 ```

@@ -55,10 +55,12 @@ progress, awaitable dialogs, cancellation and collectable results. See [`demo/RE
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
 
-The codespace installs both halves, starts the server and the client and opens the page in a new tab. It runs on
-your own GitHub account's Codespaces quota. To run the same demo locally:
+### Run locally
+
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node 22+.
 
 ```bash
+git clone https://github.com/velis74/taskwire.git && cd taskwire
 uv sync && npm ci
 uv run python demo.py                # then open http://127.0.0.1:5174
 ```
