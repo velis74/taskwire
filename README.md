@@ -1,4 +1,4 @@
-# <img src="taskwire-icon.svg" alt="" width="40" height="40" style="vertical-align: middle"> taskwire
+# <img src="https://raw.githubusercontent.com/velis74/taskwire/main/taskwire-icon.svg" alt="" width="40" height="40" style="vertical-align: middle"> taskwire
 
 Progress reporting and awaitable dialogs for long-running operations, in Python and TypeScript.
 
@@ -51,7 +51,7 @@ npm install taskwire
 ## The demo
 
 A night batch over one book: four back-office jobs that between them exercise progress, nested
-progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](demo/README.md).
+progress, awaitable dialogs, cancellation and collectable results. See [`demo/README.md`](https://github.com/velis74/taskwire/blob/main/demo/README.md).
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/velis74/taskwire?quickstart=1)
 
