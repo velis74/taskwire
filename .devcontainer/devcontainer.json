@@ -16,8 +16,15 @@
     "5174": { "label": "Demo", "onAutoForward": "openBrowser" },
     "8030": { "label": "Demo server", "onAutoForward": "silent" }
   },
+  // No venv activation in terminals: it types into the demo's terminal and interrupts the demo; uv run needs none.
   "customizations": {
     "codespaces": { "openFiles": [".devcontainer/README.md"] },
-    "vscode": { "extensions": ["ms-python.python", "Vue.volar"] }
+    "vscode": {
+      "settings": {
+        "python.terminal.activateEnvironment": false,
+        "python-envs.terminal.autoActivationType": "off"
+      },
+      "extensions": ["ms-python.python", "Vue.volar"]
+    }
   }
 }
