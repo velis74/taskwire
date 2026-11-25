@@ -5,11 +5,14 @@ export default defineConfig({
   title: 'taskwire',
   description:
     'Nested progress, awaitable dialogs where the first answer wins across tabs, sticky cancellation and collectable results for long-running jobs. Python and TypeScript.',
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/taskwire-icon.svg' }]],
-  // Canonical URL of each page as published on docs.velis.si, under the `--base` given to the build.
+  // Icon and canonical URL under the `--base` given to the build; VitePress does not prefix `head` entries.
   transformHead({ pageData, siteConfig }) {
+    const base = siteConfig.site.base;
     const path = pageData.relativePath.replace(/(^|\/)index\.md$/, '$1').replace(/\.md$/, '.html');
-    return [['link', { rel: 'canonical', href: `https://docs.velis.si${siteConfig.site.base}${path}` }]];
+    return [
+      ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}taskwire-icon.svg` }],
+      ['link', { rel: 'canonical', href: `https://docs.velis.si${base}${path}` }],
+    ];
   },
   themeConfig: {
     logo: '/taskwire-icon.svg',
