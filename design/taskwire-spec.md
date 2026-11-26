@@ -2015,9 +2015,11 @@ function use_register(options?: TaskwireOptions):
   becomes true and closes it when it becomes false, and is called by the application or not at all
   (TW-TS-022). Its default body,
   `TaskwireBusy`, MUST draw `busy.percent` (indeterminate when `null`) and `busy.label`, and while
-  `busy.unreachable` holds a notice with an action that calls `tw.retryNow()`. A dialog the user
-  closes MUST stay closed until `visible` has been false once. Tests:
-  `busy-dialog.spec.ts::useBusyDialog`.
+  `busy.unreachable` holds a notice with an action that calls `tw.retryNow()`. It MUST open the
+  dialog only while the kit's `modal.openCount` is 0, and while `visible` holds and no busy dialog is
+  open MUST open it as soon as `openCount` drops to 0; a dialog opened above the busy dialog MUST NOT
+  close it. A dialog the user closes MUST stay closed until `visible` has been false once. Tests:
+  `busy-dialog.spec.ts::useBusyDialog`, `busy-dialog-defers.spec.ts`.
 
 ---
 

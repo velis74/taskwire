@@ -19,11 +19,19 @@ interface OpenDialog {
 
 const kit = vi.hoisted(() => ({ opened: [] as OpenDialog[], messages: [] as OpenDialog[] }));
 
-vi.mock('@dynamicforms/vuetify-modal-form-kit', () => {
+vi.mock('@dynamicforms/vuetify-modal-form-kit', async () => {
+  const { ref } = await import('vue');
+  const openCount = ref(0);
   const open = (into: OpenDialog[], title: string, name: unknown, props: any, options: any): Promise<string> => {
     let resolve: (value: string) => void = () => undefined;
+    let settled = false;
+    openCount.value += 1;
     const promise = new Promise<string>((done) => {
-      resolve = done;
+      resolve = (value: string) => {
+        if (!settled) openCount.value -= 1;
+        settled = true;
+        done(value);
+      };
     }) as Promise<string> & { close: (value: string) => void };
     const close = vi.fn((value: string) => resolve(value));
     promise.close = close;
@@ -32,6 +40,9 @@ vi.mock('@dynamicforms/vuetify-modal-form-kit', () => {
   };
   return {
     modal: {
+      get openCount() {
+        return openCount.value;
+      },
       custom: (title: string, component: unknown, props: Record<string, unknown>, options?: Record<string, unknown>) =>
         open(kit.opened, title, component, props, options),
       message: (title: string, message: string, options?: Record<string, unknown>) =>
@@ -71,6 +82,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  [...kit.opened, ...kit.messages].forEach((dialog) => dialog.resolve('cleanup'));
   tw.dispose();
   resetTaskwireConfig();
   vi.useRealTimers();

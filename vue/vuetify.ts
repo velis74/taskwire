@@ -34,8 +34,8 @@
  *
  * ## `useBusyDialog` and `TaskwireBusy`
  *
- * `useBusyDialog()` opens one modal while `tw.busy.visible` holds, with `TaskwireBusy` as its body
- * (TW-PKG-006). Nothing opens it unless the application calls it. Both live in `busy/ui/`.
+ * `useBusyDialog()` opens one modal while `tw.busy.visible` holds and no other dialog is open, with
+ * `TaskwireBusy` as its body (TW-PKG-006). Nothing opens it unless the application calls it. Both live in `busy/ui/`.
  */
 
 export { type BusyDialogOptions, TaskwireBusy, useBusyDialog } from './busy/ui/busy-dialog';

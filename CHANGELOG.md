@@ -6,6 +6,16 @@ documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-11-26
+
+### Changed
+
+- `useBusyDialog()` opens the busy dialog only while no other dialog of the modal kit is open
+  (`modal.openCount` is 0). While `tw.busy.visible` holds, it opens the dialog as soon as the last
+  open dialog closes, unless the user closed the busy dialog; a dialog opened above the busy dialog
+  leaves it open. `stop()` also stops following `modal.openCount`.
+- `taskwire/vuetify` requires the optional npm peer `@dynamicforms/vuetify-modal-form-kit` ^0.11.2.
+
 ## [0.5.2] - 2026-11-17
 
 ### Fixed

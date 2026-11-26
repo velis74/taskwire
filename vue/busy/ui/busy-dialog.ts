@@ -9,6 +9,7 @@ import {
   shallowRef,
   toRaw,
   type VNode,
+  watch,
 } from 'vue';
 
 import type { Taskwire } from '../../client/taskwire';
@@ -109,12 +110,14 @@ export interface BusyDialogOptions {
  * useBusyDialog();
  * ```
  *
- * Opens `modal.custom(title, body, { client, translate, showCalls })` when `tw.busy.visible`
- * becomes true and closes it, with `close('idle')`, when it becomes false. The body subscribes to
- * `tw.busy` itself, so the props stay the same while the dialog is open. **Try now** is a button of
- * the body: a dialog action settles the dialog when it runs. The kit adds its **Close** action; a
- * dialog the user closes stays closed until `visible` has been false once. `stop()` closes an open
- * dialog and stops following; the surrounding effect scope calls it when it ends.
+ * Opens `modal.custom(title, body, { client, translate, showCalls })` while `tw.busy.visible`
+ * holds and `modal.openCount` is 0, and closes it, with `close('idle')`, when `visible` becomes
+ * false. While another dialog is open the busy dialog waits and opens once `openCount` drops to 0;
+ * a dialog opened above the busy dialog leaves it open. The body subscribes to `tw.busy` itself, so
+ * the props stay the same while the dialog is open. **Try now** is a button of the body: a dialog
+ * action settles the dialog when it runs. The kit adds its **Close** action; a dialog the user
+ * closes stays closed until `visible` has been false once. `stop()` closes an open dialog and stops
+ * following `tw.busy` and `openCount`; the surrounding effect scope calls it when it ends.
  */
 export function useBusyDialog(options: BusyDialogOptions = {}): { stop: () => void } {
   const client = options.client ?? use_taskwire();
@@ -132,7 +135,7 @@ export function useBusyDialog(options: BusyDialogOptions = {}): { stop: () => vo
       closing?.close('idle');
       return;
     }
-    if (open !== null || dismissed) return;
+    if (open !== null || dismissed || modal.openCount !== 0) return;
     const dialog = modal.custom(translate(options.title ?? CAPTIONS.busy), body, {
       client,
       translate,
@@ -149,10 +152,15 @@ export function useBusyDialog(options: BusyDialogOptions = {}): { stop: () => vo
   };
 
   const stopListening = client.onBusyChange(sync);
+  const stopWatching = watch(
+    () => modal.openCount,
+    () => sync(client.busy),
+  );
   sync(client.busy);
 
   const stop = (): void => {
     stopListening();
+    stopWatching();
     const closing = open;
     open = null;
     closing?.close('idle');
