@@ -11,7 +11,7 @@ call source and calls `useBusyDialog()`, or renders `tw.busy` its own way.
 | Situation | `tw.busy` | `useBusyDialog()` |
 |---|---|---|
 | Every request answers within `progressUi.delay` | `visible: false` | nothing |
-| A request is older than `progressUi.delay` | `visible: true`, the request in `calls` | the dialog opens: title "Performing operation", an indeterminate bar |
+| A request is older than `progressUi.delay` | `visible: true`, the request in `calls` | the dialog opens: title "Performing operation", an indeterminate bar; while other dialogs are open, once the last of them closes |
 | The server reports progress for that request | `percent`, `label` of the oldest listed request that reports either | the bar shows `percent`, the label below it |
 | A request has `unreachableAfter` unanswered attempts | `unreachable: true` | "No connection to the server." and **Try now**, which sends every waiting repeat at once |
 | No request is older than the delay any more | `visible: false` | the dialog closes |
@@ -98,7 +98,7 @@ useBusyDialog();
 ```
 
 Call `useBusyDialog()` once, in the setup of a component that lives as long as the page, with
-`<ModalView />` of `@dynamicforms/vuetify-modal-form-kit` ^0.11.0 mounted. `taskwire/vuetify` also
+`<ModalView />` of `@dynamicforms/vuetify-modal-form-kit` ^0.11.2 mounted. `taskwire/vuetify` also
 imports `@dynamicforms/vuetify-inputs`, which the modal kit requires as well. `viewsetCallSource()` reports
 every proxy call, over REST and muxws, with its repeats; `tw.retryNow()` calls fastapi-viewsets'
 `retryNow()`. A request listed in `tw.busy` is followed under its key as `tw.trackCall()` follows
@@ -122,7 +122,10 @@ The body is passed to `modal.custom()` as a component and needs no registration.
 change while the dialog is open: the body subscribes to `tw.busy` itself. **Try now** is a button of
 the body rather than a dialog action, because a dialog action settles the dialog when it runs. The
 kit adds its own **Close** action; a dialog the user closes stays closed until `tw.busy.visible` has
-been false once, and the next slow request after that opens it again. The notice and button texts
+been false once, and the next slow request after that opens it again. The busy dialog opens only
+while the kit's `modal.openCount` is 0: while another dialog is open it waits, and opens as soon as
+the last one closes if `tw.busy.visible` still holds. A dialog opened above the busy dialog leaves
+it open. The notice and button texts
 carry the keys `taskwire.unreachable` and `taskwire.try_now`.
 
 ### A look of your own

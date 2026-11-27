@@ -401,13 +401,15 @@ and Collect and Dismiss while it holds one. It emits `collected` with the releas
 `Result` and the operation, and `error` with the error and the operation when a write rejects. It
 renders nothing while the register is empty.
 
-`taskwire/vuetify` imports `@dynamicforms/vuetify-modal-form-kit` ^0.11.0 and
+`taskwire/vuetify` imports `@dynamicforms/vuetify-modal-form-kit` ^0.11.2 and
 `@dynamicforms/vuetify-inputs` `>=0.15.0 <0.17`, both optional peers.
 
 `useBusyDialog({ client?, translate?, title?, component?, showCalls? })` opens one modal through
 the modal kit's `custom()`, with the body passed as a component, while `tw.busy.visible` holds and
-closes it when it does not; a dialog the user closes stays closed until `visible` has been false
-once. `<TaskwireBusy />` is its default
+closes it when it does not. It opens the dialog only while `modal.openCount` is 0; while `visible`
+still holds and the user has not closed it, it opens as soon as the count drops to 0. A dialog
+opened above it leaves it open. A dialog the user closes stays closed until `visible` has been
+false once. `<TaskwireBusy />` is its default
 body: `busy.label`, a bar for `busy.percent` (indeterminate when `null`), with `show-calls` one row
 per listed call, and while `busy.unreachable` holds a notice with Try now, which calls
 `tw.retryNow()`. Options and wiring: [Handling long-running
