@@ -217,7 +217,7 @@ passes it to `configure_worker(store, transport)`.
 Each envelope goes to one of two topics:
 
 | Topic | Carries | Admitted to |
-|---|---|---|
+| --- | --- | --- |
 | `taskwire:ns.{digest}` | every envelope of the namespace except a private operation's progress | a caller whose `session_resolver` answers that namespace |
 | `taskwire:c.{digest}` | the progress of the private operations started from one socket | that socket, in that namespace; never a poll over REST |
 

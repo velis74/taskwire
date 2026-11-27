@@ -137,7 +137,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   code:
 
   | Old | New |
-  |---|---|
+  | --- | --- |
   | `dispatch_failed` | `taskwire.dispatch_failed` |
   | `not_executed` | `taskwire.not_executed` |
   | `dialog_timeout` | `taskwire.dialog_timeout` |

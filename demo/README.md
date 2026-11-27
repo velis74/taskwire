@@ -50,7 +50,7 @@ server, where the test suites fake one end.
 ## What to try
 
 | | |
-|---|---|
+| --- | --- |
 | **Reconcile positions** | Stops four times to ask which figure stands. While it waits its state reads `waiting_input` and the worker is held; `ask()` has no timeout and no default answer. |
 | **…then open a second tab** | The question is in both, because a question belongs to the namespace rather than to a tab. The tab that started asks immediately; the other waits `dialogAdoptDelay` and presents only if the question is still open. Answer in either and the job resumes. |
 | **Export blotter, then cancel** | Nothing in that job's loop is written for cancellation. `set()` raises by default, so a loop that reports progress stops when asked. |

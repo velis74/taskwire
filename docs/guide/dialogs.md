@@ -47,7 +47,7 @@ answers.
 Two identifiers:
 
 | | what it is | used as a key? |
-|---|---|---|
+| --- | --- | --- |
 | `id` | this asking — a server-minted UUID, unique within the token | yes, always |
 | `dialog_id` | which question — the frontend component identity | never |
 

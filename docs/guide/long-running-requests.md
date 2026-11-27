@@ -9,7 +9,7 @@ call source and calls `useBusyDialog()`, or renders `tw.busy` its own way.
 ## What the user sees
 
 | Situation | `tw.busy` | `useBusyDialog()` |
-|---|---|---|
+| --- | --- | --- |
 | Every request answers within `progressUi.delay` | `visible: false` | nothing |
 | A request is older than `progressUi.delay` | `visible: true`, the request in `calls` | the dialog opens: title "Performing operation", an indeterminate bar; while other dialogs are open, once the last of them closes |
 | The server reports progress for that request | `percent`, `label` of the oldest listed request that reports either | the bar shows `percent`, the label below it |
@@ -111,7 +111,7 @@ and by polling otherwise.
 `useBusyDialog` options:
 
 | Option | Default | |
-|---|---|---|
+| --- | --- | --- |
 | `client` | `use_taskwire()` | the client whose `tw.busy` the dialog shows |
 | `translate` | `text`, else `key` | renders every `Text`: title, label, notice, button |
 | `title` | `{ key: 'taskwire.busy', text: 'Performing operation' }` | the dialog title |

@@ -161,14 +161,14 @@ tw.busy;      // { visible, unreachable, calls, percent, label }
 ```
 
 | `BusyState` | |
-|---|---|
+| --- | --- |
 | `visible` | at least one non-background call is older than `progressUi.delay`; `false` under `progressUi: false` |
 | `unreachable` | at least one non-background call has `unreachableAfter` unanswered attempts, whatever its age |
 | `calls` | the non-background calls older than `progressUi.delay`, oldest first, as `BusyCall`s |
 | `percent`, `label` | of the oldest listed call whose operation reports a percent or a label; else `null` |
 
 | `BusyCall` | |
-|---|---|
+| --- | --- |
 | `key` | the key its source reports it under |
 | `startedAt` | `Date.now()` at its first `start` |
 | `attempts` | unanswered attempts: the number of its `retry` events |
@@ -294,7 +294,7 @@ The TypeScript `Reporter` carries `set`, `ask`, `setResult`, `done`, `fail`, `fl
 ### Not symmetric
 
 | Python only | TypeScript only |
-|---|---|
+| --- | --- |
 | `RedisStore` and the pub/sub backplane | the polling client and its ladder |
 | the Celery worker entry | the `/vue`, `/vuetify` and `/fastapi-viewsets` subpaths |
 | the FastAPI / ASGI / WSGI adapters, and the muxws server half | `tw.register`, `tw.aggregate`, `tw.selected` |

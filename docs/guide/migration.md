@@ -18,7 +18,7 @@ fastapi-viewsets' `ApiErrorBody`. The code moves from `detail` to `detail_code`,
 `detail_params`, and `code` is gone:
 
 | Old field | New field |
-|---|---|
+| --- | --- |
 | `detail` (the code, e.g. `taskwire.not_found`) | `detail_code`; `detail` is now English text |
 | `code` (`422` of a dialog reply) | `detail_code` |
 | `params` (`422` of a dialog reply) | `detail_params`, `{}` when there are none |
@@ -75,7 +75,7 @@ Every code taskwire writes carries the `taskwire.` namespace, and its `message.k
 Compare against the exported constants rather than literals:
 
 | Where | Old code | New code |
-|---|---|---|
+| --- | --- | --- |
 | `error.code` | `dispatch_failed` | `taskwire.dispatch_failed` (`DISPATCH_FAILED`) |
 | `error.code` | `not_executed` | `taskwire.not_executed` (`NOT_EXECUTED`) |
 | `error.code` | `dialog_timeout` | `taskwire.dialog_timeout` (`DIALOG_TIMEOUT`) |

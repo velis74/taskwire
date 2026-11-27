@@ -61,7 +61,7 @@ optional `X-Taskwire-Token` header in OpenAPI.
 `TaskwireMiddleware` is the binding:
 
 | Step | Written by | Where |
-|---|---|---|
+| --- | --- | --- |
 | `queued` | `TaskwireMiddleware.__call__`, in the command middleware chain | web process |
 | `running`, then `done` / `failed` / `cancelled` | `TaskwireMiddleware.execute()`, around the action | where the action executes: the web process, or the executor's process for a deferred action |
 | `failed` with `taskwire.not_executed` or `taskwire.dispatch_failed` | `TaskwireMiddleware.__call__`, when the call ended with the operation still `queued` | web process |
@@ -122,7 +122,7 @@ configures both. The store serves every event loop of the process.
 How the call ends:
 
 | The call | The operation | Written by |
-|---|---|---|
+| --- | --- | --- |
 | returned, or raised | `done`, or `failed` with `taskwire.unhandled_exception` / `cancelled` | `execute()`, in the executor's process |
 | was not sent (`ActionDispatchError`) | `taskwire.dispatch_failed`, `retryable: true` | `__call__`, in the web process |
 | came back while the operation was still `queued` | `taskwire.not_executed` | `__call__`, in the web process |
