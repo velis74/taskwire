@@ -16,7 +16,7 @@ The reporter writes the result and the state, and the worker exits; only the rec
 `waiting_input` therefore has two causes:
 
 | cause | holds a worker? | leaves by |
-|---|---|---|
+| --- | --- | --- |
 | an open dialog | yes — the worker is blocked in `ask()` | an answer, or a withdrawal |
 | an uncollected result | no — nothing is running | collection, dismissal, or `result_ttl` |
 

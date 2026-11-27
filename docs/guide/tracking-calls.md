@@ -7,7 +7,7 @@ opening `operation()` or ending it: the call's receipt and its execution do that
 ## The token of a call
 
 | Header | Token |
-|---|---|
+| --- | --- |
 | `X-Taskwire-Token` | its value, for any method |
 | `Idempotency-Key` holding a UUID Structured Field string, e.g. `"8f14e45f-…"` | the UUID, for any method except `HEAD` and `OPTIONS` |
 
@@ -22,7 +22,7 @@ every command without sending anything else.
 ## The three places a call is seen
 
 | Where | Python | TypeScript | Writes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | received | `receive_call(call)` | `receiveCall(call, options, body)` | `queued`; `failed` when nothing executed the call |
 | executed | `execute_call(call)` | `receipt.execute(body)`, `executeCall(call, options, body)` | `running`, then one terminal state |
 | handed to another process | `hand_off()` | `execution.handOff(send)` | nothing; the receiving process ends the operation |
@@ -51,7 +51,7 @@ A receipt that ends while its operation is still `queued`, with no execution ent
 the operation `failed`:
 
 | The call ended | Error |
-|---|---|
+| --- | --- |
 | with one of `dispatch_errors` | `taskwire.dispatch_failed`, `retryable: true` |
 | with one of `pending_errors` | none; the operation stays `queued` until another process executes it or `active_ttl` expires it |
 | in any other way, a normal return included | `taskwire.not_executed`, `retryable: false` |
@@ -103,14 +103,14 @@ error is `asking_error` when one is given; `queued_only=True` restricts the writ
 operation. It returns whether it wrote, and logs a store failure instead of raising it.
 
 | Code | Meaning | `retryable` |
-|---|---|---|
+| --- | --- | --- |
 | `taskwire.interrupted` | the executor ended the work after it started; `message.params.reason` names how | `true` |
 | `taskwire.dialog_timeout` | the same, while the work held an open question | `true` |
 
 ## Adapters
 
 | Framework | Adapter |
-|---|---|
+| --- | --- |
 | any ASGI application (Starlette, FastAPI, Litestar, Django under ASGI) | `taskwire.contrib.asgi.track_calls(app)` |
 | any WSGI application (Flask, Django under WSGI) | `taskwire.contrib.wsgi.track_calls(app)` |
 | a WHATWG `fetch` handler (Node, Deno, Bun, a service worker) | `trackFetch(handler, options)` |

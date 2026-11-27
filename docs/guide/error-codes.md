@@ -17,7 +17,7 @@ Each namespace a taskwire error can carry is exported as a constant, with the sa
 and TypeScript:
 
 | Constant | Value | Codes |
-|---|---|---|
+| --- | --- | --- |
 | `ERROR_NAMESPACE` | `taskwire` | every code taskwire writes |
 | `ERROR_NAMESPACE_FASTAPI_VIEWSETS` | `fastapi-viewsets` | the executor's error code, forwarded verbatim by `TaskwireMiddleware` |
 
@@ -35,7 +35,7 @@ taskwire writes these codes into `error.code`, with `message.key` equal to the c
 export each one from `taskwire` as a constant built from `ERROR_NAMESPACE`:
 
 | Constant | Code | Written when | `retryable` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `DISPATCH_FAILED` | `taskwire.dispatch_failed` | the work could not be handed to the process that executes it | `true` |
 | `NOT_EXECUTED` | `taskwire.not_executed` | a tracked call ended before anything executed it | `false` |
 | `DIALOG_TIMEOUT` | `taskwire.dialog_timeout` | an execution limit ended the work while it held an open question | `true` |
@@ -77,7 +77,7 @@ steps in order:
 4. leading and trailing `_` are removed, and the result is lowercased; an empty result is `error`.
 
 | Class | `message.params.exception` |
-|---|---|
+| --- | --- |
 | `ValueError` | `value_error` |
 | `HTTPError` | `http_error` |
 | `HTTPServerError` | `http_server_error` |
@@ -92,7 +92,7 @@ Every error answer of the REST endpoints has the fields of fastapi-viewsets' `Ap
 every adapter (`register_taskwire_rest`, `router()`, `contrib.asgi`) and over muxws:
 
 | Field | Type | Content |
-|---|---|---|
+| --- | --- | --- |
 | `detail` | string | English text for the code, interpolated from `detail_params` |
 | `detail_code` | string | the code, `taskwire.<code>` |
 | `detail_params` | object | interpolation values; `{}` when there are none |
@@ -115,7 +115,7 @@ TypeScript client reads only the status of an error. fastapi-viewsets' `errorBod
 ## REST error codes
 
 | Endpoint | Status | `detail_code` |
-|---|---|---|
+| --- | --- | --- |
 | any `{token}` endpoint, `GET {prefix}` without a namespace | `404` | `taskwire.not_found` |
 | `POST {prefix}/{token}/cancel` | `409` | `taskwire.already_terminal`, `taskwire.holds_an_uncollected_result` |
 | `POST {prefix}/{token}/collect`, `POST {prefix}/{token}/dismiss` | `409` | `taskwire.no_uncollected_result` |
@@ -129,7 +129,7 @@ body.
 `detail_params.reason` of `taskwire.invalid_reply` says what failed:
 
 | `detail_params.reason` | Other `detail_params` |
-|---|---|
+| --- | --- |
 | `button_required` | — |
 | `unknown_button` | `button` |
 | `values_not_an_object` | — |

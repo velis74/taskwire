@@ -15,7 +15,7 @@ Each adapter binds an implementation to a particular framework, and is the only 
 framework is imported.
 
 | Implementation | Carries the protocol over | Adapter | Needs |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **local** | the process itself — no wire, no socket, no serialisation | none | nothing |
 | **REST** | request/response polling; the baseline everywhere | `contrib.viewsets`, `contrib.fastapi`, `contrib.asgi` | nothing in core |
 | **WS** | one push per envelope down, the six calls up, lowest latency | `contrib.muxws`, or `contrib.viewsets_events` over fastapi-viewsets events | [muxws](https://docs.velis.si/muxws/) |

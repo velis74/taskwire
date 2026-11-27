@@ -24,7 +24,7 @@ numbers and no replay: a client reads current state.
 ## One protocol, three implementations
 
 | Implementation | Carries the protocol over | Adapter | Needs |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | local | the process itself, no serialisation | none | nothing |
 | REST | request/response polling | `contrib.viewsets`, `contrib.fastapi`, `contrib.asgi` | nothing in core |
 | WS | one push per envelope down, the six calls up | `contrib.muxws` | [muxws](https://docs.velis.si/muxws/) |

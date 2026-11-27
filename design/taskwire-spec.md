@@ -16,7 +16,7 @@ Rule ids are stable. Cross-references use ids only.
 ## 1. Scope and vocabulary
 
 | Term | Definition |
-|---|---|
+| --- | --- |
 | **operation** | One unit of long-running server-side work that reports commentary. Identified by a token. |
 | **token** | Client- or server-minted UUIDv4 string. An *address*, never an authorisation grant, never a store key on its own. |
 | **namespace** / `ns` | The identity string produced by `session_resolver`: the account when a user is logged in, the session otherwise (§2.7). The only authorisation scope. |
@@ -201,7 +201,7 @@ adapters to things outside the process, never a capability the core lacks.
 - **TW-KEY-001** The Redis keyspace MUST be exactly:
 
   | Key | Type | Contents |
-  |---|---|---|
+  | --- | --- | --- |
   | `tw:{ns}:{token}:progress` | string | JSON `Progress` |
   | `tw:{ns}:{token}:dialogs` | hash | `id` → JSON `DialogRequest` |
   | `tw:{ns}:{token}:d:{did}:reply` | list | wakeup channel for a blocked worker |
@@ -737,7 +737,7 @@ standalone path of §2.14 and §2.15 stays for applications without fastapi-view
   `Envelope.to_dict()`) to exactly one topic of the source `taskwire`, or to none:
 
   | Envelope | Topic |
-  |---|---|
+  | --- | --- |
   | `progress` or `snapshot` of a private operation, `origin_connection` set | `taskwire:c.{sha256(ns, origin_connection)}` |
   | `progress` or `snapshot` of a private operation, `origin_connection` null | none (TW-PRIV-003) |
   | every other envelope, the dialog family of a private operation included (TW-PRIV-004) | `taskwire:ns.{sha256(ns)}` |
@@ -839,7 +839,7 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-REST-004** The endpoints MUST be exactly:
 
   | Method & path | Success | Failures |
-  |---|---|---|
+  | --- | --- | --- |
   | `GET {prefix}` | `200` `Register` | — |
   | `GET {prefix}/{token}` | `200` `Snapshot`, terminal ones included until the tombstone expires | `404` unknown, expired, or another namespace's |
   | `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410`, `422` per §6.2 |
@@ -899,7 +899,7 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
   adapter and over muxws:
 
   | Field | Type | Content |
-  |---|---|---|
+  | --- | --- | --- |
   | `detail` | string | English text, interpolated from `detail_params`; never a code |
   | `detail_code` | string | the full code, `taskwire.<code>` (§6.2, §6.3) |
   | `detail_params` | object | interpolation values; `{}` when there are none |
@@ -1143,7 +1143,7 @@ backplane; TW-BP-002, TW-BP-007 and TW-BP-008 hold unchanged.
 - **TW-SYM-003** **The asymmetries MUST be exactly these, each following from the host platform:**
 
   | Python only | TypeScript only |
-  |---|---|
+  | --- | --- |
   | `RedisStore` and the `twx:{ns}` backplane (TW-STORE-011) | the polling client and its ladder (TW-REST-010) |
   | the Celery worker entry (`TW-CELERY-*`) | the `/vue`, `/vuetify` and `/fastapi-viewsets` subpaths |
   | the FastAPI / ASGI adapters (TW-REST-001) | `tw.register`, `tw.aggregate`, `tw.selected`, `tw.operations` |
@@ -1298,7 +1298,7 @@ exception and keep their Python name verbatim (TW-TS-011).
 ### 3.1 `Text`
 
 | Field | Type | Req | Default | Meaning |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `key` | string | no | – | i18n catalogue key |
 | `params` | object | no | – | interpolation values for `key` |
 | `text` | string | no | – | pre-composed fallback for a frontend with no catalogue or no such key |
@@ -1312,7 +1312,7 @@ taskwire MUST NOT attempt to validate. **TW-TXT-003** The dual form MUST NOT app
 ### 3.2 `Progress`
 
 | Field | Type | Req | Default | Meaning |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `state` | enum (§4.1) | yes | – | lifecycle state |
 | `percent` | float 0–100 \| null | yes | – | `null` = indeterminate |
 | `title` | `Text` \| null | no | null | the operation's name; fixed at start in practice |
@@ -1332,7 +1332,7 @@ and splits at its last `.`; taskwire's namespace is `ERROR_NAMESPACE`, `"taskwir
 it writes is built from it, with `message.key` equal to the code. Reserved codes:
 
 | Code | Written when | `retryable` |
-|---|---|---|
+| --- | --- | --- |
 | `taskwire.dispatch_failed` | TW-CELERY-004, TW-CALL-005 | `true` |
 | `taskwire.dialog_timeout` | TW-DLG-006 | `true` |
 | `taskwire.interrupted` | TW-CALL-008; `message.params.reason` | `true` |
@@ -1355,7 +1355,7 @@ rewrites it.
 ### 3.3 `Result`
 
 | Field | Type | Req | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `kind` | string | yes | which component collects this; mapped exactly as `dialog_id` is |
 | `params` | object | no | interpolated by that component; ≤16 KiB encoded |
 | `label` | `Text` | no | what a menu entry renders |
@@ -1373,7 +1373,7 @@ own by passing its own string, and taskwire never validates the set.
 ### 3.4 `DialogRequest`
 
 | Field | Type | Req | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `id` | uuid string | yes | **this asking**; unique within the token; the only key/path/store identifier |
 | `dialog_id` | string | yes | **which question**; the frontend component identity |
 | `params` | object | no | interpolated by the frontend; ≤16 KiB encoded |
@@ -1397,7 +1397,7 @@ Python `DialogAnswer` (the return of `ask()`): `button: str`, `values: dict`. Th
 ### 3.6 `Snapshot`
 
 | Field | Type | Req | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `v` | integer | yes | `2` — same value and same bump rule as `Envelope.v` (TW-CORE-012) |
 | `token` | uuid string | yes | address |
 | `rev` | integer | yes | revision of the progress document (§2.2) |
@@ -1410,7 +1410,7 @@ Python `DialogAnswer` (the return of `ask()`): `button: str`, `values: dict`. Th
 ### 3.7 `OperationSummary`
 
 | Field | Type | Req | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `token` | uuid string | yes | |
 | `snapshot` | `Snapshot` | yes | the whole snapshot, not a summary of it |
 | `result_kind` | string \| null | yes | lifted from `progress`; null only on a private entry listed under TW-PRIV-004 |
@@ -1422,7 +1422,7 @@ Python `DialogAnswer` (the return of `ask()`): `button: str`, `values: dict`. Th
 ### 3.8 `Register`
 
 | Field | Type | Req | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `v` | integer | yes | `2` (TW-CORE-012) |
 | `operations` | `OperationSummary[]` | yes | `needs_attention` first, then `created_at` ascending (TW-REG-005) |
 | `aggregate` | `Aggregate` \| null | yes | `null` when the register is empty (TW-REG-017) |
@@ -1432,7 +1432,7 @@ Python `DialogAnswer` (the return of `ask()`): `button: str`, `values: dict`. Th
 ### 3.8a `Aggregate`
 
 | Field | Type | Req | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `state` | `queued` \| `running` \| `waiting_input` | yes | by domination (TW-REG-012) |
 | `title` | `Text` | yes | key `taskwire.aggregate.title` |
 | `label` | `Text` \| null | no | names the selected entry (TW-REG-013) |
@@ -1445,7 +1445,7 @@ There is no `percent` (TW-REG-011); `Aggregate` is not a `Progress`. There are n
 ### 3.9 `Envelope`
 
 | Field | Type | Req | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `v` | integer | yes | `2` |
 | `token` | uuid string | yes | an **address**, not a subscription key |
 | `rev` | integer | yes | gates progress only (TW-REV-006) |
@@ -1453,7 +1453,7 @@ There is no `percent` (TW-REG-011); `Aggregate` is not a `Progress`. There are n
 | `body` | object | yes | per the table below |
 
 | `kind` | `body` |
-|---|---|
+| --- | --- |
 | `progress` | a `Progress` |
 | `dialog.open` | a `DialogRequest` |
 | `dialog.close` | `{"id": string, "state": string, "reply": DialogReply \| null}` |
@@ -1474,7 +1474,7 @@ document unchanged (TW-STORE-010). **No cell is reachable by a caller writing `s
 there is no column for one: `set(state=...)` does not exist (TW-PROG-012).
 
 | ↓state \ event→ | `mark_queued` | `operation()` enter | `set(...)` | `ask()` opens dialog | dialog resolves | `set_result()` | `operation()` exits clean | exits `OperationCancelled` | exits other exception | result released |
-|---|---|---|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | *(absent)* | write doc → `queued` | write doc → `running` | write doc → `running` | n/a | n/a | n/a | n/a | n/a | write doc → `failed` | n/a |
 | `queued` | idempotent → `queued` | → `running` | → `running` | → `waiting_input` | n/a | records result → `queued` | → `done`, unlisted | → `cancelled`, unlisted | → `failed`, unlisted | n/a |
 | `running` | reject | → `running` | → `running` | → `waiting_input` | n/a | records result → `running` | result written → `waiting_input`; none → `done`, unlisted | → `cancelled`, unlisted | → `failed`, unlisted | n/a |
@@ -1494,7 +1494,7 @@ withdraws the operation's open dialogs in the same step (TW-CANCEL-011).
 ### 4.2 `DialogRequest.state`
 
 | ↓state \ event→ | `resolve_dialog(reply)` | `withdraw_dialogs()` | document TTL expiry |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `open` | record reply, bump rev, wake waiter, return `ACCEPTED` → `answered` | bump rev, push sentinel → `cancelled` | key gone; a waiter gets `DialogVanished` |
 | `answered` | return `ALREADY_ANSWERED` with the winning reply → `answered` | no change → `answered` | key gone |
 | `cancelled` | return `CANCELLED` → `cancelled` | no change → `cancelled` | key gone |
@@ -1506,7 +1506,7 @@ to expire against (TW-DLG-005).
 ### 4.3 Client-side visible-collection membership (`tw.operations`)
 
 | ↓state \ event→ | `startedHere` + `progressUi.delay` elapsed | `show()` | `hide()` | `done` | `failed`/`cancelled` | `failureLinger` elapsed | `close()`/dispose |
-|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- |
 | out | enter | enter | – | – | – | – | – |
 | in | – | – | leave | leave | stay | leave | leave |
 
@@ -2028,7 +2028,7 @@ function use_register(options?: TaskwireOptions):
 ### 6.1 Python exceptions
 
 | Exception | Raised when | Caller does |
-|---|---|---|
+| --- | --- | --- |
 | `OperationCancelled` | `set()` observes the sticky cancel flag with `raise_on_cancel` true; `ask()` on a cancelled operation (always) | Lets it propagate; `operation()` writes `cancelled`. MUST NOT subclass `asyncio.CancelledError`. |
 | `DialogVanished` | `await_dialog` finds the dialog document gone (TTL expiry under a live waiter) | `ask()` propagates it. There is no default to fall back to. |
 | `ValueError` | `data` / `params` / `result` over `max_data_bytes`, naming the offending size; `set_result()` on an operation that declared no `result_kind`; `set(state=...)` | Fix the call; nothing was committed. |
@@ -2041,7 +2041,7 @@ limit while blocked on a question produces `failed` with `code: "taskwire.dialog
 ### 6.2 `DialogResolution` → HTTP
 
 | Outcome | Status | `detail_code` | Meaning | Client behaviour |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | button not in `buttons`, or `values` fail `inputs` | `422` | `taskwire.invalid_reply`, with `detail_params.reason` (TW-DLG-015) | rejected before the store is touched | reject `answer()` — a client bug |
 | `ACCEPTED` | `204` | no body | the store arbitrated in your favour — the only trustworthy signal | close the dialog |
 | `NOT_FOUND` | `404` | `taskwire.not_found` | unknown token, unknown dialog, or another namespace's | resolve `answer()` quietly, close |
@@ -2058,7 +2058,7 @@ The `202` of a cancel is not an error: its body is `Accepted`, `{"detail": "task
 Every other row with a code answers the error body of TW-REST-015 with that `detail_code`.
 
 | Endpoint | Status | Code | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `GET {prefix}/{token}` | `200` | — | including a terminal document, for `tombstone_ttl` after it left the register |
 | `GET {prefix}` / `GET {prefix}/{token}` | `404` | `taskwire.not_found` | unknown, expired, or another namespace's — indistinguishable by design |
 | `POST .../cancel` | `202` | `taskwire.requested` | requested, not confirmed |
@@ -2137,7 +2137,7 @@ Each of these is violable from more than one place; each names the failure it pr
 ### 8.1 Server settings (`taskwire.settings`)
 
 | Setting | Unit | Default | Range | Meaning |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `active_ttl` | seconds | 3600 | > 0 | document TTL while the operation is `queued`, `running` or asking |
 | `result_ttl` | seconds | 604800 (7 d) | > 0, never 0 | backstop on an uncollected result; MUST be aligned with artefact retention (TW-RET-003) |
 | `tombstone_ttl` | seconds | 900 (15 min) | > 0 | how long a terminal document answers at its own address after it leaves the register (TW-RET-004) |
@@ -2162,7 +2162,7 @@ producer), `push_filter` (optional, default `lambda client, operation: True`) an
 ### 8.2 Client polling cadence
 
 | Constant | Default | Range | Meaning |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | base interval | 400 ms | > 0 | while anything is `queued` or `running` |
 | backoff factor | ×1.5 | > 1 | applied when no entry's `rev` changed |
 | ceiling | 5000 ms | ≥ base | also the cadence while a dialog is open and while idle |
@@ -2172,7 +2172,7 @@ producer), `push_filter` (optional, default `lambda client, operation: True`) an
 ### 8.3 Client UI policy (`configure_taskwire`)
 
 | Option | Unit | Default | Range | Meaning |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `progressUi.delay` | ms | 250 | > 0 | age at which a `startedHere` operation enters `tw.operations`, and a call enters `tw.busy.calls`; independent of `progress_interval` |
 | `progressUi.failureLinger` | ms | 8000 | > 0, never 0 | how long a `failed`/`cancelled` row the register has already dropped stays on this client's screen |
 | `dialogAdoptDelay` | ms | 2000 | > 0, never 0 | how long a non-originating tab waits before presenting a still-open dialog |

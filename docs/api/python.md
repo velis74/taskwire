@@ -155,7 +155,7 @@ The wire documents are dataclasses in `taskwire.models`, each with `to_dict()` a
 `from_dict(raw)`. `to_dict()` omits an absent optional field.
 
 | Class | Fields |
-|---|---|
+| --- | --- |
 | `Text` | `key`, `params`, `text`: any subset; `t(key=None, *, text=None, **params)` builds one |
 | `Error` | `code`, `message: Text`, `retryable = False` |
 | `ResultRef` | `href`, `mime`, `bytes`, `expires_at` (ISO 8601) |
@@ -173,7 +173,7 @@ The wire documents are dataclasses in `taskwire.models`, each with `to_dict()` a
 | `Envelope` | `token`, `rev`, `kind: EnvelopeKind`, `body`, `v` |
 
 | Enum | Values |
-|---|---|
+| --- | --- |
 | `ProgressState` | `queued`, `running`, `waiting_input`, `done`, `failed`, `cancelled` |
 | `DialogState` | `open`, `answered`, `cancelled` |
 | `EnvelopeKind` | `progress`, `dialog.open`, `dialog.close`, `cancel` and `snapshot` are pushed; `dialog.reply` and `watch` are sent by the client only |
@@ -352,7 +352,7 @@ from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_proce
 `Context`:
 
 | Key | Value |
-|---|---|
+| --- | --- |
 | `taskwire_session` (`SESSION_KEY`) | `session_resolver(request)`, or `None` without a resolver |
 | `taskwire_connection` (`CONNECTION_KEY`) | the `X-Taskwire-Connection` header, or `None` |
 | `taskwire_token` (`TOKEN_KEY`) | `call_token(request.headers, request.method)` |
@@ -360,7 +360,7 @@ from taskwire.contrib.viewsets import TaskwireMiddleware, taskwire_context_proce
 `TaskwireMiddleware(*, timeout_errors=None)` is a fastapi-viewsets `Middleware`:
 
 | Hook | What it does |
-|---|---|
+| --- | --- |
 | `__call__` | runs the rest of the command chain inside `receive_call`, with `ActionDispatchError` as a dispatch error and `ActionOutcomeUnknownError` and `ActionInterruptedError` as pending ones |
 | `execute()` | runs the action inside `execute_call`, where the action executes, and passes an execution with a `parent` straight through. An `ActionInterruptedError` ends the operation `taskwire.dialog_timeout` with an open question, else `taskwire.interrupted` with the error's `reason`. In an executor's process an execution that ends because the process exits writes no terminal state; `on_transition()` ends it |
 | `executor_started()` | `taskwire.configure_executor()` |
@@ -396,7 +396,7 @@ appends `taskwire_delivery_filter` to `viewsets_event_delivery_filters` and
 taskwire with one `ViewsetEventsTransport`, which it returns. A second call changes nothing.
 
 | Symbol | |
-|---|---|
+| --- | --- |
 | `namespace_topic(ns) -> str` | `taskwire:ns.{sha256(ns)}`: every envelope of `ns` except a private operation's `progress` and `snapshot` |
 | `connection_topic(ns, connection) -> str` | `taskwire:c.{sha256(ns, connection)}`: the `progress` and `snapshot` of the private operations whose `origin_connection` is `connection` |
 | `envelope_topic(ns, envelope) -> str \| None` | the topic `envelope` is published to; None for a private operation's `progress` with no `origin_connection` |
@@ -502,10 +502,10 @@ configure_worker(store, transport=None)                # worker side: this store
 
 `dispatch` writes `queued` and hands off; if the broker refuses, it writes `failed`.
 `configure_worker` gives the worker a store and a `NullTransport`: a worker does not push, and the
-web process's reader delivers the envelopes the worker's writes produce. Over fastapi-viewsets events the worker passes the
-`ViewsetEventsTransport` that `register_taskwire_events()` returns, which publishes to the event store;
-any other transport raises `ValueError`. It is `configure_executor(store=store, transport=...)` with
-`NullTransport` for a `None` transport.
+web process's reader delivers the envelopes the worker's writes produce. Over fastapi-viewsets events
+the worker passes the `ViewsetEventsTransport` that `register_taskwire_events()` returns, which
+publishes to the event store; any other transport raises `ValueError`. It is
+`configure_executor(store=store, transport=...)` with `NullTransport` for a `None` transport.
 
 The operation of a call the web process is executing moves to a task with `hand_off()`:
 
@@ -594,7 +594,7 @@ await run_conformance(MyStore)
 ## Settings
 
 | Setting | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `active_ttl` | 3600 s | document TTL while queued, running or asking |
 | `result_ttl` | 604800 s | backstop on an uncollected result |
 | `tombstone_ttl` | 900 s | how long a terminal document answers at its own address after it leaves the register |
@@ -615,7 +615,7 @@ answers by token. A dialog has no deadline.
 ## REST
 
 | Method & path | Success | Failures |
-|---|---|---|
+| --- | --- | --- |
 | `GET {prefix}` | `200` `Register` | — |
 | `GET {prefix}/{token}` | `200` `Snapshot`, terminal ones included | `404` unknown, foreign, or a tombstone that has expired |
 | `POST {prefix}/{token}/dialogs/{did}` | `204` | `404`, `409`, `410` withdrawn, `422` |
