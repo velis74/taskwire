@@ -50,3 +50,12 @@ jobs:
       - run: npm run build
       - run: npm run build -w demo/client
       - run: npm run docs:build
+
+  # the required status check: fails when any other job of this workflow failed or was cancelled
+  all-green:
+    if: always()
+    needs: [python, node]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
